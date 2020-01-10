@@ -94,7 +94,7 @@ REGISTER_CALCULATOR(GlSurfaceSinkCalculator);
     const auto& input = TagOrIndex(cc->Inputs(), "VIDEO", 0).Get<GpuBuffer>();
     if (!initialized_) {
       renderer_ = absl::make_unique<QuadRenderer>();
-      RETURN_IF_ERROR(renderer_->GlSetup());
+      MP_RETURN_IF_ERROR(renderer_->GlSetup());
       initialized_ = true;
     }
 
@@ -124,11 +124,11 @@ REGISTER_CALCULATOR(GlSurfaceSinkCalculator);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(src.target(), src.name());
 
-    RETURN_IF_ERROR(
+    MP_RETURN_IF_ERROR(
         renderer_->GlRender(src.width(), src.height(), dst_width, dst_height,
                             scale_mode_, FrameRotation::kNone,
                             /*flip_horizontal=*/false, /*flip_vertical=*/false,
-                            /*flip_texture=*/false));
+                            /*flip_texture=*/surface_holder_->flip_y));
 
     glBindTexture(src.target(), 0);
 

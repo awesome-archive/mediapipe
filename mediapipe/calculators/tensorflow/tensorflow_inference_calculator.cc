@@ -34,6 +34,10 @@
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/tensor_util.h"
 
+#if !defined(MEDIAPIPE_MOBILE) && !defined(__APPLE__)
+#include "tensorflow/core/profiler/lib/traceme.h"
+#endif
+
 namespace tf = ::tensorflow;
 
 namespace mediapipe {
@@ -361,14 +365,14 @@ class TensorFlowInferenceCalculator : public CalculatorBase {
     }
 
     if (batch_timestamps_.size() == options_.batch_size()) {
-      RETURN_IF_ERROR(OutputBatch(cc));
+      MP_RETURN_IF_ERROR(OutputBatch(cc));
     }
     return ::mediapipe::OkStatus();
   }
 
   ::mediapipe::Status Close(CalculatorContext* cc) override {
     if (!batch_timestamps_.empty()) {
-      RETURN_IF_ERROR(OutputBatch(cc));
+      MP_RETURN_IF_ERROR(OutputBatch(cc));
     }
     return ::mediapipe::OkStatus();
   }
@@ -435,9 +439,15 @@ class TensorFlowInferenceCalculator : public CalculatorBase {
       session_run_throttle->Acquire(1);
     }
     const int64 run_start_time = absl::ToUnixMicros(clock_->TimeNow());
-    const tf::Status tf_status =
-        session_->Run(input_tensors, output_tensor_names,
-                      {} /* target_node_names */, &outputs);
+    tf::Status tf_status;
+    {
+#if !defined(MEDIAPIPE_MOBILE) && !defined(__APPLE__)
+      tensorflow::profiler::TraceMe trace(absl::string_view(cc->NodeName()));
+#endif
+      tf_status = session_->Run(input_tensors, output_tensor_names,
+                                {} /* target_node_names */, &outputs);
+    }
+
     if (session_run_throttle != nullptr) {
       session_run_throttle->Release(1);
     }

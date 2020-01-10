@@ -11,12 +11,14 @@
 // WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
 // See the License for the specific language governing permissions and
 // limitations under the License.
-//
 
+#include <cstring>
+#include <memory>
 #include <string>
 #include <vector>
 
 #include "mediapipe/calculators/tflite/tflite_inference_calculator.pb.h"
+#include "mediapipe/calculators/tflite/util.h"
 #include "mediapipe/framework/calculator_framework.h"
 #include "mediapipe/framework/port/ret_check.h"
 #include "mediapipe/util/resource_util.h"
@@ -25,24 +27,67 @@
 #include "tensorflow/lite/kernels/register.h"
 #include "tensorflow/lite/model.h"
 
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GL_COMPUTE)
 #include "mediapipe/gpu/gl_calculator_helper.h"
 #include "mediapipe/gpu/gpu_buffer.h"
+#include "tensorflow/lite/delegates/gpu/common/shape.h"
 #include "tensorflow/lite/delegates/gpu/gl/gl_buffer.h"
 #include "tensorflow/lite/delegates/gpu/gl/gl_program.h"
 #include "tensorflow/lite/delegates/gpu/gl/gl_shader.h"
 #include "tensorflow/lite/delegates/gpu/gl_delegate.h"
+#endif  //  !MEDIAPIPE_DISABLE_GL_COMPUTE
+
+#if defined(MEDIAPIPE_IOS)
+#import <CoreVideo/CoreVideo.h>
+#import <Metal/Metal.h>
+#import <MetalKit/MetalKit.h>
+
+#import "mediapipe/gpu/MPPMetalHelper.h"
+#include "mediapipe/gpu/MPPMetalUtil.h"
+#include "mediapipe/gpu/gpu_buffer.h"
+#include "tensorflow/lite/delegates/gpu/common/shape.h"
+#include "tensorflow/lite/delegates/gpu/metal/buffer_convert.h"
+#include "tensorflow/lite/delegates/gpu/metal_delegate.h"
+#include "tensorflow/lite/delegates/gpu/metal_delegate_internal.h"
+#endif  // iOS
+
+#if defined(MEDIAPIPE_ANDROID)
+#include "tensorflow/lite/delegates/nnapi/nnapi_delegate.h"
 #endif  // ANDROID
 
-#if defined(__APPLE__) && !TARGET_OS_OSX  // iOS
-#if defined(__OBJC__)
-#import <CoreVideo/CoreVideo.h>
-#import <MetalKit/MetalKit.h>
-#endif  // OBJC
-#import "mediapipe/framework/ios/NSError+util_status.h"
-#import "mediapipe/gpu/MediaPipeMetalHelper.h"
-#include "tensorflow/lite/delegates/gpu/metal_delegate.h"
-#endif  // APPLE && !TARGET_OS_OSX
+namespace {
+
+#if !defined(MEDIAPIPE_DISABLE_GL_COMPUTE)
+typedef ::tflite::gpu::gl::GlBuffer GpuTensor;
+#elif defined(MEDIAPIPE_IOS)
+typedef id<MTLBuffer> GpuTensor;
+#endif
+
+// Round up n to next multiple of m.
+size_t RoundUp(size_t n, size_t m) { return ((n + m - 1) / m) * m; }  // NOLINT
+}  // namespace
+
+#if defined(MEDIAPIPE_EDGE_TPU)
+#include "edgetpu.h"
+
+// Creates and returns an Edge TPU interpreter to run the given edgetpu model.
+std::unique_ptr<tflite::Interpreter> BuildEdgeTpuInterpreter(
+    const tflite::FlatBufferModel& model,
+    tflite::ops::builtin::BuiltinOpResolver* resolver,
+    edgetpu::EdgeTpuContext* edgetpu_context) {
+  resolver->AddCustom(edgetpu::kCustomOp, edgetpu::RegisterCustomOp());
+  std::unique_ptr<tflite::Interpreter> interpreter;
+  if (tflite::InterpreterBuilder(model, *resolver)(&interpreter) != kTfLiteOk) {
+    std::cerr << "Failed to build edge TPU interpreter." << std::endl;
+  }
+  interpreter->SetExternalContext(kTfLiteEdgeTpuContext, edgetpu_context);
+  interpreter->SetNumThreads(1);
+  if (interpreter->AllocateTensors() != kTfLiteOk) {
+    std::cerr << "Failed to allocate edge TPU tensors." << std::endl;
+  }
+  return interpreter;
+}
+#endif  // MEDIAPIPE_EDGE_TPU
 
 // TfLiteInferenceCalculator File Layout:
 //  * Header
@@ -50,17 +95,19 @@
 //  * Aux
 namespace mediapipe {
 
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GL_COMPUTE)
+using ::tflite::gpu::gl::CopyBuffer;
+using ::tflite::gpu::gl::CreateReadWriteShaderStorageBuffer;
 using ::tflite::gpu::gl::GlBuffer;
-using ::tflite::gpu::gl::GlProgram;
-using ::tflite::gpu::gl::GlShader;
+#endif
+
+#if !defined(MEDIAPIPE_DISABLE_GPU) && !defined(__EMSCRIPTEN__)
 struct GPUData {
   int elements = 1;
-  GlBuffer ssbo;
-  GlShader shader;
-  GlProgram program;
+  GpuTensor buffer;
+  ::tflite::gpu::BHWC shape;
 };
-#endif  // ANDROID
+#endif
 
 // Calculator Header Section
 
@@ -78,12 +125,12 @@ struct GPUData {
 // GPU.
 //
 // Input:
-//  TENSORS - Vector of TfLiteTensor of type kTfLiteFloat32
-//  TENSORS_GPU - Vector of GlBuffer (assumed to be RGB image)
+//  TENSORS - Vector of TfLiteTensor of type kTfLiteFloat32 or kTfLiteUInt8
+//  TENSORS_GPU - Vector of GlBuffer or MTLBuffer
 //
 // Output:
-//  TENSORS - Vector of TfLiteTensor of type kTfLiteFloat32
-//  TENSORS_GPU - Vector of GlBuffer
+//  TENSORS - Vector of TfLiteTensor of type kTfLiteFloat32 or kTfLiteUInt8
+//  TENSORS_GPU - Vector of GlBuffer or MTLBuffer
 //
 // Input side packet:
 //  CUSTOM_OP_RESOLVER (optional) - Use a custom op resolver,
@@ -107,7 +154,7 @@ struct GPUData {
 //  Input tensors are assumed to be of the correct size and already normalized.
 //  All output TfLiteTensors will be destroyed when the graph closes,
 //  (i.e. after calling graph.WaitUntilDone()).
-//  GPU tensors are currently only supported on Android.
+//  GPU tensors are currently only supported on Android and iOS.
 //  This calculator uses FixedSizeInputStreamHandler by default.
 //
 class TfLiteInferenceCalculator : public CalculatorBase {
@@ -127,45 +174,58 @@ class TfLiteInferenceCalculator : public CalculatorBase {
   std::unique_ptr<tflite::FlatBufferModel> model_;
   TfLiteDelegate* delegate_ = nullptr;
 
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GL_COMPUTE)
   mediapipe::GlCalculatorHelper gpu_helper_;
   std::unique_ptr<GPUData> gpu_data_in_;
   std::vector<std::unique_ptr<GPUData>> gpu_data_out_;
+#elif defined(MEDIAPIPE_IOS)
+  MPPMetalHelper* gpu_helper_ = nullptr;
+  std::unique_ptr<GPUData> gpu_data_in_;
+  std::vector<std::unique_ptr<GPUData>> gpu_data_out_;
+  TFLBufferConvert* converter_from_BPHWC4_ = nil;
 #endif
-#if defined(__APPLE__) && !TARGET_OS_OSX  // iOS
-  MediaPipeMetalHelper* gpu_helper_ = nullptr;
+
+#if defined(MEDIAPIPE_EDGE_TPU)
+  std::shared_ptr<edgetpu::EdgeTpuContext> edgetpu_context_ =
+      edgetpu::EdgeTpuManager::GetSingleton()->OpenDevice();
 #endif
 
   std::string model_path_ = "";
   bool gpu_inference_ = false;
   bool gpu_input_ = false;
   bool gpu_output_ = false;
-};  // TfLiteInferenceCalculator
-
+  bool use_quantized_tensors_ = false;
+};
 REGISTER_CALCULATOR(TfLiteInferenceCalculator);
 
 // Calculator Core Section
 
 ::mediapipe::Status TfLiteInferenceCalculator::GetContract(
     CalculatorContract* cc) {
-  RET_CHECK(cc->Inputs().HasTag("TENSORS") ||
+  RET_CHECK(cc->Inputs().HasTag("TENSORS") ^
             cc->Inputs().HasTag("TENSORS_GPU"));
-  RET_CHECK(cc->Outputs().HasTag("TENSORS") ||
+  RET_CHECK(cc->Outputs().HasTag("TENSORS") ^
             cc->Outputs().HasTag("TENSORS_GPU"));
+
+  bool use_gpu = false;
 
   if (cc->Inputs().HasTag("TENSORS"))
     cc->Inputs().Tag("TENSORS").Set<std::vector<TfLiteTensor>>();
-#if defined(__ANDROID__)
-  if (cc->Inputs().HasTag("TENSORS_GPU"))
-    cc->Inputs().Tag("TENSORS_GPU").Set<std::vector<GlBuffer>>();
-#endif
+#if !defined(MEDIAPIPE_DISABLE_GPU) && !defined(__EMSCRIPTEN__)
+  if (cc->Inputs().HasTag("TENSORS_GPU")) {
+    cc->Inputs().Tag("TENSORS_GPU").Set<std::vector<GpuTensor>>();
+    use_gpu |= true;
+  }
+#endif  //  !MEDIAPIPE_DISABLE_GPU
 
   if (cc->Outputs().HasTag("TENSORS"))
     cc->Outputs().Tag("TENSORS").Set<std::vector<TfLiteTensor>>();
-#if defined(__ANDROID__)
-  if (cc->Outputs().HasTag("TENSORS_GPU"))
-    cc->Outputs().Tag("TENSORS_GPU").Set<std::vector<GlBuffer>>();
-#endif
+#if !defined(MEDIAPIPE_DISABLE_GPU) && !defined(__EMSCRIPTEN__)
+  if (cc->Outputs().HasTag("TENSORS_GPU")) {
+    cc->Outputs().Tag("TENSORS_GPU").Set<std::vector<GpuTensor>>();
+    use_gpu |= true;
+  }
+#endif  //  !MEDIAPIPE_DISABLE_GPU
 
   if (cc->InputSidePackets().HasTag("CUSTOM_OP_RESOLVER")) {
     cc->InputSidePackets()
@@ -173,11 +233,17 @@ REGISTER_CALCULATOR(TfLiteInferenceCalculator);
         .Set<tflite::ops::builtin::BuiltinOpResolver>();
   }
 
-#if defined(__ANDROID__)
-  RETURN_IF_ERROR(mediapipe::GlCalculatorHelper::UpdateContract(cc));
-#elif defined(__APPLE__) && !TARGET_OS_OSX  // iOS
-  RETURN_IF_ERROR([MediaPipeMetalHelper updateContract:cc]);
+  const auto& options =
+      cc->Options<::mediapipe::TfLiteInferenceCalculatorOptions>();
+  use_gpu |= options.use_gpu();
+
+  if (use_gpu) {
+#if !defined(MEDIAPIPE_DISABLE_GL_COMPUTE)
+    MP_RETURN_IF_ERROR(mediapipe::GlCalculatorHelper::UpdateContract(cc));
+#elif defined(MEDIAPIPE_IOS)
+    MP_RETURN_IF_ERROR([MPPMetalHelper updateContract:cc]);
 #endif
+  }
 
   // Assign this calculator's default InputStreamHandler.
   cc->SetInputStreamHandler("FixedSizeInputStreamHandler");
@@ -186,64 +252,80 @@ REGISTER_CALCULATOR(TfLiteInferenceCalculator);
 }
 
 ::mediapipe::Status TfLiteInferenceCalculator::Open(CalculatorContext* cc) {
-  RETURN_IF_ERROR(LoadOptions(cc));
+  cc->SetOffset(TimestampDiff(0));
+
+  MP_RETURN_IF_ERROR(LoadOptions(cc));
 
   if (cc->Inputs().HasTag("TENSORS_GPU")) {
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU) && !defined(__EMSCRIPTEN__)
     gpu_input_ = true;
     gpu_inference_ = true;  // Inference must be on GPU also.
 #else
     RET_CHECK(!cc->Inputs().HasTag("TENSORS_GPU"))
-        << "GPU input for non-Android not supported yet.";
-#endif
+        << "GPU processing not enabled.";
+#endif  //  !MEDIAPIPE_DISABLE_GPU
   }
 
   if (cc->Outputs().HasTag("TENSORS_GPU")) {
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU) && !defined(__EMSCRIPTEN__)
     gpu_output_ = true;
     RET_CHECK(cc->Inputs().HasTag("TENSORS_GPU"))
         << "GPU output must also have GPU Input.";
 #else
     RET_CHECK(!cc->Inputs().HasTag("TENSORS_GPU"))
-        << "GPU output for non-Android not supported yet.";
-#endif
+        << "GPU processing not enabled.";
+#endif  //  !MEDIAPIPE_DISABLE_GPU
   }
 
-  RETURN_IF_ERROR(LoadModel(cc));
+  MP_RETURN_IF_ERROR(LoadModel(cc));
 
   if (gpu_inference_) {
-#if defined(__ANDROID__)
-    RETURN_IF_ERROR(gpu_helper_.Open(cc));
-#elif defined(__APPLE__) && !TARGET_OS_OSX  // iOS
-    gpu_helper_ = [[MediaPipeMetalHelper alloc] initWithCalculatorContext:cc];
+#if !defined(MEDIAPIPE_DISABLE_GL_COMPUTE)
+    MP_RETURN_IF_ERROR(gpu_helper_.Open(cc));
+#elif defined(MEDIAPIPE_IOS)
+    gpu_helper_ = [[MPPMetalHelper alloc] initWithCalculatorContext:cc];
     RET_CHECK(gpu_helper_);
 #endif
 
-    RETURN_IF_ERROR(LoadDelegate(cc));
+#if !defined(MEDIAPIPE_DISABLE_GL_COMPUTE)
+    MP_RETURN_IF_ERROR(gpu_helper_.RunInGlContext(
+        [this, &cc]() -> ::mediapipe::Status { return LoadDelegate(cc); }));
+#else
+    MP_RETURN_IF_ERROR(LoadDelegate(cc));
+#endif
+  } else {
+#if defined(__EMSCRIPTEN__) || defined(MEDIAPIPE_ANDROID)
+    MP_RETURN_IF_ERROR(LoadDelegate(cc));
+#endif  // __EMSCRIPTEN__ || ANDROID
   }
-
   return ::mediapipe::OkStatus();
 }
 
 ::mediapipe::Status TfLiteInferenceCalculator::Process(CalculatorContext* cc) {
-  // Receive pre-processed tensor inputs.
+  // 1. Receive pre-processed tensor inputs.
   if (gpu_input_) {
     // Read GPU input into SSBO.
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GL_COMPUTE)
     const auto& input_tensors =
-        cc->Inputs().Tag("TENSORS_GPU").Get<std::vector<GlBuffer>>();
+        cc->Inputs().Tag("TENSORS_GPU").Get<std::vector<GpuTensor>>();
     RET_CHECK_EQ(input_tensors.size(), 1);
-    RETURN_IF_ERROR(gpu_helper_.RunInGlContext(
+    MP_RETURN_IF_ERROR(gpu_helper_.RunInGlContext(
         [this, &input_tensors]() -> ::mediapipe::Status {
           // Explicit copy input.
-          tflite::gpu::gl::CopyBuffer(input_tensors[0], gpu_data_in_->ssbo);
-          // Run inference.
-          RET_CHECK_EQ(interpreter_->Invoke(), kTfLiteOk);
+          RET_CHECK_CALL(CopyBuffer(input_tensors[0], gpu_data_in_->buffer));
           return ::mediapipe::OkStatus();
         }));
+#elif defined(MEDIAPIPE_IOS)
+    const auto& input_tensors =
+        cc->Inputs().Tag("TENSORS_GPU").Get<std::vector<GpuTensor>>();
+    RET_CHECK_EQ(input_tensors.size(), 1);
+    // Explicit copy input.
+    [MPPMetalUtil blitMetalBufferTo:gpu_data_in_->buffer
+                               from:input_tensors[0]
+                           blocking:true
+                      commandBuffer:[gpu_helper_ commandBuffer]];
 #else
-    RET_CHECK_FAIL()
-        << "GPU input on non-Android devices is not supported yet.";
+    RET_CHECK_FAIL() << "GPU processing not enabled.";
 #endif
   } else {
     // Read CPU input into tensors.
@@ -252,52 +334,83 @@ REGISTER_CALCULATOR(TfLiteInferenceCalculator);
     RET_CHECK_GT(input_tensors.size(), 0);
     for (int i = 0; i < input_tensors.size(); ++i) {
       const TfLiteTensor* input_tensor = &input_tensors[i];
-      const float* input_tensor_buffer = input_tensor->data.f;
-      RET_CHECK(input_tensor_buffer);
-
-      float* local_tensor_buffer = interpreter_->typed_input_tensor<float>(i);
-      RET_CHECK(local_tensor_buffer);
-
-      memcpy(local_tensor_buffer, input_tensor_buffer, input_tensor->bytes);
-    }
-
-    // Run inference.
-    if (gpu_inference_) {
-#if defined(__ANDROID__)
-      RETURN_IF_ERROR(
-          gpu_helper_.RunInGlContext([this]() -> ::mediapipe::Status {
-            RET_CHECK_EQ(interpreter_->Invoke(), kTfLiteOk);
-            return ::mediapipe::OkStatus();
-          }));
-#elif defined(__APPLE__) && !TARGET_OS_OSX  // iOS
-      RET_CHECK_EQ(interpreter_->Invoke(), kTfLiteOk);
-#endif
-    } else {
-      RET_CHECK_EQ(interpreter_->Invoke(), kTfLiteOk);
+      RET_CHECK(input_tensor->data.raw);
+      if (use_quantized_tensors_) {
+        const uint8* input_tensor_buffer = input_tensor->data.uint8;
+        uint8* local_tensor_buffer = interpreter_->typed_input_tensor<uint8>(i);
+        std::memcpy(local_tensor_buffer, input_tensor_buffer,
+                    input_tensor->bytes);
+      } else {
+        const float* input_tensor_buffer = input_tensor->data.f;
+        float* local_tensor_buffer = interpreter_->typed_input_tensor<float>(i);
+        std::memcpy(local_tensor_buffer, input_tensor_buffer,
+                    input_tensor->bytes);
+      }
     }
   }
 
+  // 2. Run inference.
+  if (gpu_inference_) {
+#if !defined(MEDIAPIPE_DISABLE_GL_COMPUTE)
+    MP_RETURN_IF_ERROR(
+        gpu_helper_.RunInGlContext([this]() -> ::mediapipe::Status {
+          RET_CHECK_EQ(interpreter_->Invoke(), kTfLiteOk);
+          return ::mediapipe::OkStatus();
+        }));
+#elif defined(MEDIAPIPE_IOS)
+    RET_CHECK_EQ(interpreter_->Invoke(), kTfLiteOk);
+#endif
+  } else {
+    RET_CHECK_EQ(interpreter_->Invoke(), kTfLiteOk);
+  }
+
+  // 3. Output processed tensors.
   if (gpu_output_) {
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GL_COMPUTE)
     // Output result tensors (GPU).
-    auto output_tensors = absl::make_unique<std::vector<GlBuffer>>();
+    auto output_tensors = absl::make_unique<std::vector<GpuTensor>>();
+    MP_RETURN_IF_ERROR(gpu_helper_.RunInGlContext(
+        [this, &output_tensors]() -> ::mediapipe::Status {
+          output_tensors->resize(gpu_data_out_.size());
+          for (int i = 0; i < gpu_data_out_.size(); ++i) {
+            GpuTensor& tensor = output_tensors->at(i);
+            RET_CHECK_CALL(CreateReadWriteShaderStorageBuffer<float>(
+                gpu_data_out_[i]->elements, &tensor));
+            RET_CHECK_CALL(CopyBuffer(gpu_data_out_[i]->buffer, tensor));
+          }
+          return ::mediapipe::OkStatus();
+        }));
+    cc->Outputs()
+        .Tag("TENSORS_GPU")
+        .Add(output_tensors.release(), cc->InputTimestamp());
+#elif defined(MEDIAPIPE_IOS)
+    // Output result tensors (GPU).
+    auto output_tensors = absl::make_unique<std::vector<GpuTensor>>();
     output_tensors->resize(gpu_data_out_.size());
+    id<MTLDevice> device = gpu_helper_.mtlDevice;
+    id<MTLCommandBuffer> command_buffer = [gpu_helper_ commandBuffer];
+    command_buffer.label = @"TfLiteInferenceBPHWC4Convert";
+    id<MTLComputeCommandEncoder> convert_command =
+        [command_buffer computeCommandEncoder];
     for (int i = 0; i < gpu_data_out_.size(); ++i) {
-      GlBuffer& tensor = output_tensors->at(i);
-      using ::tflite::gpu::gl::CreateReadWriteShaderStorageBuffer;
-      auto status = CreateReadWriteShaderStorageBuffer<float>(
-          gpu_data_out_[i]->elements, &tensor);
-      if (!status.ok()) {
-        return ::mediapipe::InternalError(status.error_message());
-      }
-      tflite::gpu::gl::CopyBuffer(gpu_data_out_[i]->ssbo, tensor);
+      output_tensors->at(i) =
+          [device newBufferWithLength:gpu_data_out_[i]->elements * sizeof(float)
+                              options:MTLResourceStorageModeShared];
+      // Reshape tensor.
+      [converter_from_BPHWC4_ convertWithEncoder:convert_command
+                                           shape:gpu_data_out_[i]->shape
+                                    sourceBuffer:gpu_data_out_[i]->buffer
+                                 convertedBuffer:output_tensors->at(i)];
     }
+    [convert_command endEncoding];
+    [command_buffer commit];
+    [command_buffer waitUntilCompleted];
     cc->Outputs()
         .Tag("TENSORS_GPU")
         .Add(output_tensors.release(), cc->InputTimestamp());
 #else
-    LOG(ERROR) << "GPU output on non-Android not supported yet.";
-#endif
+    RET_CHECK_FAIL() << "GPU processing not enabled.";
+#endif  //  !MEDIAPIPE_DISABLE_GPU
   } else {
     // Output result tensors (CPU).
     const auto& tensor_indexes = interpreter_->outputs();
@@ -315,19 +428,29 @@ REGISTER_CALCULATOR(TfLiteInferenceCalculator);
 
 ::mediapipe::Status TfLiteInferenceCalculator::Close(CalculatorContext* cc) {
   if (delegate_) {
-#if defined(__ANDROID__)
-    RETURN_IF_ERROR(gpu_helper_.RunInGlContext([this]() -> Status {
-      TfLiteGpuDelegateDelete(delegate_);
+    if (gpu_inference_) {
+#if !defined(MEDIAPIPE_DISABLE_GL_COMPUTE)
+      MP_RETURN_IF_ERROR(gpu_helper_.RunInGlContext([this]() -> Status {
+        TfLiteGpuDelegateDelete(delegate_);
+        gpu_data_in_.reset();
+        for (int i = 0; i < gpu_data_out_.size(); ++i) {
+          gpu_data_out_[i].reset();
+        }
+        return ::mediapipe::OkStatus();
+      }));
+#elif defined(MEDIAPIPE_IOS)
+      TFLGpuDelegateDelete(delegate_);
       gpu_data_in_.reset();
       for (int i = 0; i < gpu_data_out_.size(); ++i) {
         gpu_data_out_[i].reset();
       }
-      return ::mediapipe::OkStatus();
-    }));
-#elif defined(__APPLE__) && !TARGET_OS_OSX  // iOS
-    DeleteGpuDelegate(delegate_);
 #endif
+    }
+    delegate_ = nullptr;
   }
+#if defined(MEDIAPIPE_EDGE_TPU)
+  edgetpu_context_.reset();
+#endif
   return ::mediapipe::OkStatus();
 }
 
@@ -341,8 +464,9 @@ REGISTER_CALCULATOR(TfLiteInferenceCalculator);
 
   // Get model name.
   if (!options.model_path().empty()) {
-    ASSIGN_OR_RETURN(model_path_,
-                     mediapipe::PathToResourceAsFile(options.model_path()));
+    std::string model_path = options.model_path();
+
+    ASSIGN_OR_RETURN(model_path_, mediapipe::PathToResourceAsFile(model_path));
   } else {
     LOG(ERROR) << "Must specify path to TFLite model.";
     return ::mediapipe::Status(::mediapipe::StatusCode::kNotFound,
@@ -360,26 +484,33 @@ REGISTER_CALCULATOR(TfLiteInferenceCalculator);
   model_ = tflite::FlatBufferModel::BuildFromFile(model_path_.c_str());
   RET_CHECK(model_);
 
-#if !defined(__ANDROID__) && !(defined(__APPLE__) && !TARGET_OS_OSX)
-  LOG(WARNING) << "GPU only supported on mobile platforms. Using CPU fallback.";
-  gpu_inference_ = false;
-#endif
-
+  tflite::ops::builtin::BuiltinOpResolver op_resolver;
   if (cc->InputSidePackets().HasTag("CUSTOM_OP_RESOLVER")) {
-    const auto& op_resolver =
-        cc->InputSidePackets()
-            .Tag("CUSTOM_OP_RESOLVER")
-            .Get<tflite::ops::builtin::BuiltinOpResolver>();
-    tflite::InterpreterBuilder(*model_, op_resolver)(&interpreter_);
-  } else {
-    const tflite::ops::builtin::BuiltinOpResolver op_resolver;
-    tflite::InterpreterBuilder(*model_, op_resolver)(&interpreter_);
+    op_resolver = cc->InputSidePackets()
+                      .Tag("CUSTOM_OP_RESOLVER")
+                      .Get<tflite::ops::builtin::BuiltinOpResolver>();
   }
+#if defined(MEDIAPIPE_EDGE_TPU)
+  interpreter_ =
+      BuildEdgeTpuInterpreter(*model_, &op_resolver, edgetpu_context_.get());
+#else
+  tflite::InterpreterBuilder(*model_, op_resolver)(&interpreter_);
+#endif  // MEDIAPIPE_EDGE_TPU
 
   RET_CHECK(interpreter_);
 
-  if (!gpu_output_) {
+#if defined(__EMSCRIPTEN__)
+  interpreter_->SetNumThreads(1);
+#endif  // __EMSCRIPTEN__
+
+  if (gpu_output_) {
+    use_quantized_tensors_ = false;
+  } else {
     RET_CHECK_EQ(interpreter_->AllocateTensors(), kTfLiteOk);
+    use_quantized_tensors_ =
+        (interpreter_->tensor(interpreter_->inputs()[0])->quantization.type ==
+         kTfLiteAffineQuantization);
+    if (use_quantized_tensors_) gpu_inference_ = false;
   }
 
   return ::mediapipe::OkStatus();
@@ -387,24 +518,54 @@ REGISTER_CALCULATOR(TfLiteInferenceCalculator);
 
 ::mediapipe::Status TfLiteInferenceCalculator::LoadDelegate(
     CalculatorContext* cc) {
-#if defined(__ANDROID__)
-  // Get input image sizes.
+#if defined(MEDIAPIPE_ANDROID)
+  if (!gpu_inference_) {
+    if (cc->Options<mediapipe::TfLiteInferenceCalculatorOptions>()
+            .use_nnapi()) {
+      // Attempt to use NNAPI.
+      // If not supported, the default CPU delegate will be created and used.
+      interpreter_->SetAllowFp16PrecisionForFp32(1);
+      delegate_ = tflite::NnApiDelegate();
+      RET_CHECK_EQ(interpreter_->ModifyGraphWithDelegate(delegate_), kTfLiteOk);
+    }
+    // Return, no need for GPU delegate below.
+    return ::mediapipe::OkStatus();
+  }
+#endif  // ANDROID
+
+#if !defined(MEDIAPIPE_DISABLE_GL_COMPUTE)
+  // Configure and create the delegate.
+  TfLiteGpuDelegateOptions options = TfLiteGpuDelegateOptionsDefault();
+  options.compile_options.precision_loss_allowed = 1;
+  options.compile_options.preferred_gl_object_type =
+      TFLITE_GL_OBJECT_TYPE_FASTEST;
+  options.compile_options.dynamic_batch_enabled = 0;
+  options.compile_options.inline_parameters = 1;
+  if (!delegate_) delegate_ = TfLiteGpuDelegateCreate(&options);
+
   if (gpu_input_) {
+    // Get input image sizes.
     gpu_data_in_ = absl::make_unique<GPUData>();
     const auto& input_indices = interpreter_->inputs();
-    // TODO accept > 1.
-    RET_CHECK_EQ(input_indices.size(), 1);
+    RET_CHECK_EQ(input_indices.size(), 1);  // TODO accept > 1.
     const TfLiteTensor* tensor = interpreter_->tensor(input_indices[0]);
     gpu_data_in_->elements = 1;
     for (int d = 0; d < tensor->dims->size; ++d) {
       gpu_data_in_->elements *= tensor->dims->data[d];
     }
-    // Input to model can be either RGB/RGBA only.
-    RET_CHECK_GE(tensor->dims->data[3], 3);
-    RET_CHECK_LE(tensor->dims->data[3], 4);
+    CHECK_GE(tensor->dims->data[3], 1);
+    CHECK_LE(tensor->dims->data[3], 4);
+    CHECK_NE(tensor->dims->data[3], 2);
+    // Create and bind input buffer.
+    RET_CHECK_CALL(::tflite::gpu::gl::CreateReadWriteShaderStorageBuffer<float>(
+        gpu_data_in_->elements, &gpu_data_in_->buffer));
+    RET_CHECK_EQ(TfLiteGpuDelegateBindBufferToTensor(
+                     delegate_, gpu_data_in_->buffer.id(),
+                     interpreter_->inputs()[0]),  // First tensor only
+                 kTfLiteOk);
   }
-  // Get output image sizes.
   if (gpu_output_) {
+    // Get output image sizes.
     const auto& output_indices = interpreter_->outputs();
     gpu_data_out_.resize(output_indices.size());
     for (int i = 0; i < gpu_data_out_.size(); ++i) {
@@ -416,55 +577,114 @@ REGISTER_CALCULATOR(TfLiteInferenceCalculator);
         gpu_data_out_[i]->elements *= tensor->dims->data[d];
       }
     }
-  }
-  // Configure and create the delegate.
-  TfLiteGpuDelegateOptions options;
-  options.metadata = nullptr;
-  options.compile_options.precision_loss_allowed = 1;
-  options.compile_options.preferred_gl_object_type =
-      TFLITE_GL_OBJECT_TYPE_FASTEST;
-  options.compile_options.dynamic_batch_enabled = 0;
-  if (!delegate_) delegate_ = TfLiteGpuDelegateCreate(&options);
-  // Shader to convert GL texture to SSBO.
-  if (gpu_input_) {
-    auto status = ::tflite::gpu::gl::CreateReadWriteShaderStorageBuffer<float>(
-        gpu_data_in_->elements, &gpu_data_in_->ssbo);
-    if (!status.ok()) {
-      return ::mediapipe::InternalError(status.error_message());
-    }
-    RET_CHECK_EQ(TfLiteGpuDelegateBindBufferToTensor(
-                     delegate_, gpu_data_in_->ssbo.id(),
-                     interpreter_->inputs()[0]),  // First tensor only
-                 kTfLiteOk);
-  }
-  // Create output SSBO buffers.
-  if (gpu_output_) {
+    // Create and bind output buffers.
     interpreter_->SetAllowBufferHandleOutput(true);
-    const auto& output_indices = interpreter_->outputs();
     for (int i = 0; i < gpu_data_out_.size(); ++i) {
-      using ::tflite::gpu::gl::CreateReadWriteShaderStorageBuffer;
-      auto status = CreateReadWriteShaderStorageBuffer<float>(
-          gpu_data_out_[i]->elements, &gpu_data_out_[i]->ssbo);
-      if (!status.ok()) {
-        return ::mediapipe::InternalError(status.error_message());
-      }
+      RET_CHECK_CALL(CreateReadWriteShaderStorageBuffer<float>(
+          gpu_data_out_[i]->elements, &gpu_data_out_[i]->buffer));
       RET_CHECK_EQ(
           TfLiteGpuDelegateBindBufferToTensor(
-              delegate_, gpu_data_out_[i]->ssbo.id(), output_indices[i]),
+              delegate_, gpu_data_out_[i]->buffer.id(), output_indices[i]),
           kTfLiteOk);
     }
   }
+
   // Must call this last.
   RET_CHECK_EQ(interpreter_->ModifyGraphWithDelegate(delegate_), kTfLiteOk);
-  return ::mediapipe::OkStatus();
-#elif defined(__APPLE__) && !TARGET_OS_OSX  // iOS
-  GpuDelegateOptions options;
-  options.allow_precision_loss = 1;
-  options.wait_type = GpuDelegateOptions::WaitType::kPassive;
-  if (!delegate_) delegate_ = NewGpuDelegate(&options);
-  RET_CHECK_EQ(interpreter_->ModifyGraphWithDelegate(delegate_), kTfLiteOk);
-  return ::mediapipe::OkStatus();
-#endif                                      // ANDROID or iOS
+#endif  // OpenGL
+
+#if defined(MEDIAPIPE_IOS)
+  // Configure and create the delegate.
+  TFLGpuDelegateOptions options;
+  options.allow_precision_loss = false;  // Must match converter, F=float/T=half
+  options.wait_type = TFLGpuDelegateWaitType::TFLGpuDelegateWaitTypePassive;
+  if (!delegate_) delegate_ = TFLGpuDelegateCreate(&options);
+  id<MTLDevice> device = gpu_helper_.mtlDevice;
+
+  if (gpu_input_) {
+    // Get input image sizes.
+    gpu_data_in_ = absl::make_unique<GPUData>();
+    const auto& input_indices = interpreter_->inputs();
+    RET_CHECK_EQ(input_indices.size(), 1);
+    const TfLiteTensor* tensor = interpreter_->tensor(input_indices[0]);
+    gpu_data_in_->elements = 1;
+    // On iOS GPU, input must be 4 channels, regardless of what model expects.
+    {
+      gpu_data_in_->elements *= tensor->dims->data[0];  // batch
+      gpu_data_in_->elements *= tensor->dims->data[1];  // height
+      gpu_data_in_->elements *= tensor->dims->data[2];  // width
+      gpu_data_in_->elements *= 4;                      // channels
+    }
+    // Input to model can be RGBA only.
+    if (tensor->dims->data[3] != 4) {
+      LOG(WARNING) << "Please ensure input GPU tensor is 4 channels.";
+    }
+    // Create and bind input buffer.
+    gpu_data_in_->buffer =
+        [device newBufferWithLength:gpu_data_in_->elements * sizeof(float)
+                            options:MTLResourceStorageModeShared];
+    RET_CHECK_EQ(interpreter_->ModifyGraphWithDelegate(delegate_), kTfLiteOk);
+    RET_CHECK_EQ(TFLGpuDelegateBindMetalBufferToTensor(
+                     delegate_,
+                     input_indices[0],  // First tensor only
+                     gpu_data_in_->buffer),
+                 true);
+  }
+  if (gpu_output_) {
+    // Get output image sizes.
+    const auto& output_indices = interpreter_->outputs();
+    gpu_data_out_.resize(output_indices.size());
+    for (int i = 0; i < gpu_data_out_.size(); ++i) {
+      const TfLiteTensor* tensor = interpreter_->tensor(output_indices[i]);
+      gpu_data_out_[i] = absl::make_unique<GPUData>();
+      gpu_data_out_[i]->elements = 1;
+      // TODO handle *2 properly on some dialated models
+      for (int d = 0; d < tensor->dims->size; ++d) {
+        // Pad each dim for BHWC4 conversion inside delegate.
+        gpu_data_out_[i]->elements *= RoundUp(tensor->dims->data[d], 4);
+      }
+      // Save dimensions for reshaping back later.
+      gpu_data_out_[i]->shape.b = tensor->dims->data[0];
+      switch (tensor->dims->size) {
+        case 2:
+          gpu_data_out_[i]->shape.h = 1;
+          gpu_data_out_[i]->shape.w = 1;
+          gpu_data_out_[i]->shape.c = tensor->dims->data[1];
+          break;
+        case 3:
+          gpu_data_out_[i]->shape.h = 1;
+          gpu_data_out_[i]->shape.w = tensor->dims->data[1];
+          gpu_data_out_[i]->shape.c = tensor->dims->data[2];
+          break;
+        case 4:
+          gpu_data_out_[i]->shape.h = tensor->dims->data[1];
+          gpu_data_out_[i]->shape.w = tensor->dims->data[2];
+          gpu_data_out_[i]->shape.c = tensor->dims->data[3];
+          break;
+        default:
+          return mediapipe::InternalError("Unsupported tensor shape.");
+      }
+    }
+    // Create and bind output buffers.
+    interpreter_->SetAllowBufferHandleOutput(true);
+    for (int i = 0; i < gpu_data_out_.size(); ++i) {
+      gpu_data_out_[i]->buffer =
+          [device newBufferWithLength:gpu_data_out_[i]->elements * sizeof(float)
+                              options:MTLResourceStorageModeShared];
+      RET_CHECK_EQ(TFLGpuDelegateBindMetalBufferToTensor(
+                       delegate_, output_indices[i], gpu_data_out_[i]->buffer),
+                   true);
+    }
+    // Create converter for GPU output.
+    converter_from_BPHWC4_ = [[TFLBufferConvert alloc] initWithDevice:device
+                                                            isFloat16:false
+                                                      convertToPBHWC4:false];
+    if (converter_from_BPHWC4_ == nil) {
+      return mediapipe::InternalError(
+          "Error initializating output buffer converter");
+    }
+  }
+#endif  // iOS
 
   return ::mediapipe::OkStatus();
 }

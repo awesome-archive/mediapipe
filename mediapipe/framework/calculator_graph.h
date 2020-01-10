@@ -23,13 +23,13 @@
 #include <map>
 #include <memory>
 #include <string>
-#include <unordered_map>
-#include <unordered_set>
 #include <utility>
 #include <vector>
 
 #include "absl/base/macros.h"
 #include "absl/container/fixed_array.h"
+#include "absl/container/flat_hash_map.h"
+#include "absl/container/flat_hash_set.h"
 #include "absl/synchronization/mutex.h"
 #include "mediapipe/framework/calculator.pb.h"
 #include "mediapipe/framework/calculator_base.h"
@@ -56,7 +56,7 @@
 #ifndef MEDIAPIPE_DISABLE_GPU
 namespace mediapipe {
 class GpuResources;
-class GpuSharedData;
+struct GpuSharedData;
 }  // namespace mediapipe
 #endif  // !defined(MEDIAPIPE_DISABLE_GPU)
 
@@ -77,17 +77,17 @@ typedef ::mediapipe::StatusOr<OutputStreamPoller> StatusOrPoller;
 //   #include "mediapipe/framework/calculator_framework.h"
 //
 //   mediapipe::CalculatorGraphConfig config;
-//   RETURN_IF_ERROR(mediapipe::tool::ParseGraphFromString(THE_CONFIG,
+//   MP_RETURN_IF_ERROR(mediapipe::tool::ParseGraphFromString(kGraphStr,
 //   &config)); mediapipe::CalculatorGraph graph;
-//   RETURN_IF_ERROR(graph.Initialize(config));
+//   MP_RETURN_IF_ERROR(graph.Initialize(config));
 //
 //   std::map<std::string, mediapipe::Packet> extra_side_packets;
 //   extra_side_packets["video_id"] = mediapipe::MakePacket<std::string>(
 //       "3edb9503834e9b42");
-//   RETURN_IF_ERROR(graph.Run(extra_side_packets));
+//   MP_RETURN_IF_ERROR(graph.Run(extra_side_packets));
 //
 //   // Run again (demonstrating the more concise initializer list syntax).
-//   RETURN_IF_ERROR(graph.Run(
+//   MP_RETURN_IF_ERROR(graph.Run(
 //       {{"video_id", mediapipe::MakePacket<std::string>("Ex-uGhDzue4")}}));
 //   // See mediapipe/framework/graph_runner.h for an interface
 //   // to insert and extract packets from a graph as it runs.
@@ -135,7 +135,7 @@ class CalculatorGraph {
   // |input_templates|.  Every subgraph must have its graph type specified in
   // CalclatorGraphConfig.type.  A subgraph can be instantiated directly by
   // specifying its type in |graph_type|.  A template graph can be instantiated
-  // directly by specifying its template arguments in |arguments|.
+  // directly by specifying its template arguments in |options|.
   ::mediapipe::Status Initialize(
       const std::vector<CalculatorGraphConfig>& configs,
       const std::vector<CalculatorGraphTemplate>& templates,
@@ -186,15 +186,15 @@ class CalculatorGraph {
   // subsequent call to StartRun can be attempted.
   //
   // Example:
-  //   RETURN_IF_ERROR(graph.StartRun(...));
+  //   MP_RETURN_IF_ERROR(graph.StartRun(...));
   //   while (true) {
   //     if (graph.HasError() || want_to_stop) break;
-  //     RETURN_IF_ERROR(graph.AddPacketToInputStream(...));
+  //     MP_RETURN_IF_ERROR(graph.AddPacketToInputStream(...));
   //   }
   //   for (const std::string& stream : streams) {
-  //     RETURN_IF_ERROR(graph.CloseInputStream(stream));
+  //     MP_RETURN_IF_ERROR(graph.CloseInputStream(stream));
   //   }
-  //   RETURN_IF_ERROR(graph.WaitUntilDone());
+  //   MP_RETURN_IF_ERROR(graph.WaitUntilDone());
   ::mediapipe::Status StartRun(
       const std::map<std::string, Packet>& extra_side_packets) {
     return StartRun(extra_side_packets, {});
@@ -579,18 +579,18 @@ class CalculatorGraph {
   // A node is scheduled only if this set is empty.  Similarly, a packet
   // is added to a graph input stream only if this set is empty.
   // Note that this vector contains an unused entry for each non-source node.
-  std::vector<std::unordered_set<InputStreamManager*>> full_input_streams_
+  std::vector<absl::flat_hash_set<InputStreamManager*>> full_input_streams_
       GUARDED_BY(full_input_streams_mutex_);
 
   // Maps stream names to graph input stream objects.
-  std::unordered_map<std::string, std::unique_ptr<GraphInputStream>>
+  absl::flat_hash_map<std::string, std::unique_ptr<GraphInputStream>>
       graph_input_streams_;
 
   // Maps graph input streams to their virtual node ids.
-  std::unordered_map<std::string, int> graph_input_stream_node_ids_;
+  absl::flat_hash_map<std::string, int> graph_input_stream_node_ids_;
 
   // Maps graph input streams to their max queue size.
-  std::unordered_map<std::string, int> graph_input_stream_max_queue_size_;
+  absl::flat_hash_map<std::string, int> graph_input_stream_max_queue_size_;
 
   // The factory for making counters associated with this graph.
   std::unique_ptr<CounterFactory> counter_factory_;

@@ -73,11 +73,13 @@ class SsdAnchorsCalculator : public CalculatorBase {
   }
 
   ::mediapipe::Status Open(CalculatorContext* cc) override {
+    cc->SetOffset(TimestampDiff(0));
+
     const SsdAnchorsCalculatorOptions& options =
         cc->Options<SsdAnchorsCalculatorOptions>();
 
     auto anchors = absl::make_unique<std::vector<Anchor>>();
-    RETURN_IF_ERROR(GenerateAnchors(anchors.get(), options));
+    MP_RETURN_IF_ERROR(GenerateAnchors(anchors.get(), options));
     cc->OutputSidePackets().Index(0).Set(Adopt(anchors.release()));
     return ::mediapipe::OkStatus();
   }

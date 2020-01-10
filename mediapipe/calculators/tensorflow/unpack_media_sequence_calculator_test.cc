@@ -23,6 +23,7 @@
 #include "mediapipe/framework/port/gtest.h"
 #include "mediapipe/framework/port/rectangle.h"
 #include "mediapipe/framework/port/status_matchers.h"
+#include "mediapipe/util/audio_decoder.pb.h"
 #include "mediapipe/util/sequence/media_sequence.h"
 #include "tensorflow/core/example/example.pb.h"
 
@@ -97,7 +98,7 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksOneImage) {
   runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
       Adopt(input_sequence.release());
 
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
   const std::vector<Packet>& output_packets =
       runner_->Outputs().Tag("IMAGE").packets;
@@ -126,7 +127,7 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksTwoImages) {
   runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
       Adopt(input_sequence.release());
 
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
   const std::vector<Packet>& output_packets =
       runner_->Outputs().Tag("IMAGE").packets;
@@ -156,7 +157,7 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksTwoPrefixedImages) {
   runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
       Adopt(input_sequence.release());
 
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
   const std::vector<Packet>& output_packets =
       runner_->Outputs().Tag("IMAGE_PREFIX").packets;
@@ -183,7 +184,7 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksOneForwardFlowImage) {
 
   runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
       Adopt(input_sequence.release());
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
   const std::vector<Packet>& output_packets =
       runner_->Outputs().Tag("FORWARD_FLOW_ENCODED").packets;
@@ -212,7 +213,7 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksTwoForwardFlowImages) {
 
   runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
       Adopt(input_sequence.release());
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
   const std::vector<Packet>& output_packets =
       runner_->Outputs().Tag("FORWARD_FLOW_ENCODED").packets;
@@ -242,7 +243,7 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksBBoxes) {
   runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
       Adopt(input_sequence.release());
 
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
   const std::vector<Packet>& output_packets =
       runner_->Outputs().Tag("BBOX").packets;
@@ -276,7 +277,7 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksPrefixedBBoxes) {
   runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
       Adopt(input_sequence.release());
 
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
   const std::vector<Packet>& output_packets =
       runner_->Outputs().Tag("BBOX_PREFIX").packets;
@@ -308,7 +309,7 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksTwoFloatLists) {
   runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
       Adopt(input_sequence.release());
 
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
   const std::vector<Packet>& output_packets =
       runner_->Outputs().Tag("FLOAT_FEATURE_TEST").packets;
@@ -353,7 +354,7 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksNonOverlappingTimestamps) {
 
   runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
       Adopt(input_sequence.release());
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
   const std::vector<Packet>& output_packets =
       runner_->Outputs().Tag("IMAGE").packets;
@@ -390,7 +391,7 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksTwoPostStreamFloatLists) {
 
   runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
       Adopt(input_sequence.release());
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
   const std::vector<Packet>& fdense_avg_packets =
       runner_->Outputs().Tag("FLOAT_FEATURE_FDENSE_AVG").packets;
@@ -419,11 +420,11 @@ TEST_F(UnpackMediaSequenceCalculatorTest, GetDatasetFromPacket) {
 
   std::string root = "test_root";
   runner_->MutableSidePackets()->Tag("DATASET_ROOT") = PointToForeign(&root);
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
-  MEDIAPIPE_ASSERT_OK(runner_->OutputSidePackets()
-                          .Tag("DATA_PATH")
-                          .ValidateAsType<std::string>());
+  MP_ASSERT_OK(runner_->OutputSidePackets()
+                   .Tag("DATA_PATH")
+                   .ValidateAsType<std::string>());
   ASSERT_EQ(runner_->OutputSidePackets().Tag("DATA_PATH").Get<std::string>(),
             root + "/" + data_path_);
 }
@@ -437,11 +438,11 @@ TEST_F(UnpackMediaSequenceCalculatorTest, GetDatasetFromOptions) {
   runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
       Adopt(sequence_.release());
 
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
-  MEDIAPIPE_ASSERT_OK(runner_->OutputSidePackets()
-                          .Tag("DATA_PATH")
-                          .ValidateAsType<std::string>());
+  MP_ASSERT_OK(runner_->OutputSidePackets()
+                   .Tag("DATA_PATH")
+                   .ValidateAsType<std::string>());
   ASSERT_EQ(runner_->OutputSidePackets().Tag("DATA_PATH").Get<std::string>(),
             root + "/" + data_path_);
 }
@@ -450,16 +451,74 @@ TEST_F(UnpackMediaSequenceCalculatorTest, GetDatasetFromExample) {
   SetUpCalculator({}, {"DATA_PATH:data_path"});
   runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
       Adopt(sequence_.release());
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
-  MEDIAPIPE_ASSERT_OK(runner_->OutputSidePackets()
-                          .Tag("DATA_PATH")
-                          .ValidateAsType<std::string>());
+  MP_ASSERT_OK(runner_->OutputSidePackets()
+                   .Tag("DATA_PATH")
+                   .ValidateAsType<std::string>());
   ASSERT_EQ(runner_->OutputSidePackets().Tag("DATA_PATH").Get<std::string>(),
             data_path_);
 }
 
+TEST_F(UnpackMediaSequenceCalculatorTest, GetAudioDecoderOptions) {
+  CalculatorOptions options;
+  options.MutableExtension(UnpackMediaSequenceCalculatorOptions::ext)
+      ->set_padding_before_label(1);
+  options.MutableExtension(UnpackMediaSequenceCalculatorOptions::ext)
+      ->set_padding_after_label(2);
+  SetUpCalculator({}, {"AUDIO_DECODER_OPTIONS:audio_decoder_options"}, {},
+                  &options);
+  runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
+      Adopt(sequence_.release());
+  MP_ASSERT_OK(runner_->Run());
+
+  MP_EXPECT_OK(runner_->OutputSidePackets()
+                   .Tag("AUDIO_DECODER_OPTIONS")
+                   .ValidateAsType<AudioDecoderOptions>());
+  EXPECT_NEAR(runner_->OutputSidePackets()
+                  .Tag("AUDIO_DECODER_OPTIONS")
+                  .Get<AudioDecoderOptions>()
+                  .start_time(),
+              2.0, 1e-5);
+  EXPECT_NEAR(runner_->OutputSidePackets()
+                  .Tag("AUDIO_DECODER_OPTIONS")
+                  .Get<AudioDecoderOptions>()
+                  .end_time(),
+              7.0, 1e-5);
+}
+
+TEST_F(UnpackMediaSequenceCalculatorTest, GetAudioDecoderOptionsOverride) {
+  CalculatorOptions options;
+  options.MutableExtension(UnpackMediaSequenceCalculatorOptions::ext)
+      ->set_padding_before_label(1);
+  options.MutableExtension(UnpackMediaSequenceCalculatorOptions::ext)
+      ->set_padding_after_label(2);
+  options.MutableExtension(UnpackMediaSequenceCalculatorOptions::ext)
+      ->set_force_decoding_from_start_of_media(true);
+  SetUpCalculator({}, {"AUDIO_DECODER_OPTIONS:audio_decoder_options"}, {},
+                  &options);
+  runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
+      Adopt(sequence_.release());
+  MP_ASSERT_OK(runner_->Run());
+
+  MP_EXPECT_OK(runner_->OutputSidePackets()
+                   .Tag("AUDIO_DECODER_OPTIONS")
+                   .ValidateAsType<AudioDecoderOptions>());
+  EXPECT_NEAR(runner_->OutputSidePackets()
+                  .Tag("AUDIO_DECODER_OPTIONS")
+                  .Get<AudioDecoderOptions>()
+                  .start_time(),
+              0.0, 1e-5);
+  EXPECT_NEAR(runner_->OutputSidePackets()
+                  .Tag("AUDIO_DECODER_OPTIONS")
+                  .Get<AudioDecoderOptions>()
+                  .end_time(),
+              7.0, 1e-5);
+}
+
 TEST_F(UnpackMediaSequenceCalculatorTest, GetPacketResamplingOptions) {
+  // TODO: Suport proto3 proto.Any in CalculatorOptions.
+  // TODO: Avoid proto2 extensions in "RESAMPLER_OPTIONS".
   CalculatorOptions options;
   options.MutableExtension(UnpackMediaSequenceCalculatorOptions::ext)
       ->set_padding_before_label(1);
@@ -471,11 +530,11 @@ TEST_F(UnpackMediaSequenceCalculatorTest, GetPacketResamplingOptions) {
   SetUpCalculator({}, {"RESAMPLER_OPTIONS:resampler_options"}, {}, &options);
   runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
       Adopt(sequence_.release());
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
-  MEDIAPIPE_EXPECT_OK(runner_->OutputSidePackets()
-                          .Tag("RESAMPLER_OPTIONS")
-                          .ValidateAsType<CalculatorOptions>());
+  MP_EXPECT_OK(runner_->OutputSidePackets()
+                   .Tag("RESAMPLER_OPTIONS")
+                   .ValidateAsType<CalculatorOptions>());
   EXPECT_NEAR(runner_->OutputSidePackets()
                   .Tag("RESAMPLER_OPTIONS")
                   .Get<CalculatorOptions>()
@@ -500,10 +559,10 @@ TEST_F(UnpackMediaSequenceCalculatorTest, GetFrameRateFromExample) {
   SetUpCalculator({}, {"IMAGE_FRAME_RATE:frame_rate"});
   runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
       Adopt(sequence_.release());
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
-  MEDIAPIPE_EXPECT_OK(runner_->OutputSidePackets()
-                          .Tag("IMAGE_FRAME_RATE")
-                          .ValidateAsType<double>());
+  MP_ASSERT_OK(runner_->Run());
+  MP_EXPECT_OK(runner_->OutputSidePackets()
+                   .Tag("IMAGE_FRAME_RATE")
+                   .ValidateAsType<double>());
   EXPECT_EQ(runner_->OutputSidePackets().Tag("IMAGE_FRAME_RATE").Get<double>(),
             image_frame_rate_);
 }

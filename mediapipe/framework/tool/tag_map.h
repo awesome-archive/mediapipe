@@ -56,7 +56,7 @@ class TagMap {
   static ::mediapipe::StatusOr<std::shared_ptr<TagMap>> Create(
       const proto_ns::RepeatedPtrField<ProtoString>& tag_index_names) {
     std::shared_ptr<TagMap> output(new TagMap());
-    RETURN_IF_ERROR(output->Initialize(tag_index_names));
+    MP_RETURN_IF_ERROR(output->Initialize(tag_index_names));
     return std::move(output);
   }
 
@@ -67,7 +67,7 @@ class TagMap {
   static ::mediapipe::StatusOr<std::shared_ptr<TagMap>> Create(
       const TagAndNameInfo& info) {
     std::shared_ptr<TagMap> output(new TagMap());
-    RETURN_IF_ERROR(output->Initialize(info));
+    MP_RETURN_IF_ERROR(output->Initialize(info));
     return std::move(output);
   }
 
@@ -126,6 +126,11 @@ class TagMap {
   // The names of the data (indexed by CollectionItemId).
   std::vector<std::string> names_;
 };
+
+// Equal TagData structs define equal id ranges.
+inline bool operator==(const TagMap::TagData& d1, const TagMap::TagData& d2) {
+  return d1.id == d2.id && d1.count == d2.count;
+}
 
 }  // namespace tool
 }  // namespace mediapipe

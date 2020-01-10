@@ -41,7 +41,7 @@ When the library for a calculator is linked into an application binary, the
 calculator is automatically registered by name through the
 [`REGISTER_CALCULATOR`] macro using the [`registration.h`] library. Note that
 [`REGISTER_CALCULATOR`] can register a calculator with a namespace prefix,
-identical to its C++ namespace. In this case, the calcultor graph must also use
+identical to its C++ namespace. In this case, the calculator graph must also use
 the same namespace prefix.
 
 ## Out Of Memory error
@@ -55,7 +55,7 @@ running MediaPipe graph. This can occur for a number of reasons, such as:
 
 For problem (1), it may be necessary to drop some old packets in older to
 process the more recent packets. For some hints, see:
-[How to process realtime input streams](how_to_questions.md#how-to-process-realtime-input-streams)
+[How to process realtime input streams](how_to_questions.md).
 
 For problem (2), it could be that one input stream is lacking packets for some
 reason. A device or a calculator may be misconfigured or may produce packets
@@ -63,7 +63,7 @@ only sporadically. This can cause downstream calculators to wait for many
 packets that will never arrive, which in turn causes packets to accumulate on
 some of their input streams. MediaPipe addresses this sort of problem using
 "timestamp bounds". For some hints see:
-[How to process realtime input streams](how_to_questions.md#how-to-process-realtime-input-streams)
+[How to process realtime input streams](how_to_questions.md).
 
 The MediaPipe setting [`CalculatorGraphConfig::max_queue_size`] limits the
 number of packets enqueued on any input stream by throttling inputs to the
@@ -128,8 +128,8 @@ If some of the calculators in the graph cannot keep pace with the realtime input
 streams, then latency will continue to increase, and it becomes necessary to
 drop some input packets. The recommended technique is to use the MediaPipe
 calculators designed specifically for this purpose such as
-[`RealTimeFlowLimiterCalculator`] as described in
-[How to process realtime input streams](how_to_questions.md#how-to-process-realtime-input-streams).
+[`FlowLimiterCalculator`] as described in
+[How to process realtime input streams](how_to_questions.md).
 
 [`CalculatorGraphConfig`]: https://github.com/google/mediapipe/tree/master/mediapipe/framework/calculator.proto
 [`CalculatorGraphConfig::max_queue_size`]: https://github.com/google/mediapipe/tree/master/mediapipe/framework/calculator.proto
@@ -141,4 +141,4 @@ calculators designed specifically for this purpose such as
 [`CalculatorGraph::WaitUntilDone`]: https://github.com/google/mediapipe/tree/master/mediapipe/framework/calculator_graph.h
 [`Timestamp::Done`]: https://github.com/google/mediapipe/tree/master/mediapipe/framework/timestamp.h
 [`CalculatorBase::Close`]: https://github.com/google/mediapipe/tree/master/mediapipe/framework/calculator_base.h
-[`RealTimeFlowLimiterCalculator`]: https://github.com/google/mediapipe/tree/master/mediapipe/calculators/core/real_time_flow_limiter_calculator.cc
+[`FlowLimiterCalculator`]: https://github.com/google/mediapipe/tree/master/mediapipe/calculators/core/flow_limiter_calculator.cc

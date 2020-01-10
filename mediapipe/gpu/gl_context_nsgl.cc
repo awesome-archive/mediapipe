@@ -39,8 +39,8 @@ GlContext::StatusOrGlContext GlContext::Create(const GlContext& share_context,
 GlContext::StatusOrGlContext GlContext::Create(NSOpenGLContext* share_context,
                                                bool create_thread) {
   std::shared_ptr<GlContext> context(new GlContext());
-  RETURN_IF_ERROR(context->CreateContext(share_context));
-  RETURN_IF_ERROR(context->FinishInitialization(create_thread));
+  MP_RETURN_IF_ERROR(context->CreateContext(share_context));
+  MP_RETURN_IF_ERROR(context->FinishInitialization(create_thread));
   return std::move(context);
 }
 
@@ -102,7 +102,14 @@ GlContext::StatusOrGlContext GlContext::Create(NSOpenGLContext* share_context,
   return ::mediapipe::OkStatus();
 }
 
-void GlContext::DestroyContext() {}
+void GlContext::DestroyContext() {
+  if (*texture_cache_) {
+    // The texture cache must be flushed on tear down, otherwise we potentially
+    // leak pixel buffers whose textures have pending GL operations after the
+    // CVOpenGLTextureRef is released in GlTexture::Release.
+    CVOpenGLTextureCacheFlush(*texture_cache_, 0);
+  }
+}
 
 GlContext::ContextBinding GlContext::ThisContextBinding() {
   GlContext::ContextBinding result;

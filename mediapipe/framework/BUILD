@@ -14,12 +14,11 @@
 # limitations under the License.
 #
 
+load("//mediapipe/framework/port:build_config.bzl", "mediapipe_cc_proto_library", "mediapipe_py_proto_library")
+
 licenses(["notice"])  # Apache 2.0
 
 package(default_visibility = ["//visibility:private"])
-
-load("//mediapipe/framework/port:build_config.bzl", "mediapipe_cc_proto_library")
-load("//mediapipe/framework/port:build_config.bzl", "mediapipe_py_proto_library")
 
 package_group(
     name = "mediapipe_internal",
@@ -45,14 +44,14 @@ proto_library(
         "//mediapipe/framework:packet_generator_proto",
         "//mediapipe/framework:status_handler_proto",
         "//mediapipe/framework:stream_handler_proto",
-        "@protobuf_archive//:any_proto",
+        "@com_google_protobuf//:any_proto",
     ],
 )
 
 proto_library(
     name = "calculator_options_proto",
     srcs = ["calculator_options.proto"],
-    visibility = ["//mediapipe/framework:__subpackages__"],
+    visibility = ["//visibility:public"],
 )
 
 proto_library(
@@ -87,7 +86,6 @@ proto_library(
     srcs = ["packet_generator.proto"],
     visibility = [
         "//mediapipe:__subpackages__",
-        "//mediapipe/packet_generator:__pkg__",
     ],
 )
 
@@ -137,9 +135,9 @@ mediapipe_cc_proto_library(
         ":packet_generator_cc_proto",
         ":status_handler_cc_proto",
         ":stream_handler_cc_proto",
-        "@protobuf_archive//:cc_wkt_protos",
+        "@com_google_protobuf//:cc_wkt_protos",
     ],
-    visibility = ["//mediapipe:__subpackages__"],
+    visibility = ["//visibility:public"],
     deps = [":calculator_proto"],
 )
 
@@ -155,7 +153,7 @@ mediapipe_cc_proto_library(
 mediapipe_cc_proto_library(
     name = "calculator_options_cc_proto",
     srcs = ["calculator_options.proto"],
-    visibility = ["//mediapipe:__subpackages__"],
+    visibility = ["//visibility:public"],
     deps = [":calculator_options_proto"],
 )
 
@@ -187,7 +185,9 @@ mediapipe_cc_proto_library(
 mediapipe_cc_proto_library(
     name = "packet_generator_cc_proto",
     srcs = ["packet_generator.proto"],
-    visibility = ["//mediapipe:__subpackages__"],
+    visibility = [
+        "//mediapipe:__subpackages__",
+    ],
     deps = [":packet_generator_proto"],
 )
 
@@ -220,7 +220,7 @@ mediapipe_cc_proto_library(
     testonly = 1,
     srcs = ["test_calculators.proto"],
     cc_deps = [":calculator_cc_proto"],
-    visibility = ["//mediapipe/framework:__subpackages__"],
+    visibility = ["//visibility:public"],
     deps = [":test_calculators_proto"],
 )
 
@@ -463,6 +463,8 @@ cc_library(
         "//mediapipe/framework:packet_generator_cc_proto",
         "//mediapipe/framework:status_handler_cc_proto",
         "//mediapipe/framework:thread_pool_executor_cc_proto",
+        "@com_google_absl//absl/container:flat_hash_map",
+        "@com_google_absl//absl/container:flat_hash_set",
         "//mediapipe/gpu:graph_support",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/container:fixed_array",
@@ -687,6 +689,12 @@ cc_library(
 cc_library(
     name = "demangle",
     hdrs = ["demangle.h"],
+    defines = select({
+        "//mediapipe/framework/profiler:android_release": [
+            "MEDIAPIPE_HAS_CXA_DEMANGLE=0",
+        ],
+        "//conditions:default": [],
+    }),
     visibility = ["//visibility:public"],
 )
 
@@ -1083,6 +1091,12 @@ cc_library(
         "scheduler_queue.h",
         "scheduler_shared.h",
     ],
+    copts = select({
+        "//conditions:default": [],
+        "//mediapipe:apple": [
+            "-ObjC++",
+        ],
+    }),
     visibility = [":mediapipe_internal"],
     deps = [
         ":calculator_context",
@@ -1127,6 +1141,7 @@ cc_library(
         "//mediapipe/framework/port:status",
         "//mediapipe/framework/port:statusor",
         "//mediapipe/framework/tool:calculator_graph_template_cc_proto",
+        "//mediapipe/framework/tool:options_util",
         "//mediapipe/framework/tool:template_expander",
         "@com_google_absl//absl/base:core_headers",
         "@com_google_absl//absl/memory",
@@ -1258,6 +1273,7 @@ cc_library(
         "//mediapipe/framework/tool:validate",
         "//mediapipe/framework/tool:validate_name",
         "@com_google_absl//absl/base:core_headers",
+        "@com_google_absl//absl/container:flat_hash_set",
         "@com_google_absl//absl/memory",
         "@com_google_absl//absl/strings",
     ],
@@ -1483,6 +1499,62 @@ cc_test(
 )
 
 cc_test(
+    name = "calculator_graph_bounds_test",
+    size = "small",
+    srcs = [
+        "calculator_graph_bounds_test.cc",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":calculator_context",
+        ":calculator_framework",
+        ":test_calculators",
+        ":thread_pool_executor",
+        ":timestamp",
+        ":type_map",
+        "//mediapipe/calculators/core:counting_source_calculator",
+        "//mediapipe/calculators/core:mux_calculator",
+        "//mediapipe/calculators/core:pass_through_calculator",
+        "//mediapipe/framework/port:gtest_main",
+        "//mediapipe/framework/port:logging",
+        "//mediapipe/framework/port:parse_text_proto",
+        "//mediapipe/framework/port:status",
+        "//mediapipe/framework/stream_handler:barrier_input_stream_handler",
+        "//mediapipe/framework/stream_handler:early_close_input_stream_handler",
+        "//mediapipe/framework/stream_handler:fixed_size_input_stream_handler",
+        "//mediapipe/framework/stream_handler:immediate_input_stream_handler",
+        "//mediapipe/framework/stream_handler:mux_input_stream_handler",
+        "//mediapipe/framework/stream_handler:sync_set_input_stream_handler",
+        "//mediapipe/framework/tool:sink",
+        "@com_google_absl//absl/strings",
+    ],
+)
+
+cc_test(
+    name = "calculator_graph_side_packet_test",
+    size = "small",
+    srcs = [
+        "calculator_graph_side_packet_test.cc",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":calculator_framework",
+        ":test_calculators",
+        "//mediapipe/calculators/core:counting_source_calculator",
+        "//mediapipe/calculators/core:mux_calculator",
+        "//mediapipe/calculators/core:pass_through_calculator",
+        "//mediapipe/framework:calculator_cc_proto",
+        "//mediapipe/framework/port:gtest_main",
+        "//mediapipe/framework/port:logging",
+        "//mediapipe/framework/port:parse_text_proto",
+        "//mediapipe/framework/port:ret_check",
+        "//mediapipe/framework/port:status",
+        "//mediapipe/framework/tool:sink",
+        "@com_google_absl//absl/time",
+    ],
+)
+
+cc_test(
     name = "collection_test",
     size = "small",
     srcs = ["collection_test.cc"],
@@ -1635,4 +1707,26 @@ cc_test(
         "//mediapipe/framework/port:parse_text_proto",
         "//mediapipe/framework/tool:template_parser",
     ],
+)
+
+cc_test(
+    name = "subgraph_test",
+    srcs = ["subgraph_test.cc"],
+    deps = [
+        ":calculator_framework",
+        ":subgraph",
+        ":test_calculators",
+        "//mediapipe/calculators/core:pass_through_calculator",
+        "//mediapipe/framework/port:gtest_main",
+        "//mediapipe/framework/port:status",
+        "//mediapipe/framework/tool:sink",
+        "//mediapipe/framework/tool/testdata:dub_quad_test_subgraph",
+    ],
+)
+
+# Expose the proto source files for building mediapipe AAR.
+filegroup(
+    name = "protos_src",
+    srcs = glob(["*.proto"]),
+    visibility = ["//mediapipe:__subpackages__"],
 )

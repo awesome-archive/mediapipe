@@ -46,12 +46,6 @@ class Packet;
 namespace packet_internal {
 class HolderBase;
 
-// Defined in packet_serialization.cc
-// TODO Remove once friend statements are unneeded.
-::mediapipe::StatusOr<std::string> SerializePacket(const Packet& packet);
-::mediapipe::StatusOr<std::string> SerializePacketContents(
-    const Packet& packet);
-
 Packet Create(HolderBase* holder);
 Packet Create(HolderBase* holder, Timestamp timestamp);
 const HolderBase* GetHolder(const Packet& packet);
@@ -69,9 +63,6 @@ const HolderBase* GetHolder(const Packet& packet);
 // The Packet typically owns the object that it contains, but
 // PointToForeign allows a Packet to be constructed which does not
 // own it's data.
-//
-// See packet_serialization.h for helper functions to serialize and
-// deserialize packets.
 //
 // This class is thread compatible.
 class Packet {
@@ -94,7 +85,7 @@ class Packet {
   // given timestamp. Does not modify *this.
   Packet At(class Timestamp timestamp) const&;
 
-  // The rvalue reference overload of Packet's memeber function
+  // The rvalue reference overload of Packet's member function
   // Packet::At(class Timestamp). Moves *this to a new Packet and returns
   // the new Packet with the given timestamp.
   Packet At(class Timestamp timestamp) &&;
@@ -128,18 +119,18 @@ class Packet {
   // responsible for ensuring that no other thread is doing anything
   // with the Packet.
   // Example usage:
-  //   ASSIGN_OR_RETURN(std::unique_ptr<ImageFrame> frame,
-  //                    p.ConsumeOrCopy<ImageFrame>());
+  //   ASSIGN_OR_RETURN(std::unique_ptr<Detection> detection,
+  //                    p.ConsumeOrCopy<Detection>());
   //   // The unique_ptr type can be omitted with auto.
-  //   ASSIGN_OR_RETURN(auto frame, p.ConsumeOrCopy<ImageFrame>());
+  //   ASSIGN_OR_RETURN(auto detection, p.ConsumeOrCopy<Detection>());
   //   If you would like to crash on failure (prefer ASSIGN_OR_RETURN):
-  //   auto frame = p.ConsumeOrCopy<ImageFrame>().ValueOrDie();
+  //   auto detection = p.ConsumeOrCopy<Detection>().ValueOrDie();
   //   // In functions which do not return ::mediapipe::Status use an adaptor
   //   // function as the third argument to ASSIGN_OR_RETURN.  In tests,
   //   // use an adaptor which returns void.
-  //   ASSIGN_OR_RETURN(auto frame, p.ConsumeOrCopy<ImageFrame>(),
+  //   ASSIGN_OR_RETURN(auto detection, p.ConsumeOrCopy<Detection>(),
   //                    _.With([](const ::mediapipe::Status& status) {
-  //                      EXPECT_OK(status);
+  //                      MP_EXPECT_OK(status);
   //                      // Use CHECK_OK to crash and report a usable line
   //                      // number (which the ValueOrDie alternative does not).
   //                      // Include a return statement if the return value is
@@ -172,6 +163,13 @@ class Packet {
   // object type is protocol buffer, crashes otherwise.
   const proto_ns::MessageLite& GetProtoMessageLite() const;
 
+  // Returns a vector of pointers to MessageLite data, if the underlying
+  // object type is a vector of MessageLite data, returns an error otherwise.
+  // Note: This function is meant to be used internally within the MediaPipe
+  // framework only.
+  StatusOr<std::vector<const proto_ns::MessageLite*>>
+  GetVectorOfProtoMessageLitePtrs();
+
   // Returns an error if the packet does not contain data of type T.
   template <typename T>
   ::mediapipe::Status ValidateAsType() const;
@@ -200,13 +198,6 @@ class Packet {
   std::string DebugTypeName() const;
 
  private:
-  // TODO Change serialize_fn to take a Packet instead of a
-  // HolderBase, removing the need to friend these classes.
-  friend ::mediapipe::StatusOr<std::string> SerializePacket(
-      const Packet& packet);
-  friend ::mediapipe::StatusOr<std::string> SerializePacketContents(
-      const Packet& packet);
-
   friend Packet packet_internal::Create(packet_internal::HolderBase* holder);
   friend Packet packet_internal::Create(packet_internal::HolderBase* holder,
                                         class Timestamp timestamp);
@@ -363,6 +354,12 @@ class HolderBase {
   // underlying object is protocol buffer type, otherwise, nullptr is returned.
   virtual const proto_ns::MessageLite* GetProtoMessageLite() = 0;
 
+  // Returns a vector<MessageLite*> for the data in the holder, if the
+  // underlying object is a vector of protocol buffer objects, otherwise,
+  // returns an error.
+  virtual StatusOr<std::vector<const proto_ns::MessageLite*>>
+  GetVectorOfProtoMessageLite() = 0;
+
  private:
   size_t type_id_;
 };
@@ -378,6 +375,37 @@ template <typename T>
 const proto_ns::MessageLite* ConvertToProtoMessageLite(const T* data,
                                                        std::true_type) {
   return data;
+}
+
+// Helper structs for determining if a type is an std::vector<Proto>.
+template <typename Type>
+struct is_proto_vector : public std::false_type {};
+
+template <typename ItemT, typename Allocator>
+struct is_proto_vector<std::vector<ItemT, Allocator>>
+    : public std::is_base_of<proto_ns::MessageLite, ItemT>::type {};
+
+// Helper function to create and return a vector of pointers to proto message
+// elements of the vector passed into the function.
+template <typename T>
+StatusOr<std::vector<const proto_ns::MessageLite*>>
+ConvertToVectorOfProtoMessageLitePtrs(const T* data,
+                                      /*is_proto_vector=*/std::false_type) {
+  return ::mediapipe::InvalidArgumentError(absl::StrCat(
+      "The Packet stores \"", typeid(T).name(), "\"",
+      "which is not convertible to vector<proto_ns::MessageLite*>."));
+}
+
+template <typename T>
+StatusOr<std::vector<const proto_ns::MessageLite*>>
+ConvertToVectorOfProtoMessageLitePtrs(const T* data,
+                                      /*is_proto_vector=*/std::true_type) {
+  std::vector<const proto_ns::MessageLite*> result;
+  for (auto it = data->begin(); it != data->end(); ++it) {
+    const proto_ns::MessageLite* element = &(*it);
+    result.push_back(element);
+  }
+  return result;
 }
 
 template <typename T>
@@ -435,6 +463,14 @@ class Holder : public HolderBase {
   const proto_ns::MessageLite* GetProtoMessageLite() override {
     return ConvertToProtoMessageLite(
         ptr_, std::is_base_of<proto_ns::MessageLite, T>());
+  }
+
+  // Returns a vector<MessageLite*> for the data in the holder, if the
+  // underlying object is a vector of protocol buffer objects, otherwise,
+  // returns an error.
+  StatusOr<std::vector<const proto_ns::MessageLite*>>
+  GetVectorOfProtoMessageLite() override {
+    return ConvertToVectorOfProtoMessageLitePtrs(ptr_, is_proto_vector<T>());
   }
 
  private:
@@ -511,7 +547,7 @@ inline Packet& Packet::operator=(const Packet& packet) {
 template <typename T>
 inline ::mediapipe::StatusOr<std::unique_ptr<T>> Packet::Consume() {
   // If type validation fails, returns error.
-  RETURN_IF_ERROR(ValidateAsType<T>());
+  MP_RETURN_IF_ERROR(ValidateAsType<T>());
   // Clients who use this function are responsible for ensuring that no
   // other thread is doing anything with this Packet.
   if (holder_.unique()) {
@@ -534,7 +570,7 @@ template <typename T>
 inline ::mediapipe::StatusOr<std::unique_ptr<T>> Packet::ConsumeOrCopy(
     bool* was_copied,
     typename std::enable_if<!std::is_array<T>::value>::type*) {
-  RETURN_IF_ERROR(ValidateAsType<T>());
+  MP_RETURN_IF_ERROR(ValidateAsType<T>());
   // If holder is the sole owner of the underlying data, consumes this packet.
   if (!holder_->HolderIsOfType<packet_internal::ForeignHolder<T>>() &&
       holder_.unique()) {
@@ -565,7 +601,7 @@ inline ::mediapipe::StatusOr<std::unique_ptr<T>> Packet::ConsumeOrCopy(
     bool* was_copied,
     typename std::enable_if<std::is_array<T>::value &&
                             std::extent<T>::value != 0>::type*) {
-  RETURN_IF_ERROR(ValidateAsType<T>());
+  MP_RETURN_IF_ERROR(ValidateAsType<T>());
   // If holder is the sole owner of the underlying data, consumes this packet.
   if (!holder_->HolderIsOfType<packet_internal::ForeignHolder<T>>() &&
       holder_.unique()) {
@@ -667,6 +703,14 @@ template <typename T>
 Packet PointToForeign(const T* ptr) {
   CHECK(ptr != nullptr);
   return packet_internal::Create(new packet_internal::ForeignHolder<T>(ptr));
+}
+
+// Equal Packets refer to the same memory contents, like equal pointers.
+inline bool operator==(const Packet& p1, const Packet& p2) {
+  return packet_internal::GetHolder(p1) == packet_internal::GetHolder(p2);
+}
+inline bool operator!=(const Packet& p1, const Packet& p2) {
+  return !(p1 == p2);
 }
 
 }  // namespace mediapipe

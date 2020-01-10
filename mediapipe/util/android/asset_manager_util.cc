@@ -79,8 +79,12 @@ bool AssetManager::FileExists(const std::string& filename) {
   AAssetDir* asset_dir =
       AAssetManager_openDir(asset_manager_, filename.c_str());
   if (asset_dir != nullptr) {
+    // openDir always succeeds, so check if there are files in it. This won't
+    // work if it's empty, but an empty assets manager directory is essentially
+    // unusable (i.e. not considered a valid path).
+    bool dir_exists = AAssetDir_getNextFileName(asset_dir) != nullptr;
     AAssetDir_close(asset_dir);
-    return true;
+    return dir_exists;
   }
 
   return false;
@@ -124,7 +128,7 @@ bool AssetManager::ReadFile(const std::string& filename,
       << "could not read asset: " << asset_path;
 
   std::string dir_path = File::StripBasename(file_path);
-  RETURN_IF_ERROR(file::RecursivelyCreateDir(dir_path, file::Defaults()));
+  MP_RETURN_IF_ERROR(file::RecursivelyCreateDir(dir_path, file::Defaults()));
 
   std::ofstream output_file(file_path);
   RET_CHECK(output_file.good()) << "could not open cache file: " << file_path;

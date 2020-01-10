@@ -24,7 +24,6 @@ load("//mediapipe/framework/port:build_config.bzl", "mediapipe_cc_proto_library"
 proto_library(
     name = "sky_light_calculator_proto",
     srcs = ["sky_light_calculator.proto"],
-    visibility = ["//mediapipe:__subpackages__"],
     deps = ["//mediapipe/framework:calculator_proto"],
 )
 
@@ -32,14 +31,13 @@ mediapipe_cc_proto_library(
     name = "sky_light_calculator_cc_proto",
     srcs = ["sky_light_calculator.proto"],
     cc_deps = ["//mediapipe/framework:calculator_cc_proto"],
-    visibility = ["//mediapipe:__subpackages__"],
+    visibility = ["//visibility:public"],
     deps = [":sky_light_calculator_proto"],
 )
 
 proto_library(
     name = "night_light_calculator_proto",
     srcs = ["night_light_calculator.proto"],
-    visibility = ["//mediapipe:__subpackages__"],
     deps = ["//mediapipe/framework:calculator_proto"],
 )
 
@@ -47,15 +45,22 @@ mediapipe_cc_proto_library(
     name = "night_light_calculator_cc_proto",
     srcs = ["night_light_calculator.proto"],
     cc_deps = ["//mediapipe/framework:calculator_cc_proto"],
-    visibility = ["//mediapipe:__subpackages__"],
+    visibility = ["//visibility:public"],
     deps = [":night_light_calculator_proto"],
 )
 
 proto_library(
     name = "zoo_mutator_proto",
     srcs = ["zoo_mutator.proto"],
+    deps = ["@com_google_protobuf//:any_proto"],
+)
+
+mediapipe_cc_proto_library(
+    name = "zoo_mutator_cc_proto",
+    srcs = ["zoo_mutator.proto"],
+    cc_deps = ["@com_google_protobuf//:cc_wkt_protos"],
     visibility = ["//mediapipe:__subpackages__"],
-    deps = ["@protobuf_archive//:any_proto"],
+    deps = [":zoo_mutator_proto"],
 )
 
 proto_library(

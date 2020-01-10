@@ -22,9 +22,32 @@
 // For consistency, we now set MEDIAPIPE_MOBILE there too. However, for the sake
 // of projects that may want to build MediaPipe using alternative build systems,
 // we also try to set platform-specific defines in this header if missing.
-#if !defined(MEDIAPIPE_MOBILE) && \
-    (defined(__ANDROID__) || defined(__APPLE__) || defined(__EMSCRIPTEN__))
+#if !defined(MEDIAPIPE_MOBILE) &&                                      \
+    (defined(__ANDROID__) || (defined(__APPLE__) && !TARGET_OS_OSX) || \
+     defined(__EMSCRIPTEN__))
 #define MEDIAPIPE_MOBILE
+#endif
+
+#if !defined(MEDIAPIPE_ANDROID) && defined(__ANDROID__)
+#define MEDIAPIPE_ANDROID
+#endif
+
+#if defined(__APPLE__)
+#include "TargetConditionals.h"  // for TARGET_OS_*
+#if !defined(MEDIAPIPE_IOS) && !TARGET_OS_OSX
+#define MEDIAPIPE_IOS
+#endif
+#if !defined(MEDIAPIPE_OSX) && TARGET_OS_OSX
+#define MEDIAPIPE_OSX
+#endif
+#endif
+
+// These platforms do not support OpenGL ES Compute Shaders (v3.1 and up),
+// but may or may not still be able to run other OpenGL code.
+#if !defined(MEDIAPIPE_DISABLE_GL_COMPUTE) &&         \
+    (defined(__APPLE__) || defined(__EMSCRIPTEN__) || \
+     defined(MEDIAPIPE_DISABLE_GPU))
+#define MEDIAPIPE_DISABLE_GL_COMPUTE
 #endif
 
 #endif  // MEDIAPIPE_FRAMEWORK_PORT_H_

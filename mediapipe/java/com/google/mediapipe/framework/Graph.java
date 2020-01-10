@@ -17,6 +17,7 @@ package com.google.mediapipe.framework;
 import com.google.common.base.Preconditions;
 import com.google.common.flogger.FluentLogger;
 import com.google.mediapipe.proto.CalculatorProto.CalculatorGraphConfig;
+import com.google.mediapipe.proto.GraphTemplateProto.CalculatorGraphTemplate;
 import com.google.protobuf.InvalidProtocolBufferException;
 import java.util.ArrayList;
 import java.util.HashMap;
@@ -101,13 +102,28 @@ public class Graph {
     nativeLoadBinaryGraphBytes(nativeGraphHandle, data);
   }
 
-  /** Loads a binary mediapipe graph from a CalculatorGraphConfig. */
+  /** Specifies a CalculatorGraphConfig for a mediapipe graph or subgraph. */
   public synchronized void loadBinaryGraph(CalculatorGraphConfig config) {
     loadBinaryGraph(config.toByteArray());
   }
 
+  /** Specifies a CalculatorGraphTemplate for a mediapipe graph or subgraph. */
+  public synchronized void loadBinaryGraphTemplate(CalculatorGraphTemplate template) {
+    nativeLoadBinaryGraphTemplate(nativeGraphHandle, template.toByteArray());
+  }
+
+  /** Specifies the CalculatorGraphConfig::type of the top level graph. */
+  public synchronized void setGraphType(String graphType) {
+    nativeSetGraphType(nativeGraphHandle, graphType);
+  }
+
+  /** Specifies options such as template arguments for the graph. */
+  public synchronized void setGraphOptions(CalculatorGraphConfig.Node options) {
+    nativeSetGraphOptions(nativeGraphHandle, options.toByteArray());
+  }
+
   /**
-   * Returns the CalculatorGraphConfig if a graph is loaded.
+   * Returns the canonicalized CalculatorGraphConfig with subgraphs and graph templates expanded.
    */
   public synchronized CalculatorGraphConfig getCalculatorGraphConfig() {
     Preconditions.checkState(
@@ -128,6 +144,7 @@ public class Graph {
    *
    * @param streamName The output stream name in the graph for callback.
    * @param callback The callback for handling the call when output stream gets a {@link Packet}.
+   * @throws MediaPipeException for any error status.
    */
   public synchronized void addPacketCallback(String streamName, PacketCallback callback) {
     Preconditions.checkState(
@@ -145,6 +162,7 @@ public class Graph {
    * @param streamName The output stream name in the graph for callback.
    * @param callback The callback for handling the call when output stream gets a {@link Packet} and
    *     has a stream header.
+   * @throws MediaPipeException for any error status.
    */
   public synchronized void addPacketWithHeaderCallback(
       String streamName, PacketWithHeaderCallback callback) {
@@ -251,6 +269,7 @@ public class Graph {
    * Runs the mediapipe graph until it finishes.
    *
    * <p>Side packets that are needed by the graph should be set using {@link setInputSidePackets}.
+   * @throws MediaPipeException for any error status.
    */
   public synchronized void runGraphUntilClose() {
     Preconditions.checkState(
@@ -268,6 +287,7 @@ public class Graph {
    * <p>Returns immediately after starting the scheduler.
    *
    * <p>Side packets that are needed by the graph should be set using {@link setInputSidePackets}.
+   * @throws MediaPipeException for any error status.
    */
   public synchronized void startRunningGraph() {
     Preconditions.checkState(
@@ -319,6 +339,7 @@ public class Graph {
    * @param packet the mediapipe packet.
    * @param timestamp the timestamp of the packet, although not enforced, the unit is normally
    *     microsecond.
+   * @throws MediaPipeException for any error status.
    */
   public synchronized void addPacketToInputStream(
       String streamName, Packet packet, long timestamp) {
@@ -343,6 +364,7 @@ public class Graph {
    * @param packet the mediapipe packet.
    * @param timestamp the timestamp of the packet, although not enforced, the unit is normally
    *     microsecond.
+   * @throws MediaPipeException for any error status.
    */
   public synchronized void addConsumablePacketToInputStream(
       String streamName, Packet packet, long timestamp) {
@@ -363,20 +385,30 @@ public class Graph {
     }
   }
 
-  /** Closes the specified input stream. */
+  /**
+   * Closes the specified input stream.
+   * @throws MediaPipeException for any error status.
+   */
   public synchronized void closeInputStream(String streamName) {
     Preconditions.checkState(
         nativeGraphHandle != 0, "Invalid context, tearDown() might have been called.");
     nativeCloseInputStream(nativeGraphHandle, streamName);
   }
 
-  /** Closes all the input streams in the mediapipe graph. */
+  /**
+   * Closes all the input streams in the mediapipe graph.
+   * @throws MediaPipeException for any error status.
+   */
   public synchronized void closeAllInputStreams() {
     Preconditions.checkState(
         nativeGraphHandle != 0, "Invalid context, tearDown() might have been called.");
     nativeCloseAllInputStreams(nativeGraphHandle);
   }
 
+  /**
+   * Closes all the input streams and source calculators in the mediapipe graph.
+   * @throws MediaPipeException for any error status.
+   */
   public synchronized void closeAllPacketSources() {
     Preconditions.checkState(
         nativeGraphHandle != 0, "Invalid context, tearDown() might have been called.");
@@ -387,6 +419,7 @@ public class Graph {
    * Waits until the graph is done processing.
    *
    * <p>This should be called after all sources and input streams are closed.
+   * @throws MediaPipeException for any error status.
    */
   public synchronized void waitUntilGraphDone() {
     Preconditions.checkState(
@@ -394,7 +427,10 @@ public class Graph {
     nativeWaitUntilGraphDone(nativeGraphHandle);
   }
 
-  /** Waits until the graph runner is idle. */
+  /**
+   * Waits until the graph runner is idle.
+   * @throws MediaPipeException for any error status.
+   */
   public synchronized void waitUntilGraphIdle() {
     Preconditions.checkState(
         nativeGraphHandle != 0, "Invalid context, tearDown() might have been called.");
@@ -455,6 +491,7 @@ public class Graph {
    * OpenGL. This runner should be connected to the calculators by specifiying an input side packet
    * in the graph file with the same name.
    *
+   * @throws MediaPipeException for any error status.
    * @deprecated Call {@link setParentGlContext} to set up texture sharing between contexts. Apart
    *     from that, GL is set up automatically.
    */
@@ -471,6 +508,7 @@ public class Graph {
    * enable the sharing of textures and other objects between the two contexts.
    *
    * <p>Cannot be called after the graph has been started.
+   * @throws MediaPipeException for any error status.
    */
   public synchronized void setParentGlContext(long javaGlContext) {
     Preconditions.checkState(
@@ -571,6 +609,12 @@ public class Graph {
   private native void nativeLoadBinaryGraph(long context, String path);
 
   private native void nativeLoadBinaryGraphBytes(long context, byte[] data);
+
+  private native void nativeLoadBinaryGraphTemplate(long context, byte[] data);
+
+  private native void nativeSetGraphType(long context, String graphType);
+
+  private native void nativeSetGraphOptions(long context, byte[] data);
 
   private native byte[] nativeGetCalculatorGraphConfig(long context);
 

@@ -14,31 +14,39 @@ graph on Android.
 A simple camera app for real-time Sobel edge detection applied to a live video
 stream on an Android device.
 
-![edge_detection_android_gpu_gif](images/mobile/edge_detection_android_gpu.gif){width="300"}
+![edge_detection_android_gpu_gif](images/mobile/edge_detection_android_gpu.gif)
 
 ## Setup
 
 1.  Install MediaPipe on your system, see [MediaPipe installation guide] for
     details.
-2.  Install Android Development SDK and Android NDK. See how to do so in
-    [Setting up Android SDK and NDK].
+2.  Install Android Development SDK and Android NDK. See how to do so also in
+    [MediaPipe installation guide].
 3.  Enable [developer options] on your Android device.
 4.  Setup [Bazel] on your system to build and deploy the Android app.
 
 ## Graph for edge detection
 
-We will be using the following graph, [`edge_detection_android_gpu.pbtxt`]:
+We will be using the following graph, [`edge_detection_mobile_gpu.pbtxt`]:
 
 ```
+# MediaPipe graph that performs GPU Sobel edge detection on a live video stream.
+# Used in the examples
+# mediapipe/examples/android/src/java/com/mediapipe/apps/edgedetectiongpu.
+# mediapipe/examples/ios/edgedetectiongpu.
+
+# Images coming into and out of the graph.
 input_stream: "input_video"
 output_stream: "output_video"
 
+# Converts RGB images into luminance images, still stored in RGB format.
 node: {
   calculator: "LuminanceCalculator"
   input_stream: "input_video"
   output_stream: "luma_video"
 }
 
+# Applies the Sobel filter to luminance images sotred in RGB format.
 node: {
   calculator: "SobelEdgesCalculator"
   input_stream: "luma_video"
@@ -48,7 +56,7 @@ node: {
 
 A visualization of the graph is shown below:
 
-![edge_detection_android_gpu_graph](images/mobile/edge_detection_android_graph_gpu.png){width="200"}
+![edge_detection_mobile_gpu](images/mobile/edge_detection_mobile_gpu.png)
 
 This graph has a single input stream named `input_video` for all incoming frames
 that will be provided by your device's camera.
@@ -62,7 +70,7 @@ packets in the `luma_video` stream and outputs results in `output_video` output
 stream.
 
 Our Android application will display the output image frames of the
-`sobel_video` stream.
+`output_video` stream.
 
 ## Initial minimal application setup
 
@@ -244,7 +252,7 @@ adb install bazel-bin/$APPLICATION_PATH/edgedetectiongpu.apk
 Open the application on your device. It should display a screen with the text
 `Hello World!`.
 
-![bazel_hello_world_android](images/mobile/bazel_hello_world_android.png){width="300"}
+![bazel_hello_world_android](images/mobile/bazel_hello_world_android.png)
 
 ## Using the camera via `CameraX`
 
@@ -361,7 +369,7 @@ Add the following line in the `$APPLICATION_PATH/res/values/strings.xml` file:
 When the user doesn't grant camera permission, the screen will now look like
 this:
 
-![missing_camera_permission_android](images/mobile/missing_camera_permission_android.png){width="300"}
+![missing_camera_permission_android](images/mobile/missing_camera_permission_android.png)
 
 Now, we will add the [`SurfaceTexture`] and [`SurfaceView`] objects to
 `MainActivity`:
@@ -582,7 +590,7 @@ First, add dependencies to all calculator code in the `libmediapipe_jni.so`
 build rule:
 
 ```
-"//mediapipe/graphs/edge_detection:android_calculators",
+"//mediapipe/graphs/edge_detection:mobile_calculators",
 ```
 
 MediaPipe graphs are `.pbtxt` files, but to use them in the application, we need
@@ -594,7 +602,7 @@ graph:
 ```
 genrule(
     name = "binary_graph",
-    srcs = ["//mediapipe/graphs/edge_detection:android_gpu_binary_graph"],
+    srcs = ["//mediapipe/graphs/edge_detection:mobile_gpu_binary_graph"],
     outs = ["edgedetectiongpu.binarypb"],
     cmd = "cp $< $@",
 )
@@ -621,7 +629,7 @@ to load both dependencies:
 static {
   // Load all native libraries needed by the app.
   System.loadLibrary("mediapipe_jni");
-  System.loadLibrary("opencv_java4");
+  System.loadLibrary("opencv_java3");
 }
 ```
 
@@ -635,7 +643,7 @@ Initialize the asset manager in `onCreate(Bundle)` before initializing
 `eglManager`:
 
 ```
-// Initilize asset manager so that MediaPipe native libraries can access the app assets, e.g.,
+// Initialize asset manager so that MediaPipe native libraries can access the app assets, e.g.,
 // binary graphs.
 AndroidAssetUtil.initializeNativeAssetManager(this);
 ```
@@ -701,7 +709,7 @@ And that's it! You should now be able to successfully build and run the
 application on the device and see Sobel edge detection running on a live camera
 feed! Congrats!
 
-![edge_detection_android_gpu_gif](images/mobile/edge_detection_android_gpu.gif){width="300"}
+![edge_detection_android_gpu_gif](images/mobile/edge_detection_android_gpu.gif)
 
 If you ran into any issues, please see the full code of the tutorial
 [here](https://github.com/google/mediapipe/tree/master/mediapipe/examples/android/src/java/com/google/mediapipe/apps/edgedetectiongpu).
@@ -712,7 +720,7 @@ If you ran into any issues, please see the full code of the tutorial
 [CameraX]:https://developer.android.com/training/camerax
 [`CameraXPreviewHelper`]:https://github.com/google/mediapipe/tree/master/mediapipe/java/com/google/mediapipe/components/CameraXPreviewHelper.java
 [developer options]:https://developer.android.com/studio/debug/dev-options
-[`edge_detection_android_gpu.pbtxt`]:https://github.com/google/mediapipe/tree/master/mediapipe/graphs/object_detection/object_detection_android_gpu.pbtxt
+[`edge_detection_mobile_gpu.pbtxt`]:https://github.com/google/mediapipe/tree/master/mediapipe/graphs/object_detection/object_detection_mobile_gpu.pbtxt
 [`EdgeDetectionGPU` example]:https://github.com/google/mediapipe/tree/master/mediapipe/examples/android/src/java/com/google/mediapipe/apps/edgedetectiongpu/
 [`EglManager`]:https://github.com/google/mediapipe/tree/master/mediapipe/java/com/google/mediapipe/glutil/EglManager.java
 [`ExternalTextureConverter`]:https://github.com/google/mediapipe/tree/master/mediapipe/java/com/google/mediapipe/components/ExternalTextureConverter.java
@@ -720,7 +728,6 @@ If you ran into any issues, please see the full code of the tutorial
 [`FrameProcessor`]:https://github.com/google/mediapipe/tree/master/mediapipe/java/com/google/mediapipe/components/FrameProcessor.java
 [MediaPipe installation guide]:./install.md
 [`PermissionHelper`]: https://github.com/google/mediapipe/tree/master/mediapipe/java/com/google/mediapipe/components/PermissionHelper.java
-[Setting up Android SDK and NDK]:./install.md#setting-up-android-sdk-and-ndk
 [`SurfaceHolder.Callback`]:https://developer.android.com/reference/android/view/SurfaceHolder.Callback.html
 [`SurfaceView`]:https://developer.android.com/reference/android/view/SurfaceView
 [`SurfaceView`]:https://developer.android.com/reference/android/view/SurfaceView

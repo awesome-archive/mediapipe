@@ -8,7 +8,15 @@ interested in running the same TensorfFlow Lite model on Android, please see the
 [Object Detection on GPU on Android](object_detection_android_gpu.md) and
 [Object Detection on CPU on Android](object_detection_android_cpu.md) examples.
 
-### TensorFlow Model
+We show the object detection demo with both TensorFlow model and TensorFlow Lite model:
+
+-   [TensorFlow Object Detection Demo](#tensorflow-object-detection-demo)
+-   [TensorFlow Lite Object Detection Demo](#tensorflow-lite-object-detection-demo)
+-   [TensorFlow Lite Object Detection Demo with Webcam (CPU)](#tensorflow-lite-object-detection-demo)
+
+Note: If MediaPipe depends on OpenCV 2, please see the [known issues with OpenCV 2](#known-issues-with-opencv-2) section.
+
+### TensorFlow Object Detection Demo
 
 To build and run the TensorFlow example on desktop, run:
 
@@ -16,8 +24,8 @@ To build and run the TensorFlow example on desktop, run:
 # Note that this command also builds TensorFlow targets from scratch, it may
 # take a long time (e.g., up to 30 mins) to build for the first time.
 $ bazel build -c opt \
-    --define 'MEDIAPIPE_DISABLE_GPU=1' \
-    --define 'no_aws_support=true' \
+    --define MEDIAPIPE_DISABLE_GPU=1 \
+    --define no_aws_support=true \
     mediapipe/examples/desktop/object_detection:object_detection_tensorflow
 
 # It should print:
@@ -29,24 +37,24 @@ $ bazel build -c opt \
 
 # Replace <input video path> and <output video path>.
 # You can find a test video in mediapipe/examples/desktop/object_detection.
-$ bazel-bin/mediapipe/examples/desktop/object_detection/object_detection_tensorflow \
+$ GLOG_logtostderr=1 bazel-bin/mediapipe/examples/desktop/object_detection/object_detection_tensorflow \
   --calculator_graph_config_file=mediapipe/graphs/object_detection/object_detection_desktop_tensorflow_graph.pbtxt \
   --input_side_packets=input_video_path=<input video path>,output_video_path=<output video path>
 ```
 
 #### Graph
 
-![graph visualization](images/object_detection_desktop_tensorflow.png){width="800"}
+![graph visualization](images/object_detection_desktop_tensorflow.png)
 
 To visualize the graph as shown above, copy the text specification of the graph
 below and paste it into
-[MediaPipe Visualizer](https://mediapipe-viz.appspot.com).
+[MediaPipe Visualizer](https://viz.mediapipe.dev).
 
 ```bash
 # MediaPipe graph that performs object detection on desktop with TensorFlow
 # on CPU.
 # Used in the example in
-# mediapipie/examples/desktop/object_detection:object_detection_tensorflow.
+# mediapipe/examples/desktop/object_detection:object_detection_tensorflow.
 
 # Decodes an input video file into images and a video header.
 node {
@@ -176,12 +184,12 @@ node {
 }
 ```
 
-### TensorFlow Lite Model
+### TensorFlow Lite Object Detection Demo
 
 To build and run the TensorFlow Lite example on desktop, run:
 
 ```bash
-$ bazel build -c opt --define 'MEDIAPIPE_DISABLE_GPU=1' \
+$ bazel build -c opt --define MEDIAPIPE_DISABLE_GPU=1 \
     mediapipe/examples/desktop/object_detection:object_detection_tflite
 
 # It should print:
@@ -193,24 +201,44 @@ $ bazel build -c opt --define 'MEDIAPIPE_DISABLE_GPU=1' \
 
 # Replace <input video path> and <output video path>.
 # You can find a test video in mediapipe/examples/desktop/object_detection.
-$ bazel-bin/mediapipe/examples/desktop/object_detection/object_detection_tflite \
+$ GLOG_logtostderr=1 bazel-bin/mediapipe/examples/desktop/object_detection/object_detection_tflite \
     --calculator_graph_config_file=mediapipe/graphs/object_detection/object_detection_desktop_tflite_graph.pbtxt \
     --input_side_packets=input_video_path=<input video path>,output_video_path=<output video path>
 ```
 
+### TensorFlow Lite Object Detection Demo with Webcam (CPU)
+
+To build and run the TensorFlow Lite example on desktop (CPU) with Webcam, run:
+
+```bash
+# Video from webcam running on desktop CPU
+$ bazel build -c opt --define MEDIAPIPE_DISABLE_GPU=1 \
+    mediapipe/examples/desktop/object_detection:object_detection_cpu
+
+# It should print:
+#Target //mediapipe/examples/desktop/object_detection:object_detection_cpu up-to-date:
+#  bazel-bin/mediapipe/examples/desktop/object_detection/object_detection_cpu
+#INFO: Build completed successfully, 12154 total actions
+
+# This will open up your webcam as long as it is connected and on
+# Any errors is likely due to your webcam being not accessible
+$ GLOG_logtostderr=1 bazel-bin/mediapipe/examples/desktop/object_detection/object_detection_cpu \
+    --calculator_graph_config_file=mediapipe/graphs/object_detection/object_detection_desktop_live.pbtxt
+```
+
 #### Graph
 
-![graph visualization](images/object_detection_desktop_tflite.png){width="400"}
+![graph visualization](images/object_detection_desktop_tflite.png)
 
 To visualize the graph as shown above, copy the text specification of the graph
 below and paste it into
-[MediaPipe Visualizer](https://mediapipe-viz.appspot.com).
+[MediaPipe Visualizer](https://viz.mediapipe.dev).
 
 ```bash
 # MediaPipe graph that performs object detection on desktop with TensorFlow Lite
 # on CPU.
 # Used in the example in
-# mediapipie/examples/desktop/object_detection:object_detection_tflite.
+# mediapipe/examples/desktop/object_detection:object_detection_tflite.
 
 # max_queue_size limits the number of packets enqueued on any input stream
 # by throttling inputs to the graph. This makes the graph only process one

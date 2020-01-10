@@ -15,10 +15,9 @@
 # Description:
 #   The dependencies of mediapipe.
 
-licenses(["notice"])  # Apache 2.0
-
 load("//mediapipe/framework/port:build_config.bzl", "mediapipe_cc_proto_library")
-load("//mediapipe/framework/port:build_config.bzl", "mediapipe_py_proto_library")
+
+licenses(["notice"])  # Apache 2.0
 
 package(default_visibility = ["//visibility:private"])
 
@@ -31,7 +30,7 @@ proto_library(
 mediapipe_cc_proto_library(
     name = "proto_descriptor_cc_proto",
     srcs = ["proto_descriptor.proto"],
-    visibility = ["//visibility:public"],
+    visibility = ["//mediapipe/framework:__subpackages__"],
     deps = [":proto_descriptor_proto"],
 )
 

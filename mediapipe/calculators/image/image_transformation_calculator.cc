@@ -22,12 +22,12 @@
 #include "mediapipe/framework/port/status.h"
 #include "mediapipe/gpu/scale_mode.pb.h"
 
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU)
 #include "mediapipe/gpu/gl_calculator_helper.h"
 #include "mediapipe/gpu/gl_quad_renderer.h"
 #include "mediapipe/gpu/gl_simple_shaders.h"
 #include "mediapipe/gpu/shader_util.h"
-#endif  // __ANDROID__
+#endif  //  !MEDIAPIPE_DISABLE_GPU
 
 #if defined(__ANDROID__)
 // The size of Java arrays is dynamic, which makes it difficult to
@@ -42,9 +42,9 @@ typedef int DimensionsPacketType[2];
 
 namespace mediapipe {
 
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU)
 
-#endif  // __ANDROID__
+#endif  //  !MEDIAPIPE_DISABLE_GPU
 
 namespace {
 int RotationModeToDegrees(mediapipe::RotationMode_Mode rotation) {
@@ -170,11 +170,12 @@ class ImageTransformationCalculator : public CalculatorBase {
   mediapipe::ScaleMode_Mode scale_mode_;
 
   bool use_gpu_ = false;
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU)
   GlCalculatorHelper helper_;
   std::unique_ptr<QuadRenderer> rgb_renderer_;
+  std::unique_ptr<QuadRenderer> yuv_renderer_;
   std::unique_ptr<QuadRenderer> ext_rgb_renderer_;
-#endif  // __ANDROID__
+#endif  //  !MEDIAPIPE_DISABLE_GPU
 };
 REGISTER_CALCULATOR(ImageTransformationCalculator);
 
@@ -184,18 +185,22 @@ REGISTER_CALCULATOR(ImageTransformationCalculator);
   RET_CHECK(cc->Inputs().HasTag("IMAGE") ^ cc->Inputs().HasTag("IMAGE_GPU"));
   RET_CHECK(cc->Outputs().HasTag("IMAGE") ^ cc->Outputs().HasTag("IMAGE_GPU"));
 
+  bool use_gpu = false;
+
   if (cc->Inputs().HasTag("IMAGE")) {
     RET_CHECK(cc->Outputs().HasTag("IMAGE"));
     cc->Inputs().Tag("IMAGE").Set<ImageFrame>();
     cc->Outputs().Tag("IMAGE").Set<ImageFrame>();
   }
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU)
   if (cc->Inputs().HasTag("IMAGE_GPU")) {
     RET_CHECK(cc->Outputs().HasTag("IMAGE_GPU"));
     cc->Inputs().Tag("IMAGE_GPU").Set<GpuBuffer>();
     cc->Outputs().Tag("IMAGE_GPU").Set<GpuBuffer>();
+    use_gpu |= true;
   }
-#endif  // __ANDROID__
+#endif  //  !MEDIAPIPE_DISABLE_GPU
+
   if (cc->Inputs().HasTag("ROTATION_DEGREES")) {
     cc->Inputs().Tag("ROTATION_DEGREES").Set<int>();
   }
@@ -211,9 +216,11 @@ REGISTER_CALCULATOR(ImageTransformationCalculator);
     cc->Outputs().Tag("LETTERBOX_PADDING").Set<std::array<float, 4>>();
   }
 
-#if defined(__ANDROID__)
-  RETURN_IF_ERROR(GlCalculatorHelper::UpdateContract(cc));
-#endif  // __ANDROID__
+  if (use_gpu) {
+#if !defined(MEDIAPIPE_DISABLE_GPU)
+    MP_RETURN_IF_ERROR(GlCalculatorHelper::UpdateContract(cc));
+#endif  //  !MEDIAPIPE_DISABLE_GPU
+  }
 
   return ::mediapipe::OkStatus();
 }
@@ -221,7 +228,7 @@ REGISTER_CALCULATOR(ImageTransformationCalculator);
 ::mediapipe::Status ImageTransformationCalculator::Open(CalculatorContext* cc) {
   // Inform the framework that we always output at the same timestamp
   // as we receive a packet at.
-  cc->SetOffset(mediapipe::TimestampDiff(0));
+  cc->SetOffset(TimestampDiff(0));
 
   options_ = cc->Options<ImageTransformationCalculatorOptions>();
 
@@ -243,18 +250,18 @@ REGISTER_CALCULATOR(ImageTransformationCalculator);
     rotation_ = DegreesToRotationMode(
         cc->InputSidePackets().Tag("ROTATION_DEGREES").Get<int>());
   } else {
-    rotation_ = DegreesToRotationMode(options_.rotation_mode());
+    rotation_ = options_.rotation_mode();
   }
 
   scale_mode_ = ParseScaleMode(options_.scale_mode(), DEFAULT_SCALE_MODE);
 
   if (use_gpu_) {
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU)
     // Let the helper access the GL context information.
-    RETURN_IF_ERROR(helper_.Open(cc));
+    MP_RETURN_IF_ERROR(helper_.Open(cc));
 #else
-    RET_CHECK_FAIL() << "GPU processing for non-Android not supported yet.";
-#endif  // __ANDROID__
+    RET_CHECK_FAIL() << "GPU processing not enabled.";
+#endif  //  !MEDIAPIPE_DISABLE_GPU
   }
 
   return ::mediapipe::OkStatus();
@@ -263,10 +270,10 @@ REGISTER_CALCULATOR(ImageTransformationCalculator);
 ::mediapipe::Status ImageTransformationCalculator::Process(
     CalculatorContext* cc) {
   if (use_gpu_) {
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU)
     return helper_.RunInGlContext(
         [this, cc]() -> ::mediapipe::Status { return RenderGpu(cc); });
-#endif  // __ANDROID__
+#endif  //  !MEDIAPIPE_DISABLE_GPU
   } else {
     return RenderCpu(cc);
   }
@@ -276,10 +283,11 @@ REGISTER_CALCULATOR(ImageTransformationCalculator);
 ::mediapipe::Status ImageTransformationCalculator::Close(
     CalculatorContext* cc) {
   if (use_gpu_) {
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU)
     QuadRenderer* rgb_renderer = rgb_renderer_.release();
+    QuadRenderer* yuv_renderer = yuv_renderer_.release();
     QuadRenderer* ext_rgb_renderer = ext_rgb_renderer_.release();
-    helper_.RunInGlContext([rgb_renderer, ext_rgb_renderer] {
+    helper_.RunInGlContext([rgb_renderer, yuv_renderer, ext_rgb_renderer] {
       if (rgb_renderer) {
         rgb_renderer->GlTeardown();
         delete rgb_renderer;
@@ -288,8 +296,12 @@ REGISTER_CALCULATOR(ImageTransformationCalculator);
         ext_rgb_renderer->GlTeardown();
         delete ext_rgb_renderer;
       }
+      if (yuv_renderer) {
+        yuv_renderer->GlTeardown();
+        delete yuv_renderer;
+      }
     });
-#endif  // __ANDROID__
+#endif  //  !MEDIAPIPE_DISABLE_GPU
   }
 
   return ::mediapipe::OkStatus();
@@ -299,6 +311,37 @@ REGISTER_CALCULATOR(ImageTransformationCalculator);
     CalculatorContext* cc) {
   int input_width = cc->Inputs().Tag("IMAGE").Get<ImageFrame>().Width();
   int input_height = cc->Inputs().Tag("IMAGE").Get<ImageFrame>().Height();
+
+  const auto& input_img = cc->Inputs().Tag("IMAGE").Get<ImageFrame>();
+  cv::Mat input_mat = formats::MatView(&input_img);
+  cv::Mat scaled_mat;
+
+  if (scale_mode_ == mediapipe::ScaleMode_Mode_STRETCH) {
+    cv::resize(input_mat, scaled_mat, cv::Size(output_width_, output_height_));
+  } else {
+    const float scale =
+        std::min(static_cast<float>(output_width_) / input_width,
+                 static_cast<float>(output_height_) / input_height);
+    const int target_width = std::round(input_width * scale);
+    const int target_height = std::round(input_height * scale);
+
+    if (scale_mode_ == mediapipe::ScaleMode_Mode_FIT) {
+      cv::Mat intermediate_mat;
+      cv::resize(input_mat, intermediate_mat,
+                 cv::Size(target_width, target_height));
+      const int top = (output_height_ - target_height) / 2;
+      const int bottom = output_height_ - target_height - top;
+      const int left = (output_width_ - target_width) / 2;
+      const int right = output_width_ - target_width - left;
+      cv::copyMakeBorder(intermediate_mat, scaled_mat, top, bottom, left, right,
+                         options_.constant_padding() ? cv::BORDER_CONSTANT
+                                                     : cv::BORDER_REPLICATE);
+    } else {
+      cv::resize(input_mat, scaled_mat, cv::Size(target_width, target_height));
+      output_width_ = target_width;
+      output_height_ = target_height;
+    }
+  }
 
   int output_width;
   int output_height;
@@ -318,26 +361,15 @@ REGISTER_CALCULATOR(ImageTransformationCalculator);
         cc->InputSidePackets().Tag("ROTATION_DEGREES").Get<int>());
   }
 
-  const auto& input_img = cc->Inputs().Tag("IMAGE").Get<ImageFrame>();
-  std::unique_ptr<ImageFrame> output_frame(
-      new ImageFrame(input_img.Format(), output_width, output_height));
-  cv::Mat input_mat = formats::MatView(&input_img);
-  cv::Mat output_mat = formats::MatView(output_frame.get());
-
-  cv::Mat scaled_mat;
-  if (scale_mode_ != mediapipe::ScaleMode_Mode_STRETCH) {
-    // TODO finish CPU version features.
-    return ::mediapipe::UnimplementedError(
-        "Only STRETCH scale mode currently supported.");
-  }
-  cv::resize(input_mat, scaled_mat, cv::Size(output_width_, output_height_));
-
   cv::Mat rotated_mat;
   const int angle = RotationModeToDegrees(rotation_);
   cv::Point2f src_center(scaled_mat.cols / 2.0, scaled_mat.rows / 2.0);
   cv::Mat rotation_mat = cv::getRotationMatrix2D(src_center, angle, 1.0);
   cv::warpAffine(scaled_mat, rotated_mat, rotation_mat, scaled_mat.size());
 
+  std::unique_ptr<ImageFrame> output_frame(
+      new ImageFrame(input_img.Format(), output_width, output_height));
+  cv::Mat output_mat = formats::MatView(output_frame.get());
   rotated_mat.copyTo(output_mat);
   cc->Outputs().Tag("IMAGE").Add(output_frame.release(), cc->InputTimestamp());
 
@@ -346,7 +378,7 @@ REGISTER_CALCULATOR(ImageTransformationCalculator);
 
 ::mediapipe::Status ImageTransformationCalculator::RenderGpu(
     CalculatorContext* cc) {
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU)
   int input_width = cc->Inputs().Tag("IMAGE_GPU").Get<GpuBuffer>().width();
   int input_height = cc->Inputs().Tag("IMAGE_GPU").Get<GpuBuffer>().height();
 
@@ -367,19 +399,36 @@ REGISTER_CALCULATOR(ImageTransformationCalculator);
   const auto& input = cc->Inputs().Tag("IMAGE_GPU").Get<GpuBuffer>();
   QuadRenderer* renderer = nullptr;
   GlTexture src1;
+
+#if defined(MEDIAPIPE_IOS)
+  if (input.format() == GpuBufferFormat::kBiPlanar420YpCbCr8VideoRange ||
+      input.format() == GpuBufferFormat::kBiPlanar420YpCbCr8FullRange) {
+    if (!yuv_renderer_) {
+      yuv_renderer_ = absl::make_unique<QuadRenderer>();
+      MP_RETURN_IF_ERROR(
+          yuv_renderer_->GlSetup(::mediapipe::kYUV2TexToRGBFragmentShader,
+                                 {"video_frame_y", "video_frame_uv"}));
+    }
+    renderer = yuv_renderer_.get();
+    src1 = helper_.CreateSourceTexture(input, 0);
+  } else  // NOLINT(readability/braces)
+#endif    // iOS
   {
     src1 = helper_.CreateSourceTexture(input);
+#if defined(TEXTURE_EXTERNAL_OES)
     if (src1.target() == GL_TEXTURE_EXTERNAL_OES) {
       if (!ext_rgb_renderer_) {
         ext_rgb_renderer_ = absl::make_unique<QuadRenderer>();
-        RETURN_IF_ERROR(ext_rgb_renderer_->GlSetup(
+        MP_RETURN_IF_ERROR(ext_rgb_renderer_->GlSetup(
             ::mediapipe::kBasicTexturedFragmentShaderOES, {"video_frame"}));
       }
       renderer = ext_rgb_renderer_.get();
-    } else {
+    } else  // NOLINT(readability/braces)
+#endif      // TEXTURE_EXTERNAL_OES
+    {
       if (!rgb_renderer_) {
         rgb_renderer_ = absl::make_unique<QuadRenderer>();
-        RETURN_IF_ERROR(rgb_renderer_->GlSetup());
+        MP_RETURN_IF_ERROR(rgb_renderer_->GlSetup());
       }
       renderer = rgb_renderer_.get();
     }
@@ -404,7 +453,7 @@ REGISTER_CALCULATOR(ImageTransformationCalculator);
   glActiveTexture(GL_TEXTURE1);
   glBindTexture(src1.target(), src1.name());
 
-  RETURN_IF_ERROR(renderer->GlRender(
+  MP_RETURN_IF_ERROR(renderer->GlRender(
       src1.width(), src1.height(), dst.width(), dst.height(), scale_mode,
       rotation, options_.flip_horizontally(), options_.flip_vertically(),
       /*flip_texture=*/false));
@@ -418,7 +467,7 @@ REGISTER_CALCULATOR(ImageTransformationCalculator);
   auto output = dst.GetFrame<GpuBuffer>();
   cc->Outputs().Tag("IMAGE_GPU").Add(output.release(), cc->InputTimestamp());
 
-#endif  // __ANDROID__
+#endif  //  !MEDIAPIPE_DISABLE_GPU
 
   return ::mediapipe::OkStatus();
 }

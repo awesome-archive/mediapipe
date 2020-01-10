@@ -74,6 +74,12 @@ class PacketResamplerCalculator : public CalculatorBase {
   ::mediapipe::Status Process(CalculatorContext* cc) override;
 
  private:
+  // Calculates the first sampled timestamp that incorporates a jittering
+  // offset.
+  void InitializeNextOutputTimestampWithJitter();
+  // Calculates the next sampled timestamp that incorporates a jittering offset.
+  void UpdateNextOutputTimestampWithJitter();
+
   // Logic for Process() when jitter_ != 0.0.
   ::mediapipe::Status ProcessWithJitter(CalculatorContext* cc);
 
@@ -233,6 +239,7 @@ TimestampDiff TimestampDiffFromSeconds(double seconds) {
       << Timestamp::kTimestampUnitsPerSecond;
 
   frame_time_usec_ = static_cast<int64>(1000000.0 / frame_rate_);
+
   video_header_.frame_rate = frame_rate_;
 
   if (resampler_options.output_header() !=
@@ -287,12 +294,23 @@ TimestampDiff TimestampDiffFromSeconds(double seconds) {
     }
   }
   if (jitter_ != 0.0 && random_ != nullptr) {
-    RETURN_IF_ERROR(ProcessWithJitter(cc));
+    MP_RETURN_IF_ERROR(ProcessWithJitter(cc));
   } else {
-    RETURN_IF_ERROR(ProcessWithoutJitter(cc));
+    MP_RETURN_IF_ERROR(ProcessWithoutJitter(cc));
   }
   last_packet_ = cc->Inputs().Get(input_data_id_).Value();
   return ::mediapipe::OkStatus();
+}
+
+void PacketResamplerCalculator::InitializeNextOutputTimestampWithJitter() {
+  next_output_timestamp_ =
+      first_timestamp_ + frame_time_usec_ * random_->RandFloat();
+}
+
+void PacketResamplerCalculator::UpdateNextOutputTimestampWithJitter() {
+  next_output_timestamp_ +=
+      frame_time_usec_ *
+      ((1.0 - jitter_) + 2.0 * jitter_ * random_->RandFloat());
 }
 
 ::mediapipe::Status PacketResamplerCalculator::ProcessWithJitter(
@@ -302,29 +320,37 @@ TimestampDiff TimestampDiffFromSeconds(double seconds) {
 
   if (first_timestamp_ == Timestamp::Unset()) {
     first_timestamp_ = cc->InputTimestamp();
-    next_output_timestamp_ =
-        first_timestamp_ + frame_time_usec_ * random_->RandFloat();
+    InitializeNextOutputTimestampWithJitter();
+    if (first_timestamp_ == next_output_timestamp_) {
+      OutputWithinLimits(
+          cc,
+          cc->Inputs().Get(input_data_id_).Value().At(next_output_timestamp_));
+      UpdateNextOutputTimestampWithJitter();
+    }
     return ::mediapipe::OkStatus();
   }
 
-  LOG_IF(WARNING, frame_time_usec_ <
-                      (cc->InputTimestamp() - last_packet_.Timestamp()).Value())
-      << "Adding jitter is meaningless when upsampling.";
-
-  const int64 curr_diff =
-      (next_output_timestamp_ - cc->InputTimestamp()).Value();
-  const int64 last_diff =
-      (next_output_timestamp_ - last_packet_.Timestamp()).Value();
-  if (curr_diff * last_diff > 0) {
-    return ::mediapipe::OkStatus();
+  if (frame_time_usec_ <
+      (cc->InputTimestamp() - last_packet_.Timestamp()).Value()) {
+    LOG_FIRST_N(WARNING, 2)
+        << "Adding jitter is not very useful when upsampling.";
   }
-  OutputWithinLimits(cc, (std::abs(curr_diff) > std::abs(last_diff)
-                              ? last_packet_
-                              : cc->Inputs().Get(input_data_id_).Value())
-                             .At(next_output_timestamp_));
-  next_output_timestamp_ +=
-      frame_time_usec_ *
-      ((1.0 - jitter_) + 2.0 * jitter_ * random_->RandFloat());
+
+  while (true) {
+    const int64 last_diff =
+        (next_output_timestamp_ - last_packet_.Timestamp()).Value();
+    RET_CHECK_GT(last_diff, 0.0);
+    const int64 curr_diff =
+        (next_output_timestamp_ - cc->InputTimestamp()).Value();
+    if (curr_diff > 0.0) {
+      break;
+    }
+    OutputWithinLimits(cc, (std::abs(curr_diff) > last_diff
+                                ? last_packet_
+                                : cc->Inputs().Get(input_data_id_).Value())
+                               .At(next_output_timestamp_));
+    UpdateNextOutputTimestampWithJitter();
+  }
   return ::mediapipe::OkStatus();
 }
 

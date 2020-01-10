@@ -17,7 +17,7 @@ packets and produces zero or more output streams and/or side packets.
 ### CalculatorBase
 
 A calculator is created by defining a new sub-class of the
-[`CalculatorBase`](http://github.com/google/mediapipe/mediapipe/framework/calculator_base.cc)
+[`CalculatorBase`](https://github.com/google/mediapipe/tree/master/mediapipe/framework/calculator_base.cc)
 class, implementing a number of methods, and registering the new sub-class with
 Mediapipe. At a minimum, a new calculator must implement the below four methods
 
@@ -31,7 +31,7 @@ Mediapipe. At a minimum, a new calculator must implement the below four methods
   * After all calls to `Process()` finish or when all input streams close, the framework calls `Close()`. This function is always called if `Open()` was called and succeeded and even if the graph run terminated because of an error. No inputs are available via any input streams during `Close()`, but it still has access to input side packets and therefore may write outputs. After `Close()` returns, the calculator should be considered a dead node. The calculator object is destroyed as soon as the graph finishes running.
 
 The following are code snippets from
-[CalculatorBase.h](http://github.com/google/mediapipe/mediapipe/framework/calculator_base.h).
+[CalculatorBase.h](https://github.com/google/mediapipe/tree/master/mediapipe/framework/calculator_base.h).
 
 ```c++
 class CalculatorBase {
@@ -117,7 +117,7 @@ combination of tag name and index number. You can see some examples of input and
 output identifiers in the example below. `SomeAudioVideoCalculator` identifies
 its video output by tag and its audio outputs by the combination of tag and
 index. The input with tag `VIDEO` is connected to the stream named
-`video_stream`. The inputs with tag `AUDIO` and indices `0` and `1` are
+`video_stream`. The outputs with tag `AUDIO` and indices `0` and `1` are
 connected to the streams named `audio_left` and `audio_right`.
 `SomeAudioCalculator` identifies its audio inputs by index only (no tag needed).
 
@@ -208,8 +208,8 @@ of a MediaPipe graph. In the specification, a node in the graph represents an
 instance of a particular calculator. All the necessary configurations of the
 node, such its type, inputs and outputs must be described in the specification.
 Description of the node can also include several optional fields, such as
-node-specific options, input policy and executor, discussed in Section
-[Framework Concepts > Scheduling mechanics](scheduling_sync.md#scheduling-mechanics).
+node-specific options, input policy and executor, discussed in
+[Framework Architecture](scheduling_sync.md).
 
 `GraphConfig` has several other fields to configure the global graph-level
 settings, eg, graph executor configs, number of threads, and maximum queue size
@@ -252,21 +252,23 @@ node {
 
 To modularize a `CalculatorGraphConfig` into sub-modules and assist with re-use
 of perception solutions, a MediaPipe graph can be defined as a `Subgraph`. The
-public interface to a subgraph consists of a set of input and output streams
-similar to the public interface of a calculator. The subgraph can then be
+public interface of a subgraph consists of a set of input and output streams
+similar to a calculator's public interface. The subgraph can then be
 included in an `CalculatorGraphConfig` as if it were a calculator. When a
 MediaPipe graph is loaded from a `CalculatorGraphConfig`, each subgraph node is
 replaced by the corresponding graph of calculators. As a result, the semantics
 and performance of the subgraph is identical to the corresponding graph of
 calculators.
 
-Below is an example of how to create a subgraph named `TwoPassThroughSubgraph`
+Below is an example of how to create a subgraph named `TwoPassThroughSubgraph`.
 
-1. Defining the subgraph.
+1.  Defining the subgraph.
 
     ```proto
     # This subgraph is defined in two_pass_through_subgraph.pbtxt
-    # that is registered in the BUILD file as "TwoPassThroughSubgraph"
+    # and is registered as "TwoPassThroughSubgraph"
+
+    type: "TwoPassThroughSubgraph"
     input_stream: "out1"
     output_stream: "out3"
 
@@ -282,19 +284,20 @@ Below is an example of how to create a subgraph named `TwoPassThroughSubgraph`
     }
     ```
 
-The public interface to the graph that consist of:
-   * Graph input streams
-   * Graph output streams
-   * Graph input side packets
-   * Graph output side packets
+    The public interface to the subgraph consists of:
 
-2. Register the subgraph using BUILD rule `mediapipe_simple_subgraph`
-   * The parameter `register_as` defines the component name for the new subgraph
+    *   Graph input streams
+    *   Graph output streams
+    *   Graph input side packets
+    *   Graph output side packets
+
+2.  Register the subgraph using BUILD rule `mediapipe_simple_subgraph`. The
+    parameter `register_as` defines the component name for the new subgraph.
 
     ```proto
     # Small section of BUILD file for registering the "TwoPassThroughSubgraph"
     # subgraph for use by main graph main_pass_throughcals.pbtxt
-    #
+
     mediapipe_simple_subgraph(
         name = "twopassthrough_subgraph",
         graph = "twopassthrough_subgraph.pbtxt",
@@ -306,12 +309,12 @@ The public interface to the graph that consist of:
     )
     ```
 
-3. Use the subgraph in the main graph
+3.  Use the subgraph in the main graph.
 
     ```proto
     # This main graph is defined in main_pass_throughcals.pbtxt
     # using subgraph called "TwoPassThroughSubgraph"
-    #
+
     input_stream: "in"
     node {
         calculator: "PassThroughCalculator"
@@ -329,108 +332,3 @@ The public interface to the graph that consist of:
         output_stream: "out4"
     }
     ```
-
-<!---
-### Graph Templates
-
-A MediaPipe graph template looks exactly like a calculator graph .pbtxt file with some embedded parameters like `%num_detectors%`. When the template parameters are replaced by argument values, the template defines a complete `CalculatorGraphConfig`.
-
-1. Defining and using a graph template by writing a `CalculatorGraphConfig` text protobuf file containing template parameters. The file extension .textpbt stands for "text protobuf template".
-    ```proto
-    # Test graph with an iteration template directive
-    node: {
-    name: %name_1%
-    calculator: "IntervalFilterCalculator"
-    options: {
-        [mediapipe.IntervalFilterCalculatorOptions.ext] {
-        intervals {
-            % for (interval : intervals_1) %
-            interval {
-            start_us: %interval.begin%
-            end_us: %interval.end%
-            }
-            %end%
-        }
-        }
-    }
-    }
-    ```
-2. Specify values for the template parameters as name-value pairs in a [`TemplateDict protobuf`](http://github.com/mediapipe/framework/tool/calculator_graph_template.proto)
-    ```proto
-    # Some test template arguments for iteration_test_template.textpbt
-    arg: {key: "name_1" value: {str: "hooloo"}}
-    arg: {key: "intervals_1" value: {
-    element: { dict: {
-        arg: {key: "begin" value: {num:33}}
-        arg: {key: "end" value: {num:44}}
-    }}
-    element: { dict: {
-        arg: {key: "begin" value: {num:55}}
-        arg: {key: "end" value: {num:66}}
-    }}
-    element: { dict: {
-        arg: {key: "begin" value: {num:77}}
-        arg: {key: "end" value: {num:88}}
-    }}
-    }}
-    ```
-3. Register the subgraph using the build rule: `mediapipe_template_subgraph`.
-    ```proto
-    mediapipe_template_graph(
-        name = "iteration_test_subgraph",
-        register_as = "IterationTestTemplateSubgraph",
-        template = "iteration_test_template.textpbt",
-        deps = [
-            "//mediapipe/core:interval_filter_calculator",
-        ],
-    )
-    ```
-    Alternatively, the template and the parameter values can be combined using the build rule: `mediapipe_template_graph`.
-    ```proto
-    mediapipe_template_graph(
-        name = "iteration_test_2_graph",
-        arg_file = "iteration_test_arg.pbtxt",
-        template = "iteration_test_template.textpbt",
-    )
-    ```
-4. The result is a complete CalculatorGraphConfig protobuf, such as the following:
-    ```proto
-    node {
-    name: "hooloo"
-    calculator: "IntervalFilterCalculator"
-    options {
-        [mediapipe.IntervalFilterCalculatorOptions.ext] {
-        intervals {
-            interval {
-            start_us: 33
-            end_us: 44
-            }
-            interval {
-            start_us: 55
-            end_us: 66
-            }
-            interval {
-            start_us: 77
-            end_us: 88
-            }
-        }
-        }
-    }
-    }
-    ```
-Graph template parameters
-* For a template parameter, you can specify a simple parameter name such as `%end_time%`
-```proto
-interval {
-  start_us: 10
-  end_us: %end_time%
-}
-```
-or a more complex expression, such as `% begin_time + duration %`
-```proto
-interval {
-  start_us: %begin_time%
-  end_us: % begin_time + duration %
-}
-```
---->

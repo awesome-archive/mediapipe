@@ -108,10 +108,18 @@ class FixedSizeInputStreamHandler : public DefaultInputStreamHandler {
   }
 
   // Returns the lowest timestamp of a packet ready to process.
-  Timestamp MinTimestampOrBound() {
+  Timestamp MinTimestampToProcess() {
     Timestamp min_bound = Timestamp::Done();
     for (const auto& stream : input_stream_managers_) {
-      min_bound = std::min(min_bound, stream->MinTimestampOrBound(nullptr));
+      bool empty;
+      Timestamp stream_timestamp = stream->MinTimestampOrBound(&empty);
+      // If we're using the stream's *bound*, we only want to process up to the
+      // packet *before* the bound, because a packet may still arrive at that
+      // time.
+      if (empty) {
+        stream_timestamp = PreviousAllowedInStream(stream_timestamp);
+      }
+      min_bound = std::min(min_bound, stream_timestamp);
     }
     return min_bound;
   }
@@ -147,7 +155,7 @@ class FixedSizeInputStreamHandler : public DefaultInputStreamHandler {
     return (fixed_min_size_) ? EraseAllSurplus() : EraseAnySurplus(keep_one);
   }
 
-  NodeReadiness GetNodeReadiness(Timestamp* min_stream_timestamp) {
+  NodeReadiness GetNodeReadiness(Timestamp* min_stream_timestamp) override {
     DCHECK(min_stream_timestamp);
     absl::MutexLock lock(&erase_mutex_);
     // kReadyForProcess is returned only once until FillInputSet completes.
@@ -199,7 +207,7 @@ class FixedSizeInputStreamHandler : public DefaultInputStreamHandler {
     }
     // input_timestamp is recalculated here to process the most recent packets.
     EraseSurplusPackets(true);
-    input_timestamp = MinTimestampOrBound();
+    input_timestamp = MinTimestampToProcess();
     DefaultInputStreamHandler::FillInputSet(input_timestamp, input_set);
     pending_ = false;
   }

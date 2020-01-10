@@ -47,8 +47,8 @@ fi
 
 if [ -z $2 ]
 then
-  echo "Warning: android_ndk_path (argument 2) is not specified. Fallback to ~/Android/Ndk/android-ndk-<NDK_VERSION>/"
-  android_ndk_path=$HOME"/Android/Ndk"
+  echo "Warning: android_ndk_path (argument 2) is not specified. Fallback to ~/Android/Sdk/ndk-bundle/android-ndk-<NDK_VERSION>/"
+  android_ndk_path=$HOME"/Android/Sdk/ndk-bundle"
 fi
 
 if [ -z $3 ]
@@ -67,7 +67,7 @@ else
   unzip /tmp/android_sdk/android_sdk.zip -d /tmp/android_sdk/
   mkdir -p $android_sdk_path
   /tmp/android_sdk/tools/bin/sdkmanager --update
-  /tmp/android_sdk/tools/bin/sdkmanager "build-tools;28.0.3" "platform-tools" "platforms;android-28" "extras;android;m2repository" --sdk_root=${android_sdk_path}
+  /tmp/android_sdk/tools/bin/sdkmanager "build-tools;29.0.1" "platform-tools" "platforms;android-29" --sdk_root=${android_sdk_path}
   rm -rf /tmp/android_sdk/
   echo "Android SDK is now installed. Consider setting \$ANDROID_HOME environment variable to be ${android_sdk_path}"
 fi
@@ -93,7 +93,6 @@ ndk_path_line=$((ndk_block+2))'i'
 sdk_block=$(grep -n 'android_sdk_repository(' $workspace_file | awk -F  ":" '{print $1}')
 sdk_path_line=$((sdk_block+3))'i'
 
-git checkout $workspace_file
 if [ $platform == "darwin" ]; then
   sed -i -e "$ndk_path_line\\
   \ \ \ \ path = \"${android_ndk_path}/android-ndk-${ndk_version}\",

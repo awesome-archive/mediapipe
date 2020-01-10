@@ -26,12 +26,14 @@
 #include "mediapipe/framework/port/vector.h"
 #include "mediapipe/util/annotation_renderer.h"
 #include "mediapipe/util/color.pb.h"
+#include "mediapipe/util/render_data.pb.h"
 
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU)
 #include "mediapipe/gpu/gl_calculator_helper.h"
 #include "mediapipe/gpu/gl_simple_shaders.h"
+#include "mediapipe/gpu/gpu_buffer.h"
 #include "mediapipe/gpu/shader_util.h"
-#endif  // __ANDROID__
+#endif  //  !MEDIAPIPE_DISABLE_GPU
 
 namespace mediapipe {
 
@@ -40,10 +42,20 @@ namespace {
 constexpr char kInputFrameTag[] = "INPUT_FRAME";
 constexpr char kOutputFrameTag[] = "OUTPUT_FRAME";
 
+constexpr char kInputVectorTag[] = "VECTOR";
+
 constexpr char kInputFrameTagGpu[] = "INPUT_FRAME_GPU";
 constexpr char kOutputFrameTagGpu[] = "OUTPUT_FRAME_GPU";
 
 enum { ATTRIB_VERTEX, ATTRIB_TEXTURE_POSITION, NUM_ATTRIBUTES };
+
+// Round up n to next multiple of m.
+size_t RoundUp(size_t n, size_t m) { return ((n + m - 1) / m) * m; }  // NOLINT
+
+// When using GPU, this color will become transparent when the calculator
+// merges the annotation overlay with the image frame. As a result, drawing in
+// this color is not supported and it should be set to something unlikely used.
+constexpr int kAnnotationBackgroundColor[] = {100, 101, 102};
 }  // namespace
 
 // A calculator for rendering data on images.
@@ -56,6 +68,9 @@ enum { ATTRIB_VERTEX, ATTRIB_TEXTURE_POSITION, NUM_ATTRIBUTES };
 //  2. RenderData proto on variable number of input streams. All the RenderData
 //     at a particular timestamp is drawn on the image in the order of their
 //     input streams. No tags required.
+//  3. std::vector<RenderData> on variable number of input streams. RenderData
+//     objects at a particular timestamp are drawn on the image in order of the
+//     input vector items. These input streams are tagged with "VECTOR".
 //
 // Output:
 //  1. OUTPUT_FRAME or OUTPUT_FRAME_GPU: A rendered ImageFrame (or GpuBuffer).
@@ -66,7 +81,8 @@ enum { ATTRIB_VERTEX, ATTRIB_TEXTURE_POSITION, NUM_ATTRIBUTES };
 //
 // For GPU input frames, only 4-channel images are supported.
 //
-// Note: When using GPU, drawing with black color is not supported.
+// Note: When using GPU, drawing with color kAnnotationBackgroundColor (defined
+// above) is not supported.
 //
 // Example config (CPU):
 // node {
@@ -75,6 +91,8 @@ enum { ATTRIB_VERTEX, ATTRIB_TEXTURE_POSITION, NUM_ATTRIBUTES };
 //   input_stream: "render_data_1"
 //   input_stream: "render_data_2"
 //   input_stream: "render_data_3"
+//   input_stream: "VECTOR:0:render_data_vec_0"
+//   input_stream: "VECTOR:1:render_data_vec_1"
 //   output_stream: "OUTPUT_FRAME:decorated_frames"
 //   options {
 //     [mediapipe.AnnotationOverlayCalculatorOptions.ext] {
@@ -89,6 +107,8 @@ enum { ATTRIB_VERTEX, ATTRIB_TEXTURE_POSITION, NUM_ATTRIBUTES };
 //   input_stream: "render_data_1"
 //   input_stream: "render_data_2"
 //   input_stream: "render_data_3"
+//   input_stream: "VECTOR:0:render_data_vec_0"
+//   input_stream: "VECTOR:1:render_data_vec_1"
 //   output_stream: "OUTPUT_FRAME_GPU:decorated_frames"
 //   options {
 //     [mediapipe.AnnotationOverlayCalculatorOptions.ext] {
@@ -128,25 +148,26 @@ class AnnotationOverlayCalculator : public CalculatorBase {
   // Underlying helper renderer library.
   std::unique_ptr<AnnotationRenderer> renderer_;
 
-  // Number of input streams with render data.
-  int num_render_streams_;
-
   // Indicates if image frame is available as input.
   bool image_frame_available_ = false;
 
   bool use_gpu_ = false;
   bool gpu_initialized_ = false;
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU)
   mediapipe::GlCalculatorHelper gpu_helper_;
   GLuint program_ = 0;
   GLuint image_mat_tex_ = 0;  // Overlay drawing image for GPU.
-#endif                        // __ANDROID__
+  int width_ = 0;
+  int height_ = 0;
+#endif  //  MEDIAPIPE_DISABLE_GPU
 };
 REGISTER_CALCULATOR(AnnotationOverlayCalculator);
 
 ::mediapipe::Status AnnotationOverlayCalculator::GetContract(
     CalculatorContract* cc) {
   CHECK_GE(cc->Inputs().NumEntries(), 1);
+
+  bool use_gpu = false;
 
   if (cc->Inputs().HasTag(kInputFrameTag) &&
       cc->Inputs().HasTag(kInputFrameTagGpu)) {
@@ -157,64 +178,70 @@ REGISTER_CALCULATOR(AnnotationOverlayCalculator);
     return ::mediapipe::InternalError("GPU output must have GPU input.");
   }
 
-  // Assume all inputs are render streams; adjust below.
-  int num_render_streams = cc->Inputs().NumEntries();
-
   // Input image to render onto copy of.
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU)
   if (cc->Inputs().HasTag(kInputFrameTagGpu)) {
     cc->Inputs().Tag(kInputFrameTagGpu).Set<mediapipe::GpuBuffer>();
-    num_render_streams = cc->Inputs().NumEntries() - 1;
+    use_gpu |= true;
   }
-#endif  // __ANDROID__
+#endif  //  !MEDIAPIPE_DISABLE_GPU
   if (cc->Inputs().HasTag(kInputFrameTag)) {
     cc->Inputs().Tag(kInputFrameTag).Set<ImageFrame>();
-    num_render_streams = cc->Inputs().NumEntries() - 1;
   }
 
   // Data streams to render.
-  for (int i = 0; i < num_render_streams; ++i) {
-    cc->Inputs().Index(i).Set<RenderData>();
+  for (CollectionItemId id = cc->Inputs().BeginId(); id < cc->Inputs().EndId();
+       ++id) {
+    auto tag_and_index = cc->Inputs().TagAndIndexFromId(id);
+    std::string tag = tag_and_index.first;
+    if (tag == kInputVectorTag) {
+      cc->Inputs().Get(id).Set<std::vector<RenderData>>();
+    } else if (tag.empty()) {
+      // Empty tag defaults to accepting a single object of RenderData type.
+      cc->Inputs().Get(id).Set<RenderData>();
+    }
   }
 
   // Rendered image.
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU)
   if (cc->Outputs().HasTag(kOutputFrameTagGpu)) {
     cc->Outputs().Tag(kOutputFrameTagGpu).Set<mediapipe::GpuBuffer>();
+    use_gpu |= true;
   }
-#endif  // __ANDROID__
+#endif  //  !MEDIAPIPE_DISABLE_GPU
   if (cc->Outputs().HasTag(kOutputFrameTag)) {
     cc->Outputs().Tag(kOutputFrameTag).Set<ImageFrame>();
   }
 
-#if defined(__ANDROID__)
-  RETURN_IF_ERROR(mediapipe::GlCalculatorHelper::UpdateContract(cc));
-#endif  // __ANDROID__
+  if (use_gpu) {
+#if !defined(MEDIAPIPE_DISABLE_GPU)
+    MP_RETURN_IF_ERROR(mediapipe::GlCalculatorHelper::UpdateContract(cc));
+#endif  //  !MEDIAPIPE_DISABLE_GPU
+  }
 
   return ::mediapipe::OkStatus();
 }
 
 ::mediapipe::Status AnnotationOverlayCalculator::Open(CalculatorContext* cc) {
-  options_ = cc->Options<AnnotationOverlayCalculatorOptions>();
+  cc->SetOffset(TimestampDiff(0));
 
+  options_ = cc->Options<AnnotationOverlayCalculatorOptions>();
   if (cc->Inputs().HasTag(kInputFrameTagGpu) &&
       cc->Outputs().HasTag(kOutputFrameTagGpu)) {
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU)
     use_gpu_ = true;
 #else
-    RET_CHECK_FAIL() << "GPU processing on non-Android not supported yet.";
-#endif  // __ANDROID__
+    RET_CHECK_FAIL() << "GPU processing not enabled.";
+#endif  //  !MEDIAPIPE_DISABLE_GPU
   }
 
   if (cc->Inputs().HasTag(kInputFrameTagGpu) ||
       cc->Inputs().HasTag(kInputFrameTag)) {
     image_frame_available_ = true;
-    num_render_streams_ = cc->Inputs().NumEntries() - 1;
   } else {
     image_frame_available_ = false;
     RET_CHECK(options_.has_canvas_width_px());
     RET_CHECK(options_.has_canvas_height_px());
-    num_render_streams_ = cc->Inputs().NumEntries();
   }
 
   // Initialize the helper renderer library.
@@ -233,9 +260,9 @@ REGISTER_CALCULATOR(AnnotationOverlayCalculator);
   }
 
   if (use_gpu_) {
-#if defined(__ANDROID__)
-    RETURN_IF_ERROR(gpu_helper_.Open(cc));
-#endif
+#if !defined(MEDIAPIPE_DISABLE_GPU)
+    MP_RETURN_IF_ERROR(gpu_helper_.Open(cc));
+#endif  //  !MEDIAPIPE_DISABLE_GPU
   }
 
   return ::mediapipe::OkStatus();
@@ -247,69 +274,88 @@ REGISTER_CALCULATOR(AnnotationOverlayCalculator);
   std::unique_ptr<cv::Mat> image_mat;
   ImageFormat::Format target_format;
   if (use_gpu_) {
-    RETURN_IF_ERROR(CreateRenderTargetGpu(cc, image_mat));
+#if !defined(MEDIAPIPE_DISABLE_GPU)
+    if (!gpu_initialized_) {
+      MP_RETURN_IF_ERROR(
+          gpu_helper_.RunInGlContext([this, cc]() -> ::mediapipe::Status {
+            MP_RETURN_IF_ERROR(GlSetup(cc));
+            return ::mediapipe::OkStatus();
+          }));
+      gpu_initialized_ = true;
+    }
+#endif  //  !MEDIAPIPE_DISABLE_GPU
+    MP_RETURN_IF_ERROR(CreateRenderTargetGpu(cc, image_mat));
   } else {
-    RETURN_IF_ERROR(CreateRenderTargetCpu(cc, image_mat, &target_format));
+    MP_RETURN_IF_ERROR(CreateRenderTargetCpu(cc, image_mat, &target_format));
   }
 
   // Reset the renderer with the image_mat. No copy here.
   renderer_->AdoptImage(image_mat.get());
 
   // Render streams onto render target.
-  for (int i = 0; i < num_render_streams_; ++i) {
-    if (cc->Inputs().Index(i).IsEmpty()) {
+  for (CollectionItemId id = cc->Inputs().BeginId(); id < cc->Inputs().EndId();
+       ++id) {
+    auto tag_and_index = cc->Inputs().TagAndIndexFromId(id);
+    std::string tag = tag_and_index.first;
+    if (!tag.empty() && tag != kInputVectorTag) {
       continue;
     }
-    const RenderData& render_data = cc->Inputs().Index(i).Get<RenderData>();
-    renderer_->RenderDataOnImage(render_data);
+    if (cc->Inputs().Get(id).IsEmpty()) {
+      continue;
+    }
+    if (tag.empty()) {
+      // Empty tag defaults to accepting a single object of RenderData type.
+      const RenderData& render_data = cc->Inputs().Get(id).Get<RenderData>();
+      renderer_->RenderDataOnImage(render_data);
+    } else {
+      RET_CHECK_EQ(kInputVectorTag, tag);
+      const std::vector<RenderData>& render_data_vec =
+          cc->Inputs().Get(id).Get<std::vector<RenderData>>();
+      for (const RenderData& render_data : render_data_vec) {
+        renderer_->RenderDataOnImage(render_data);
+      }
+    }
   }
 
   if (use_gpu_) {
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU)
     // Overlay rendered image in OpenGL, onto a copy of input.
     uchar* image_mat_ptr = image_mat->data;
-    RETURN_IF_ERROR(gpu_helper_.RunInGlContext(
+    MP_RETURN_IF_ERROR(gpu_helper_.RunInGlContext(
         [this, cc, image_mat_ptr]() -> ::mediapipe::Status {
-          if (!gpu_initialized_) {
-            RETURN_IF_ERROR(GlSetup(cc));
-            gpu_initialized_ = true;
-          }
-
-          RETURN_IF_ERROR(RenderToGpu(cc, image_mat_ptr));
-
+          MP_RETURN_IF_ERROR(RenderToGpu(cc, image_mat_ptr));
           return ::mediapipe::OkStatus();
         }));
-#endif  // __ANDROID__
+#endif  //  !MEDIAPIPE_DISABLE_GPU
   } else {
     // Copy the rendered image to output.
     uchar* image_mat_ptr = image_mat->data;
-    RETURN_IF_ERROR(RenderToCpu(cc, target_format, image_mat_ptr));
+    MP_RETURN_IF_ERROR(RenderToCpu(cc, target_format, image_mat_ptr));
   }
 
   return ::mediapipe::OkStatus();
 }
 
 ::mediapipe::Status AnnotationOverlayCalculator::Close(CalculatorContext* cc) {
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU)
   gpu_helper_.RunInGlContext([this] {
     if (program_) glDeleteProgram(program_);
     program_ = 0;
     if (image_mat_tex_) glDeleteTextures(1, &image_mat_tex_);
     image_mat_tex_ = 0;
   });
-#endif  // __ANDROID__
+#endif  //  !MEDIAPIPE_DISABLE_GPU
 
   return ::mediapipe::OkStatus();
 }
 
 ::mediapipe::Status AnnotationOverlayCalculator::RenderToCpu(
-
     CalculatorContext* cc, const ImageFormat::Format& target_format,
     uchar* data_image) {
   auto output_frame = absl::make_unique<ImageFrame>(
       target_format, renderer_->GetImageWidth(), renderer_->GetImageHeight());
 
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU)
   output_frame->CopyPixelData(target_format, renderer_->GetImageWidth(),
                               renderer_->GetImageHeight(), data_image,
                               ImageFrame::kGlDefaultAlignmentBoundary);
@@ -317,7 +363,7 @@ REGISTER_CALCULATOR(AnnotationOverlayCalculator);
   output_frame->CopyPixelData(target_format, renderer_->GetImageWidth(),
                               renderer_->GetImageHeight(), data_image,
                               ImageFrame::kDefaultAlignmentBoundary);
-#endif  // __ANDROID__
+#endif  //  !MEDIAPIPE_DISABLE_GPU
 
   cc->Outputs()
       .Tag(kOutputFrameTag)
@@ -328,22 +374,21 @@ REGISTER_CALCULATOR(AnnotationOverlayCalculator);
 
 ::mediapipe::Status AnnotationOverlayCalculator::RenderToGpu(
     CalculatorContext* cc, uchar* overlay_image) {
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU)
   // Source and destination textures.
   const auto& input_frame =
       cc->Inputs().Tag(kInputFrameTagGpu).Get<mediapipe::GpuBuffer>();
   auto input_texture = gpu_helper_.CreateSourceTexture(input_frame);
 
-  const int width = input_frame.width(), height = input_frame.height();
   auto output_texture = gpu_helper_.CreateDestinationTexture(
-      width, height, mediapipe::GpuBufferFormat::kBGRA32);
+      width_, height_, mediapipe::GpuBufferFormat::kBGRA32);
 
   // Upload render target to GPU.
   {
     glClear(GL_COLOR_BUFFER_BIT | GL_DEPTH_BUFFER_BIT);
 
     glBindTexture(GL_TEXTURE_2D, image_mat_tex_);
-    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width, height, GL_RGB,
+    glTexSubImage2D(GL_TEXTURE_2D, 0, 0, 0, width_, height_, GL_RGB,
                     GL_UNSIGNED_BYTE, overlay_image);
     glBindTexture(GL_TEXTURE_2D, 0);
   }
@@ -357,8 +402,11 @@ REGISTER_CALCULATOR(AnnotationOverlayCalculator);
     glActiveTexture(GL_TEXTURE2);
     glBindTexture(GL_TEXTURE_2D, image_mat_tex_);
 
-    RETURN_IF_ERROR(GlRender(cc));
+    MP_RETURN_IF_ERROR(GlRender(cc));
 
+    glActiveTexture(GL_TEXTURE2);
+    glBindTexture(GL_TEXTURE_2D, 0);
+    glActiveTexture(GL_TEXTURE1);
     glBindTexture(GL_TEXTURE_2D, 0);
     glFlush();
   }
@@ -372,7 +420,7 @@ REGISTER_CALCULATOR(AnnotationOverlayCalculator);
   // Cleanup
   input_texture.Release();
   output_texture.Release();
-#endif  // __ANDROID__
+#endif  //  !MEDIAPIPE_DISABLE_GPU
 
   return ::mediapipe::OkStatus();
 }
@@ -433,33 +481,35 @@ REGISTER_CALCULATOR(AnnotationOverlayCalculator);
 
 ::mediapipe::Status AnnotationOverlayCalculator::CreateRenderTargetGpu(
     CalculatorContext* cc, std::unique_ptr<cv::Mat>& image_mat) {
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU)
   if (image_frame_available_) {
     const auto& input_frame =
         cc->Inputs().Tag(kInputFrameTagGpu).Get<mediapipe::GpuBuffer>();
 
     const mediapipe::ImageFormat::Format format =
         mediapipe::ImageFormatForGpuBufferFormat(input_frame.format());
-    if (format != mediapipe::ImageFormat::SRGBA)
-      RET_CHECK_FAIL() << "Unsupported GPU input format.";
+    if (format != mediapipe::ImageFormat::SRGBA &&
+        format != mediapipe::ImageFormat::SRGB)
+      RET_CHECK_FAIL() << "Unsupported GPU input format: " << format;
 
-    image_mat =
-        absl::make_unique<cv::Mat>(input_frame.height(), input_frame.width(),
-                                   CV_8UC3, cv::Scalar(0, 0, 0, 0));
+    image_mat = absl::make_unique<cv::Mat>(
+        height_, width_, CV_8UC3,
+        cv::Scalar(kAnnotationBackgroundColor[0], kAnnotationBackgroundColor[1],
+                   kAnnotationBackgroundColor[2]));
   } else {
     image_mat = absl::make_unique<cv::Mat>(
         options_.canvas_height_px(), options_.canvas_width_px(), CV_8UC3,
         cv::Scalar(options_.canvas_color().r(), options_.canvas_color().g(),
                    options_.canvas_color().b()));
   }
-#endif  // __ANDROID__
+#endif  //  !MEDIAPIPE_DISABLE_GPU
 
   return ::mediapipe::OkStatus();
 }
 
 ::mediapipe::Status AnnotationOverlayCalculator::GlRender(
     CalculatorContext* cc) {
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU)
   static const GLfloat square_vertices[] = {
       -1.0f, -1.0f,  // bottom left
       1.0f,  -1.0f,  // bottom right
@@ -507,14 +557,14 @@ REGISTER_CALCULATOR(AnnotationOverlayCalculator);
   glBindVertexArray(0);
   glDeleteVertexArrays(1, &vao);
   glDeleteBuffers(2, vbo);
-#endif  // __ANDROID__
+#endif  //  !MEDIAPIPE_DISABLE_GPU
 
   return ::mediapipe::OkStatus();
 }
 
 ::mediapipe::Status AnnotationOverlayCalculator::GlSetup(
     CalculatorContext* cc) {
-#if defined(__ANDROID__)
+#if !defined(MEDIAPIPE_DISABLE_GPU)
   const GLint attr_location[NUM_ATTRIBUTES] = {
       ATTRIB_VERTEX,
       ATTRIB_TEXTURE_POSITION,
@@ -545,13 +595,14 @@ REGISTER_CALCULATOR(AnnotationOverlayCalculator);
     in vec2 sample_coordinate;
     uniform sampler2D input_frame;
     uniform sampler2D overlay;
+    uniform vec3 transparent_color;
 
     void main() {
       vec3 image_pix = texture2D(input_frame, sample_coordinate).rgb;
       vec3 overlay_pix = texture2D(overlay, sample_coordinate).rgb;
       vec3 out_pix = image_pix;
-      float mag = dot(overlay_pix.rgb, vec3(1.0));
-      if (mag > 0.0) out_pix = overlay_pix;
+      float dist = distance(overlay_pix.rgb, transparent_color);
+      if (dist > 0.001) out_pix = overlay_pix;
       fragColor.rgb = out_pix;
       fragColor.a = 1.0;
     }
@@ -565,15 +616,23 @@ REGISTER_CALCULATOR(AnnotationOverlayCalculator);
   glUseProgram(program_);
   glUniform1i(glGetUniformLocation(program_, "input_frame"), 1);
   glUniform1i(glGetUniformLocation(program_, "overlay"), 2);
+  glUniform3f(glGetUniformLocation(program_, "transparent_color"),
+              kAnnotationBackgroundColor[0] / 255.0,
+              kAnnotationBackgroundColor[1] / 255.0,
+              kAnnotationBackgroundColor[2] / 255.0);
 
   // Init texture for opencv rendered frame.
   const auto& input_frame =
       cc->Inputs().Tag(kInputFrameTagGpu).Get<mediapipe::GpuBuffer>();
-  const int width = input_frame.width(), height = input_frame.height();
+  // Ensure GPU texture is divisible by 4. See b/138751944 for more info.
+  width_ =
+      RoundUp(input_frame.width(), ImageFrame::kGlDefaultAlignmentBoundary);
+  height_ =
+      RoundUp(input_frame.height(), ImageFrame::kGlDefaultAlignmentBoundary);
   {
     glGenTextures(1, &image_mat_tex_);
     glBindTexture(GL_TEXTURE_2D, image_mat_tex_);
-    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width, height, 0, GL_RGB,
+    glTexImage2D(GL_TEXTURE_2D, 0, GL_RGB8, width_, height_, 0, GL_RGB,
                  GL_UNSIGNED_BYTE, nullptr);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MAG_FILTER, GL_NEAREST);
     glTexParameteri(GL_TEXTURE_2D, GL_TEXTURE_MIN_FILTER, GL_NEAREST);
@@ -581,7 +640,7 @@ REGISTER_CALCULATOR(AnnotationOverlayCalculator);
     glTexParameterf(GL_TEXTURE_2D, GL_TEXTURE_WRAP_T, GL_CLAMP_TO_EDGE);
     glBindTexture(GL_TEXTURE_2D, 0);
   }
-#endif  // __ANDROID__
+#endif  //  !MEDIAPIPE_DISABLE_GPU
 
   return ::mediapipe::OkStatus();
 }

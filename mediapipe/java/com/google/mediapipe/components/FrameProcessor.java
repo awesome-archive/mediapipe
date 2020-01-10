@@ -109,7 +109,7 @@ public class FrameProcessor implements TextureFrameProcessor {
 
       mediapipeGraph.setParentGlContext(parentNativeContext);
     } catch (MediaPipeException e) {
-      // TODO: Report this error from MediaPipe.
+      Log.e(TAG, "Mediapipe error: ", e);
     }
 
     videoSurfaceOutput = mediapipeGraph.addSurfaceOutput(videoOutputStream);
@@ -146,6 +146,11 @@ public class FrameProcessor implements TextureFrameProcessor {
 
   public void setHybridPath() {
     hybridPath = true;
+  }
+
+  /** Adds a callback to the graph to process packets from the specified output stream. */
+  public void addPacketCallback(String outputStream, PacketCallback callback) {
+    mediapipeGraph.addPacketCallback(outputStream, callback);
   }
 
   public void addConsumer(TextureFrameConsumer listener) {
@@ -185,21 +190,15 @@ public class FrameProcessor implements TextureFrameProcessor {
   public void close() {
     if (started.get()) {
       try {
-        mediapipeGraph.closeAllInputStreams();
-
-        // TODO Add a way to signal a source calculator to stop.
-        // Required for a graph containing a source calculator to shut down properly.
-        mediapipeGraph.cancelGraph();
-
+        mediapipeGraph.closeAllPacketSources();
         mediapipeGraph.waitUntilGraphDone();
       } catch (MediaPipeException e) {
-        // TODO: cancelGraph will cause an exception to be raised in waitUntilGraphDone.
-        // We should not cancel the graph here! Also, we should handle exceptions better.
+        Log.e(TAG, "Mediapipe error: ", e);
       }
       try {
         mediapipeGraph.tearDown();
       } catch (MediaPipeException e) {
-        // TODO: Report this error from MediaPipe.
+        Log.e(TAG, "Mediapipe error: ", e);
       }
     }
   }
@@ -209,6 +208,7 @@ public class FrameProcessor implements TextureFrameProcessor {
    *
    * <p>Normally the graph is initialized when the first frame arrives. You can optionally call this
    * method to initialize it ahead of time.
+   * @throws MediaPipeException for any error status.
    */
   public void preheat() {
     if (!started.getAndSet(true)) {
@@ -220,6 +220,10 @@ public class FrameProcessor implements TextureFrameProcessor {
     this.addFrameListener = addFrameListener;
   }
 
+  /**
+   * Returns true if the MediaPipe graph can accept one more input frame.
+   * @throws MediaPipeException for any error status.
+   */
   private boolean maybeAcceptNewFrame() {
     if (!started.getAndSet(true)) {
       startGraph();
@@ -254,7 +258,7 @@ public class FrameProcessor implements TextureFrameProcessor {
       mediapipeGraph.addConsumablePacketToInputStream(
           videoInputStream, imagePacket, frame.getTimestamp());
     } catch (MediaPipeException e) {
-      // TODO: Report this error from MediaPipe.
+      Log.e(TAG, "Mediapipe error: ", e);
     }
     imagePacket.release();
   }
@@ -281,7 +285,7 @@ public class FrameProcessor implements TextureFrameProcessor {
       // packet, which may allow for more memory optimizations.
       mediapipeGraph.addConsumablePacketToInputStream(videoInputStreamCpu, packet, timestamp);
     } catch (MediaPipeException e) {
-      // TODO: Report this error from MediaPipe.
+      Log.e(TAG, "Mediapipe error: ", e);
     }
     packet.release();
   }
@@ -290,10 +294,14 @@ public class FrameProcessor implements TextureFrameProcessor {
     try {
       mediapipeGraph.waitUntilGraphIdle();
     } catch (MediaPipeException e) {
-      // TODO: Report this error from MediaPipe.
+      Log.e(TAG, "Mediapipe error: ", e);
     }
   }
 
+  /**
+   * Starts running the MediaPipe graph.
+   * @throws MediaPipeException for any error status.
+   */
   private void startGraph() {
     mediapipeGraph.startRunningGraph();
   }

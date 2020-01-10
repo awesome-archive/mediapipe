@@ -191,7 +191,8 @@ msu.create_bytes_context_feature(
 msu.create_bytes_context_feature(
     "clip_media_id", CLIP_MEDIA_ID_KEY, module_dict=globals())
 msu.create_bytes_context_feature(
-    "clip_alternative_media_id", CLIP_MEDIA_ID_KEY, module_dict=globals())
+    "clip_alternative_media_id", ALTERNATIVE_CLIP_MEDIA_ID_KEY,
+    module_dict=globals())
 msu.create_bytes_context_feature(
     "clip_encoded_media_bytes", CLIP_ENCODED_MEDIA_BYTES_KEY,
     module_dict=globals())
@@ -283,13 +284,15 @@ REGION_TRACK_CONFIDENCE_KEY = "region/track/confidence"
 # have overlapping track ids.
 REGION_CLASS_INDEX_KEY = "region/class/index"
 REGION_CLASS_STRING_KEY = "region/class/string"
-REGION_CLASS_CONFIDENCE_KEY = "region/class/confidencee"
+REGION_CLASS_CONFIDENCE_KEY = "region/class/confidence"
 # The timestamp of the region annotation in microseconds.
 REGION_TIMESTAMP_KEY = "region/timestamp"
 # The original timestamp in microseconds for region annotations.
 # If regions are aligned to image frames, this field preserves the original
 # timestamps.
 REGION_UNMODIFIED_TIMESTAMP_KEY = "region/unmodified_timestamp"
+# The list of region parts expected in this example.
+REGION_PARTS_KEY = "region/parts"
 # The dimensions of each embedding per region / bounding box.
 REGION_EMBEDDING_DIMENSIONS_PER_REGION_KEY = (
     "region/embedding/dimensions_per_region")
@@ -360,6 +363,9 @@ def _create_region_with_prefix(name, prefix):
                                      prefix=prefix, module_dict=globals())
   msu.create_float_list_feature_list(name + "_point_y", REGION_POINT_Y_KEY,
                                      prefix=prefix, module_dict=globals())
+  msu.create_bytes_list_context_feature(name + "_parts",
+                                        REGION_PARTS_KEY,
+                                        prefix=prefix, module_dict=globals())
   msu.create_float_list_context_feature(
       name + "_embedding_dimensions_per_region",
       REGION_EMBEDDING_DIMENSIONS_PER_REGION_KEY,
@@ -450,6 +456,8 @@ IMAGE_TIMESTAMP_KEY = "image/timestamp"
 IMAGE_LABEL_INDEX_KEY = "image/label/index"
 IMAGE_LABEL_STRING_KEY = "image/label/string"
 IMAGE_LABEL_CONFIDENCE_KEY = "image/label/confidence"
+# The path of the image file if it did not come from a media clip.
+IMAGE_DATA_PATH_KEY = "image/data_path"
 
 
 def _create_image_with_prefix(name, prefix):
@@ -477,9 +485,13 @@ def _create_image_with_prefix(name, prefix):
   msu.create_int_list_context_feature(
       name + "_object_class_index", IMAGE_OBJECT_CLASS_INDEX_KEY,
       prefix=prefix, module_dict=globals())
+  msu.create_bytes_context_feature(name + "_data_path", IMAGE_DATA_PATH_KEY,
+                                   prefix=prefix, module_dict=globals())
   msu.create_int_feature_list(name + "_timestamp", IMAGE_TIMESTAMP_KEY,
                               prefix=prefix, module_dict=globals())
-
+  msu.create_bytes_list_feature_list(name + "_multi_encoded",
+                                     IMAGE_MULTI_ENCODED_KEY, prefix=prefix,
+                                     module_dict=globals())
 FORWARD_FLOW_PREFIX = "FORWARD_FLOW"
 CLASS_SEGMENTATION_PREFIX = "CLASS_SEGMENTATION"
 INSTANCE_SEGMENTATION_PREFIX = "INSTANCE_SEGMENTATION"

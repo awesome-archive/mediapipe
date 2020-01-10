@@ -567,6 +567,10 @@ class TemplateExpanderImpl {
       result = AsDict(args);
     } else if (expr.op() == "list") {
       result = AsList(args);
+    } else if (expr.op() == "size") {
+      return AsArgument(static_cast<double>(
+          args[0].has_dict() ? args[0].mutable_dict()->arg_size()
+                             : args[0].mutable_element()->size()));
     }
     return result;
   }
@@ -604,7 +608,8 @@ class TemplateExpanderImpl {
                                      ? mediapipe::SimpleDtoa(args[i].num())
                                      : args[i].str();
         std::vector<FieldValue> r;
-        RETURN_IF_ERROR(ProtoUtilLite::Serialize({text_value}, field_type, &r));
+        MP_RETURN_IF_ERROR(
+            ProtoUtilLite::Serialize({text_value}, field_type, &r));
         result->push_back(r[0]);
       }
     }

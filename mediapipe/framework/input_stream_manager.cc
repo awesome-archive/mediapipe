@@ -151,15 +151,15 @@ template <typename Container>
 
       // If the caller is MovePackets(), packet's underlying holder should be
       // transferred into queue_. Otherwise, queue_ keeps a copy of the packet.
+      ++num_packets_added_;
+      VLOG(2) << "Input stream:" << name_
+              << " has added packet at time: " << packet.Timestamp();
       if (std::is_const<
               typename std::remove_reference<Container>::type>::value) {
         queue_.emplace_back(packet);
       } else {
         queue_.emplace_back(std::move(packet));
       }
-      ++num_packets_added_;
-      VLOG(2) << "Input stream:" << name_
-              << " has added packet at time: " << packet.Timestamp();
     }
     queue_became_full = (!was_queue_full && max_queue_size_ != -1 &&
                          queue_.size() >= max_queue_size_);
@@ -229,6 +229,11 @@ Timestamp InputStreamManager::MinTimestampOrBound(bool* is_empty) const {
   if (is_empty) {
     *is_empty = queue_.empty();
   }
+  return MinTimestampOrBoundHelper();
+}
+
+Timestamp InputStreamManager::MinTimestampOrBoundHelper() const
+    EXCLUSIVE_LOCKS_REQUIRED(stream_mutex_) {
   return queue_.empty() ? next_timestamp_bound_ : queue_.front().Timestamp();
 }
 
@@ -271,7 +276,9 @@ Packet InputStreamManager::PopPacketAtTimestamp(Timestamp timestamp,
     }
     // Clear value_ if it doesn't have exactly the right timestamp.
     if (current_timestamp != timestamp) {
-      packet = Packet();
+      // The timestamp bound reported when no packet is sent.
+      Timestamp bound = MinTimestampOrBoundHelper();
+      packet = Packet().At(bound.PreviousAllowedInStream());
       ++(*num_packets_dropped);
     }
 

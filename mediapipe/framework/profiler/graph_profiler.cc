@@ -66,7 +66,7 @@ bool IsProfilerEnabled(const ProfilerConfig& profiler_config) {
 
 // Returns true if trace events are recorded.
 bool IsTracerEnabled(const ProfilerConfig& profiler_config) {
-  return profiler_config.trace_log_capacity() > 0;
+  return profiler_config.trace_enabled();
 }
 
 // Returns true if trace events are written to a log file.
@@ -174,6 +174,10 @@ void GraphProfiler::Pause() {
 }
 
 void GraphProfiler::Resume() {
+  // is_profiling_ enables recording of performance stats.
+  // is_tracing_ enables recording of timing events.
+  // While the graph is running, these variables indicate
+  // IsProfilerEnabled and IsTracerEnabled.
   is_profiling_ = IsProfilerEnabled(profiler_config_);
   is_tracing_ = IsTracerEnabled(profiler_config_);
 }
@@ -220,7 +224,7 @@ void GraphProfiler::Reset() {
   Pause();
   // If specified, write a final profile.
   if (IsTraceLogEnabled(profiler_config_)) {
-    RETURN_IF_ERROR(WriteProfile());
+    MP_RETURN_IF_ERROR(WriteProfile());
   }
   return ::mediapipe::OkStatus();
 }
@@ -502,7 +506,7 @@ void GraphProfiler::AddProcessSample(
 }
 
 std::unique_ptr<GlProfilingHelper> GraphProfiler::CreateGlProfilingHelper() {
-  if (!IsProfilerEnabled(profiler_config_)) {
+  if (!IsTracerEnabled(profiler_config_)) {
     return nullptr;
   }
   return absl::make_unique<mediapipe::GlProfilingHelper>(shared_from_this());
@@ -520,7 +524,7 @@ class OstreamStream : public proto_ns::io::ZeroCopyOutputStream {
     return WriteBuffer();
   }
   void BackUp(int count) override { buffer_used_ -= count; }
-  proto_int64 ByteCount() const override { return position_; }
+  int64_t ByteCount() const override { return position_; }
 
  private:
   // Writes the buffer to the ostream.
@@ -576,7 +580,6 @@ void AssignNodeNames(GraphProfile* profile) {
   LOG(INFO) << "trace_log_path: " << trace_log_path;
   int log_interval_count = GetLogIntervalCount(profiler_config_);
   int log_file_count = GetLogFileCount(profiler_config_);
-  ++previous_log_index_;
 
   // Record the GraphTrace events since the previous WriteProfile.
   // The end_time is chosen to be trace_log_margin_usec in the past,
@@ -586,12 +589,16 @@ void AssignNodeNames(GraphProfile* profile) {
       absl::Microseconds(profiler_config_.trace_log_margin_usec());
   GraphProfile profile;
   GraphTrace* trace = profile.add_graph_trace();
-  if (profiler_config_.trace_log_duration_events()) {
+  if (!profiler_config_.trace_log_duration_events()) {
     tracer()->GetTrace(previous_log_end_time_, end_time, trace);
   } else {
     tracer()->GetLog(previous_log_end_time_, end_time, trace);
   }
   previous_log_end_time_ = end_time;
+  // If there are no trace events, skip log writing.
+  if (is_tracing_ && trace->calculator_trace().empty()) {
+    return ::mediapipe::OkStatus();
+  }
 
   // Record the latest CalculatorProfiles.
   Status status;
@@ -603,6 +610,7 @@ void AssignNodeNames(GraphProfile* profile) {
   this->Reset();
 
   // Record the CalculatorGraphConfig, once per log file.
+  ++previous_log_index_;
   bool is_new_file = (previous_log_index_ % log_interval_count == 0);
   if (is_new_file) {
     *profile.mutable_config() = validated_graph_->Config();

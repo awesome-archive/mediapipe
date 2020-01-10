@@ -69,25 +69,11 @@ mediapipe::Status AddStreamHeadersIntoGraph(
   return mediapipe::OkStatus();
 }
 
-// Creates a java MediaPipeException object for a mediapipe::Status.
-jthrowable CreateMediaPipeException(JNIEnv* env, mediapipe::Status status) {
-  jclass status_cls =
-      env->FindClass("com/google/mediapipe/framework/MediaPipeException");
-  jmethodID status_ctr = env->GetMethodID(status_cls, "<init>", "(I[B)V");
-  int length = status.message().length();
-  jbyteArray message_bytes = env->NewByteArray(length);
-  env->SetByteArrayRegion(message_bytes, 0, length,
-                          reinterpret_cast<jbyte*>(const_cast<char*>(
-                              std::string(status.message()).c_str())));
-  return reinterpret_cast<jthrowable>(
-      env->NewObject(status_cls, status_ctr, status.code(), message_bytes));
-}
-
 // Throws a MediaPipeException for any non-ok mediapipe::Status.
 // Note that the exception is thrown after execution returns to Java.
 bool ThrowIfError(JNIEnv* env, mediapipe::Status status) {
   if (!status.ok()) {
-    env->Throw(CreateMediaPipeException(env, status));
+    env->Throw(mediapipe::android::CreateMediaPipeException(env, status));
     return true;
   }
   return false;
@@ -129,6 +115,45 @@ JNIEXPORT void JNICALL GRAPH_METHOD(nativeLoadBinaryGraphBytes)(
   int size = env->GetArrayLength(data);
   mediapipe::Status status =
       mediapipe_graph->LoadBinaryGraph(reinterpret_cast<char*>(data_ptr), size);
+  env->ReleaseByteArrayElements(data, data_ptr, JNI_ABORT);
+  ThrowIfError(env, status);
+}
+
+JNIEXPORT void JNICALL GRAPH_METHOD(nativeLoadBinaryGraphTemplate)(
+    JNIEnv* env, jobject thiz, jlong context, jbyteArray data) {
+  mediapipe::android::Graph* mediapipe_graph =
+      reinterpret_cast<mediapipe::android::Graph*>(context);
+  jbyte* data_ptr = env->GetByteArrayElements(data, nullptr);
+  int size = env->GetArrayLength(data);
+  mediapipe::Status status = mediapipe_graph->LoadBinaryGraphTemplate(
+      reinterpret_cast<char*>(data_ptr), size);
+  env->ReleaseByteArrayElements(data, data_ptr, JNI_ABORT);
+  ThrowIfError(env, status);
+}
+
+JNIEXPORT void JNICALL GRAPH_METHOD(nativeSetGraphType)(JNIEnv* env,
+                                                        jobject thiz,
+                                                        jlong context,
+                                                        jstring graph_type) {
+  mediapipe::android::Graph* mediapipe_graph =
+      reinterpret_cast<mediapipe::android::Graph*>(context);
+  const char* graph_type_ref = env->GetStringUTFChars(graph_type, nullptr);
+  // Make a copy of the std::string and release the jni reference.
+  std::string graph_type_string(graph_type_ref);
+  env->ReleaseStringUTFChars(graph_type, graph_type_ref);
+  ThrowIfError(env, mediapipe_graph->SetGraphType(graph_type_string));
+}
+
+JNIEXPORT void JNICALL GRAPH_METHOD(nativeSetGraphOptions)(JNIEnv* env,
+                                                           jobject thiz,
+                                                           jlong context,
+                                                           jbyteArray data) {
+  mediapipe::android::Graph* mediapipe_graph =
+      reinterpret_cast<mediapipe::android::Graph*>(context);
+  jbyte* data_ptr = env->GetByteArrayElements(data, nullptr);
+  int size = env->GetArrayLength(data);
+  mediapipe::Status status =
+      mediapipe_graph->SetGraphOptions(reinterpret_cast<char*>(data_ptr), size);
   env->ReleaseByteArrayElements(data, data_ptr, JNI_ABORT);
   ThrowIfError(env, status);
 }

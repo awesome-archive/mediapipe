@@ -44,11 +44,11 @@ TemplateSubgraph::~TemplateSubgraph() {}
 
 ::mediapipe::StatusOr<CalculatorGraphConfig> TemplateSubgraph::GetConfig(
     const Subgraph::SubgraphOptions& options) {
-  const TemplateDict& arguments =
-      options.GetExtension(TemplateSubgraphOptions::ext).dict();
+  TemplateDict arguments =
+      Subgraph::GetOptions<mediapipe::TemplateSubgraphOptions>(options).dict();
   tool::TemplateExpander expander;
   CalculatorGraphConfig config;
-  RETURN_IF_ERROR(expander.ExpandTemplates(arguments, templ_, &config));
+  MP_RETURN_IF_ERROR(expander.ExpandTemplates(arguments, templ_, &config));
   return config;
 }
 
@@ -94,7 +94,7 @@ bool GraphRegistry::IsRegistered(const std::string& ns,
       local_factories_.IsRegistered(ns, type_name)
           ? local_factories_.Invoke(ns, type_name)
           : global_factories_->Invoke(ns, type_name);
-  RETURN_IF_ERROR(maker.status());
+  MP_RETURN_IF_ERROR(maker.status());
   return maker.ValueOrDie()->GetConfig(graph_options);
 }
 

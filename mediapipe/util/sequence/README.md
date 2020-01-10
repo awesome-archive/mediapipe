@@ -6,8 +6,6 @@ prototypes used in MediaSequence for storing multimedia data in
 SequenceExamples. Finally, the documentation will describe the specific keys for
 storing specific types of data.
 
-[TOC]
-
 ## Overview of MediaSequence for machine learning
 
 The goal of MediaSequence is to provide a tool for transforming annotations of
@@ -440,6 +438,7 @@ tasks and tracking (or class) fields for tracking information.
 |`region/class/string`|feature list bytes list|`add_bbox_class_string` / `AddBBoxClassString`|For each region, lists the string class. Multiple classes for one region require duplicating the region.|
 |`region/class/confidence`|feature list float list|`add_bbox_class_confidence` / `AddBBoxClassConfidence`|For each region, lists the confidence or weight for the class. Multiple classes for one region require duplicating the region.|
 |`region/embedding/float`|feature list float list|`add_bbox_embedding_floats` / `AddBBoxEmbeddingFloats`|For each region, provide an embedding as sequence of floats.|
+|`region/parts`|context bytes list|`set_bbox_parts` / `SetBBoxParts`|The list of region parts expected in this example.|
 |`region/embedding/ dimensions_per_region`|context int list|`set_bbox_embedding_dimensions_per_region` / `SetBBoxEmbeddingDimensionsPerRegion`|Provide the dimensions for each embedding.|
 |`region/embedding/format`|context string|`set_bbox_embedding_format` / `SetBBoxEmbeddingFormat`|Provides the encoding format, if any, for region embeddings.|
 |`region/embedding/encoded`|feature list bytes list|`add_bbox_embedding_encoded` / `AddBBoxEmbeddingEncoded`|For each region, provide an encoded embedding.|
@@ -460,12 +459,14 @@ tasks and tracking (or class) fields for tracking information.
 |`image/height`|context int|`set_image_height` / `SetImageHeight`|The height of the image in pixels.|
 |`image/width`|context int|`set_image_width` / `SetImageWidth`|The width of the image in pixels.|
 |`image/frame_rate`|context float|`set_image_frame_rate` / `SetImageFrameRate`|The rate of images in frames per second.|
+|`image/data_path`|context bytes|`set_image_data_path` / `SetImageDataPath`|The path of the image file if it did not come from a media clip.|
 
 ### Keys related to image class segmentation
 | key | type | python call / c++ call | description |
 |-----|------|------------------------|-------------|
 |`CLASS_SEGMENTATION/image/encoded`|feature list bytes|`add_class_segmentation_encoded` / `AddClassSegmentationEncoded`|The encoded image of class labels at each timestep.|
 |`CLASS_SEGMENTATION/image/timestamp`|feature list int|`add_class_segmentation_timestamp` / `AddClassSegmentationTimestamp`|The timestamp in microseconds for the class labels.|
+|`CLASS_SEGMENTATION/image/multi_encoded`|feature list bytes list|`add_class_segmentation_multi_encoded` / `AddClassSegmentationMultiEncoded`|Storing multiple segmentation masks in case they overlap.|
 |`CLASS_SEGMENTATION/image/format`|context bytes|`set_class_segmentation_format` / `SetClassSegmentationFormat`|The encoding format of the class label images.|
 |`CLASS_SEGMENTATION/image/height`|context int|`set_class_segmentation_height` / `SetClassSegmentationHeight`|The height of the image in pixels.|
 |`CLASS_SEGMENTATION/image/width`|context int|`set_class_segmentation_width` / `SetClassSegmentationWidth`|The width of the image in pixels.|
@@ -477,6 +478,7 @@ tasks and tracking (or class) fields for tracking information.
 |-----|------|------------------------|-------------|
 |`INSTANCE_SEGMENTATION/image/ encoded`|feature list bytes|`add_instance_segmentation_encoded` / `AddInstanceSegmentationEncoded`|The encoded image of object instance labels at each timestep.|
 |`INSTANCE_SEGMENTATION/image/ timestamp`|feature list int|`add_instance_segmentation_timestamp` / `AddInstanceSegmentationTimestamp`|The timestamp in microseconds for the object instance labels.|
+|`INSTANCE_SEGMENTATION/image/multi_encoded`|feature list bytes list|`add_instance_segmentation_multi_encoded` / `AddInstanceSegmentationEncoded`|Storing multiple segmentation masks in case they overlap.|
 |`INSTANCE_SEGMENTATION/image/ format`|context bytes|`set_instance_segmentation_format` / `SetInstanceSegmentationFormat`|The encoding format of the object instance labels.|
 |`INSTANCE_SEGMENTATION/image/ height`|context int|`set_instance_segmentation_height` / `SetInstanceSegmentationHeight`|The height of the image in pixels.|
 |`INSTANCE_SEGMENTATION/image/ width`|context int|`set_instance_segmentation_width` / `SetInstanceSegmentationWidth`|The width of the image in pixels.|
