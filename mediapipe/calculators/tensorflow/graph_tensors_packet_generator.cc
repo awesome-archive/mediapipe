@@ -33,7 +33,7 @@ namespace tf = ::tensorflow;
 
 class GraphTensorsPacketGenerator : public PacketGenerator {
  public:
-  static ::mediapipe::Status FillExpectations(
+  static absl::Status FillExpectations(
       const PacketGeneratorOptions& extendable_options,
       PacketTypeSet* input_side_packets, PacketTypeSet* output_side_packets) {
     RET_CHECK(extendable_options.HasExtension(
@@ -45,10 +45,10 @@ class GraphTensorsPacketGenerator : public PacketGenerator {
             /* "A map of tensor tags and tensors" */);
     RET_CHECK_EQ(options.tensor_tag_size(), options.tensor_num_nodes_size());
     RET_CHECK_GT(options.tensor_tag_size(), 0);
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  static ::mediapipe::Status Generate(
+  static absl::Status Generate(
       const PacketGeneratorOptions& packet_generator_options,
       const PacketSet& input_side_packets, PacketSet* output_side_packets) {
     const GraphTensorsPacketGeneratorOptions& options =
@@ -59,13 +59,13 @@ class GraphTensorsPacketGenerator : public PacketGenerator {
 
     for (int i = 0; i < options.tensor_tag_size(); ++i) {
       const std::string& tensor_tag = options.tensor_tag(i);
-      const int32 tensor_num_nodes = options.tensor_num_nodes(i);
+      const int32_t tensor_num_nodes = options.tensor_num_nodes(i);
       (*tensor_map)[tensor_tag] =
           tf::Tensor(tf::DT_FLOAT, tf::TensorShape{1, tensor_num_nodes});
       (*tensor_map)[tensor_tag].flat<float>().setZero();
     }
     output_side_packets->Index(0) = AdoptAsUniquePtr(tensor_map.release());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 };
 REGISTER_PACKET_GENERATOR(GraphTensorsPacketGenerator);

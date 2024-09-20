@@ -23,11 +23,18 @@
 #include <vector>
 
 #include "absl/base/macros.h"
+#include "absl/log/absl_check.h"
+#include "absl/log/absl_log.h"
+#include "absl/status/status.h"
 #include "absl/strings/str_split.h"
+#include "absl/strings/string_view.h"
+#include "absl/types/span.h"
 #include "mediapipe/framework/collection.h"
+#include "mediapipe/framework/deps/no_destructor.h"
 #include "mediapipe/framework/packet.h"
 #include "mediapipe/framework/packet_set.h"
 #include "mediapipe/framework/port/status.h"
+#include "mediapipe/framework/tool/type_util.h"
 #include "mediapipe/framework/tool/validate_name.h"
 #include "mediapipe/framework/type_map.h"
 
@@ -40,9 +47,11 @@ namespace mediapipe {
 class PacketType {
  public:
   // Creates an uninitialized PacketType.
-  PacketType();
-  PacketType(const PacketType&) = delete;
-  PacketType& operator=(const PacketType&) = delete;
+  PacketType() = default;
+
+  // PacketType can be passed by value.
+  PacketType(const PacketType&) = default;
+  PacketType& operator=(const PacketType&) = default;
 
   // False for a PacketType that has not had any Set*() function called.
   bool IsInitialized() const;
@@ -60,6 +69,9 @@ class PacketType {
   // Specifically, using SetAny() still means that the stream has a type
   // but this particular calculator just doesn't care what it is.
   PacketType& SetAny();
+  // Sets the packet type to accept any of the provided types.
+  template <typename... T>
+  PacketType& SetOneOf();
   // Sets the packet type to not accept any packets.
   PacketType& SetNone();
   // Sets the PacketType to be the same as type.  This actually stores
@@ -77,15 +89,25 @@ class PacketType {
   bool IsAny() const;
   // Returns true if this PacketType allows nothing.
   bool IsNone() const;
+  // Returns true if this PacketType allows a set of types.
+  bool IsOneOf() const;
+  // Returns true if this PacketType allows one specific type.
+  bool IsExactType() const;
+  // Returns true if this port has been marked as optional.
   bool IsOptional() const { return optional_; }
 
   // Returns true iff this and other are consistent, meaning they do
   // not expect different types.  IsAny() is consistent with anything.
   // IsNone() is only consistent with IsNone() and IsAny().
+  // Note: this is definied as a symmetric relationship, but within the
+  // framework, it is consistently invoked as:
+  //   input_port_type.IsConsistentWith(connected_output_port_type)
+  // TODO: consider making this explicitly directional, and
+  // sharing some logic with the packet validation check.
   bool IsConsistentWith(const PacketType& other) const;
 
   // Returns OK if the packet contains an object of the appropriate type.
-  ::mediapipe::Status Validate(const Packet& packet) const;
+  absl::Status Validate(const Packet& packet) const;
 
   // Returns a pointer to the Registered type name, or nullptr if the type
   // is not registered.  Do not use this for validation, use Validate()
@@ -93,26 +115,38 @@ class PacketType {
   const std::string* RegisteredTypeName() const;
   // Returns the type name.  Do not use this for validation, use
   // Validate() instead.
-  const std::string DebugTypeName() const;
+  std::string DebugTypeName() const;
 
  private:
-  // Typedef for the ValidateAsType() method in Packet that is used for
-  // type validation and identification.
-  typedef ::mediapipe::Status (Packet::*ValidateMethodType)() const;
+  struct SameAs {
+    // This PacketType is the same as other.
+    // We don't do union-find optimizations in order to avoid a mutex.
+    const PacketType* other;
+  };
+  using TypeIdSpan = absl::Span<const TypeId>;
+  struct MultiType {
+    TypeIdSpan types;
+    // TODO: refactor RegisteredTypeName, remove.
+    const std::string* registered_type_name;
+  };
+  struct SpecialType;
+  using TypeSpec =
+      absl::variant<absl::monostate, TypeId, MultiType, SameAs, SpecialType>;
+  typedef absl::Status (*AcceptsTypeFn)(const TypeSpec& type);
+  struct SpecialType {
+    std::string name_;
+    AcceptsTypeFn accept_fn_;
+  };
 
-  // Records whether the packet type was set in any way.
-  bool initialized_;
-  // Don't allow any packets through.
-  bool no_packets_allowed_;
-  // Pointer to Packet::ValidateAsType<T>.
-  ValidateMethodType validate_method_;
-  // Type name as std::string.
-  std::string type_name_;
-  // The Registered type name or nullptr if the type isn't registered.
-  const std::string* registered_type_name_ptr_ = nullptr;
-  // If this is non-null then this PacketType is the same as same_as_.
-  // We don't do union-find optimizations in order to avoid a mutex.
-  const PacketType* same_as_;
+  static absl::Status AcceptAny(const TypeSpec& type);
+  static absl::Status AcceptNone(const TypeSpec& type);
+
+  const PacketType* SameAsPtr() const;
+  static TypeIdSpan GetTypeSpan(const TypeSpec& type_spec);
+  static std::string TypeNameForOneOf(TypeIdSpan types);
+
+  TypeSpec type_spec_;
+
   // Whether the corresponding port is optional.
   bool optional_ = false;
 };
@@ -126,19 +160,19 @@ class PacketTypeSetErrorHandler {
   // Returns a usable PacketType.  A different PacketType object is
   // returned for each different invalid location and the same object
   // is returned for multiple accesses to the same invalid location.
-  PacketType& GetFallback(const std::string& tag, int index) {
+  PacketType& GetFallback(const absl::string_view tag, int index) {
     if (!missing_) {
       missing_ = absl::make_unique<Missing>();
     }
-    CHECK(!missing_->initialized_errors);
+    ABSL_CHECK(!missing_->initialized_errors);
     std::string key = absl::StrCat(tag, ":", index);
     return missing_->entries[key];
   }
 
   // In the const setting produce a FATAL error.
-  const PacketType& GetFallback(const std::string& tag, int index) const {
-    LOG(FATAL) << "Failed to get tag \"" << tag << "\" index " << index
-               << ".  Unable to defer error due to const specifier.";
+  const PacketType& GetFallback(const absl::string_view tag, int index) const {
+    ABSL_LOG(FATAL) << "Failed to get tag \"" << tag << "\" index " << index
+                    << ".  Unable to defer error due to const specifier.";
     std::abort();
   }
 
@@ -149,14 +183,14 @@ class PacketTypeSetErrorHandler {
   // Get the error messages that have been deferred.
   // This function can only be called if HasError() is true.
   const std::vector<std::string>& ErrorMessages() const {
-    CHECK(missing_) << "ErrorMessages() can only be called if errors have "
-                       "occurred.  Call HasError() before calling this "
-                       "function.";
+    ABSL_CHECK(missing_) << "ErrorMessages() can only be called if errors have "
+                            "occurred.  Call HasError() before calling this "
+                            "function.";
     if (!missing_->initialized_errors) {
       for (const auto& entry : missing_->entries) {
         // Optional entries that were missing are not considered errors.
         if (!entry.second.IsOptional()) {
-          // Split them to keep the error std::string unchanged.
+          // Split them to keep the error string unchanged.
           std::pair<std::string, std::string> tag_idx =
               absl::StrSplit(entry.first, ':');
           missing_->errors.push_back(absl::StrCat("Failed to get tag \"",
@@ -213,26 +247,29 @@ using PacketTypeSet =
 // Returns OK if the packets in the PacketSet are of the appropriate type.
 // packet_type_set must be valid before this is called (but packet_set
 // may be in any state).
-::mediapipe::Status ValidatePacketSet(const PacketTypeSet& packet_type_set,
-                                      const PacketSet& packet_set);
+absl::Status ValidatePacketSet(const PacketTypeSet& packet_type_set,
+                               const PacketSet& packet_set);
 
 // Validates that the PacketTypeSet was initialized properly.
 // An error is returned if
 // 1) Tag() or Index() is called with an invalid argument (however,
 //    a valid PacketType is still returned by the function).
 // 2) Any PacketType is not initialized.
-::mediapipe::Status ValidatePacketTypeSet(const PacketTypeSet& packet_type_set);
+absl::Status ValidatePacketTypeSet(const PacketTypeSet& packet_type_set);
 
 // Templated function definitions.
 
 template <typename T>
 PacketType& PacketType::Set() {
-  initialized_ = true;
-  no_packets_allowed_ = false;
-  validate_method_ = &Packet::ValidateAsType<T>;
-  type_name_ = MediaPipeTypeStringOrDemangled<T>();
-  registered_type_name_ptr_ = MediaPipeTypeString<T>();
-  same_as_ = nullptr;
+  type_spec_ = kTypeId<T>;
+  return *this;
+}
+
+template <typename... T>
+PacketType& PacketType::SetOneOf() {
+  static const NoDestructor<std::vector<TypeId>> types{{kTypeId<T>...}};
+  static const NoDestructor<std::string> name{TypeNameForOneOf(*types)};
+  type_spec_ = MultiType{*types, &*name};
   return *this;
 }
 

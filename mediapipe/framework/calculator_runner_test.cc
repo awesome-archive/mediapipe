@@ -16,6 +16,7 @@
 
 #include "mediapipe/framework/calculator_runner.h"
 
+#include "absl/log/absl_log.h"
 #include "absl/strings/str_cat.h"
 #include "mediapipe/framework/calculator_base.h"
 #include "mediapipe/framework/calculator_registry.h"
@@ -24,13 +25,17 @@
 #include "mediapipe/framework/packet_type.h"
 #include "mediapipe/framework/port/gmock.h"
 #include "mediapipe/framework/port/gtest.h"
-#include "mediapipe/framework/port/logging.h"
 #include "mediapipe/framework/port/status.h"
 #include "mediapipe/framework/port/status_matchers.h"
 #include "mediapipe/framework/timestamp.h"
 
 namespace mediapipe {
 namespace {
+
+constexpr char kTag[] = "";
+constexpr char kBTag[] = "B";
+constexpr char kATag[] = "A";
+constexpr char kSideOutputTag[] = "SIDE_OUTPUT";
 
 // Inputs: 2 streams with ints. Headers are strings.
 // Input side packets: 1.
@@ -40,7 +45,7 @@ namespace {
 // at InputTimestamp. The headers are strings.
 class CalculatorRunnerTestCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Inputs().Index(0).Set<int>();
     cc->Inputs().Index(1).Set<int>();
     cc->Outputs().Index(0).Set<int>();
@@ -48,12 +53,12 @@ class CalculatorRunnerTestCalculator : public CalculatorBase {
     cc->Outputs().Index(2).SetSameAs(&cc->InputSidePackets().Index(0));
     cc->InputSidePackets().Index(0).SetAny();
     cc->OutputSidePackets()
-        .Tag("SIDE_OUTPUT")
+        .Tag(kSideOutputTag)
         .SetSameAs(&cc->InputSidePackets().Index(0));
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) override {
+  absl::Status Open(CalculatorContext* cc) override {
     std::string input_header_string =
         absl::StrCat(cc->Inputs().Index(0).Header().Get<std::string>(),
                      cc->Inputs().Index(1).Header().Get<std::string>());
@@ -64,19 +69,19 @@ class CalculatorRunnerTestCalculator : public CalculatorBase {
           Adopt(new std::string(absl::StrCat(input_header_string, i))));
     }
     cc->OutputSidePackets()
-        .Tag("SIDE_OUTPUT")
+        .Tag(kSideOutputTag)
         .Set(cc->InputSidePackets().Index(0));
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
+  absl::Status Process(CalculatorContext* cc) override {
     for (int index = 0; index < 2; ++index) {
       cc->Outputs().Index(index).Add(
           new int(-cc->Inputs().Index(index).Get<int>()), cc->InputTimestamp());
     }
     cc->Outputs().Index(2).AddPacket(
         cc->InputSidePackets().Index(0).At(cc->InputTimestamp()));
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 };
 REGISTER_CALCULATOR(CalculatorRunnerTestCalculator);
@@ -87,7 +92,7 @@ REGISTER_CALCULATOR(CalculatorRunnerTestCalculator);
 //          with the same tag name (and any index).
 class CalculatorRunnerMultiTagTestCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     for (const std::string& tag : cc->Inputs().GetTags()) {
       for (CollectionItemId item_id = cc->Inputs().BeginId(tag);
            item_id < cc->Inputs().EndId(tag); ++item_id) {
@@ -95,10 +100,10 @@ class CalculatorRunnerMultiTagTestCalculator : public CalculatorBase {
       }
       cc->Outputs().Get(tag, 0).Set<int>();
     }
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
+  absl::Status Process(CalculatorContext* cc) override {
     for (const std::string& tag : cc->Inputs().GetTags()) {
       auto sum = absl::make_unique<int>(0);
       for (CollectionItemId item_id = cc->Inputs().BeginId(tag);
@@ -109,7 +114,7 @@ class CalculatorRunnerMultiTagTestCalculator : public CalculatorBase {
       }
       cc->Outputs().Get(tag, 0).Add(sum.release(), cc->InputTimestamp());
     }
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 };
 REGISTER_CALCULATOR(CalculatorRunnerMultiTagTestCalculator);
@@ -131,7 +136,7 @@ TEST(CalculatorRunner, RunsCalculator) {
   // Run CalculatorRunner::Run() several times, with different inputs. This
   // tests that a CalculatorRunner instance can be reused.
   for (int iter = 0; iter < 3; ++iter) {
-    LOG(INFO) << "iter: " << iter;
+    ABSL_LOG(INFO) << "iter: " << iter;
     const int length = iter;
     // Generate the inputs at timestamps 0 ... length-1, at timestamp t having
     // values t and t*2 for the two streams, respectively.
@@ -150,9 +155,9 @@ TEST(CalculatorRunner, RunsCalculator) {
     const int input_side_packet_content = 10 + iter;
     runner.MutableSidePackets()->Index(0) =
         Adopt(new int(input_side_packet_content));
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     EXPECT_EQ(input_side_packet_content,
-              runner.OutputSidePackets().Tag("SIDE_OUTPUT").Get<int>());
+              runner.OutputSidePackets().Tag(kSideOutputTag).Get<int>());
     const auto& outputs = runner.Outputs();
     ASSERT_EQ(3, outputs.NumEntries());
 
@@ -204,14 +209,14 @@ TEST(CalculatorRunner, MultiTagTestCalculatorOk) {
         ->Get("", ts % 2)
         .packets.push_back(Adopt(new int(ts)).At(Timestamp(ts)));
   }
-  MEDIAPIPE_ASSERT_OK(runner.Run());
+  MP_ASSERT_OK(runner.Run());
 
   const auto& outputs = runner.Outputs();
   ASSERT_EQ(3, outputs.NumEntries());
   for (int ts = 0; ts < 5; ++ts) {
-    const std::vector<Packet>& a_packets = outputs.Tag("A").packets;
-    const std::vector<Packet>& b_packets = outputs.Tag("B").packets;
-    const std::vector<Packet>& c_packets = outputs.Tag("").packets;
+    const std::vector<Packet>& a_packets = outputs.Tag(kATag).packets;
+    const std::vector<Packet>& b_packets = outputs.Tag(kBTag).packets;
+    const std::vector<Packet>& c_packets = outputs.Tag(kTag).packets;
     EXPECT_EQ(Timestamp(ts), a_packets[ts].Timestamp());
     EXPECT_EQ(Timestamp(ts), b_packets[ts].Timestamp());
     EXPECT_EQ(Timestamp(ts), c_packets[ts].Timestamp());

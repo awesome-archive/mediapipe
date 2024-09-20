@@ -15,10 +15,10 @@
 # Description:
 #  Port of various libraries and utilities.
 
-licenses(["notice"])  # Apache 2.0
+licenses(["notice"])
 
 package(
-    default_visibility = ["//visibility:private"],
+    default_visibility = ["//visibility:public"],
     features = ["-parse_headers"],
 )
 
@@ -28,7 +28,6 @@ config_setting(
     define_values = {
         "USE_MEDIAPIPE_THREADPOOL": "1",
     },
-    visibility = ["//visibility:public"],
 )
 
 #TODO : remove from OSS.
@@ -37,14 +36,15 @@ config_setting(
     define_values = {
         "USE_MEDIAPIPE_THREADPOOL": "0",
     },
-    visibility = ["//visibility:public"],
 )
 
 cc_library(
     name = "aligned_malloc_and_free",
     hdrs = ["aligned_malloc_and_free.h"],
-    visibility = ["//visibility:public"],
-    deps = ["//mediapipe/framework/deps:aligned_malloc_and_free"],
+    deps = [
+        "//mediapipe/framework/deps:aligned_malloc_and_free",
+        "@com_google_absl//absl/base:core_headers",
+    ],
 )
 
 # This proto lib is used by any code that needs to do proto I/O and proto template parsing.
@@ -54,14 +54,12 @@ cc_library(
         "advanced_proto_inc.h",
         "proto_ns.h",
     ],
-    visibility = ["//visibility:public"],
     deps = [
         ":advanced_proto_lite",
         ":core_proto",
         "//mediapipe/framework:port",
-    ] + select({
-        "//conditions:default": ["@protobuf_archive//:protobuf"],
-    }),
+        "@com_google_protobuf//:protobuf",
+    ],
 )
 
 cc_library(
@@ -70,19 +68,16 @@ cc_library(
         "advanced_proto_lite_inc.h",
         "proto_ns.h",
     ],
-    visibility = ["//visibility:public"],
     deps = [
         ":core_proto",
         "//mediapipe/framework:port",
-    ] + select({
-        "//conditions:default": ["@protobuf_archive//:protobuf"],
-    }),
+        "@com_google_protobuf//:protobuf",
+    ],
 )
 
 cc_library(
     name = "any_proto",
     hdrs = ["any_proto.h"],
-    visibility = ["//visibility:public"],
     deps = [
         ":core_proto",
     ],
@@ -93,10 +88,9 @@ cc_library(
     hdrs = [
         "commandlineflags.h",
     ],
-    visibility = ["//visibility:public"],
     deps = [
-        "//mediapipe/framework:port",
-        "@com_google_glog//:glog",
+        "//third_party:glog",
+        "@com_google_absl//absl/flags:flag",
     ],
 )
 
@@ -106,18 +100,15 @@ cc_library(
         "core_proto_inc.h",
         "proto_ns.h",
     ],
-    visibility = ["//visibility:public"],
     deps = [
         "//mediapipe/framework:port",
-    ] + select({
-        "//conditions:default": ["@protobuf_archive//:protobuf"],
-    }),
+        "@com_google_protobuf//:protobuf",
+    ],
 )
 
 cc_library(
     name = "file_helpers",
     hdrs = ["file_helpers.h"],
-    visibility = ["//visibility:public"],
     deps = [
         ":status",
         "//mediapipe/framework/deps:file_helpers",
@@ -128,40 +119,85 @@ cc_library(
 cc_library(
     name = "image_resizer",
     hdrs = ["image_resizer.h"],
-    visibility = ["//visibility:public"],
-    deps = [
-        "//mediapipe/framework/deps:image_resizer",
-        "//third_party:opencv",
-    ],
+    deps = select({
+        "//conditions:default": [
+            "//mediapipe/framework/deps:image_resizer",
+            "//mediapipe/framework/port:opencv_core",
+        ],
+        "//mediapipe:emscripten": ["//mediapipe/framework/deps:image_resizer"],
+    }),
 )
 
 cc_library(
     name = "integral_types",
     hdrs = ["integral_types.h"],
-    visibility = ["//visibility:public"],
 )
 
 cc_library(
     name = "benchmark",
-    testonly = 1,
+    testonly = True,
     hdrs = ["benchmark.h"],
-    visibility = ["//visibility:public"],
     deps = [
         "@com_google_benchmark//:benchmark",
+        "@com_google_googletest//:gtest",
+    ],
+)
+
+cc_library(
+    name = "re2",
+    hdrs = [
+        "re2.h",
+    ],
+    deps = [
+        "//mediapipe/framework/deps:re2",
+    ],
+)
+
+cc_library(
+    name = "gtest",
+    testonly = True,
+    hdrs = [
+        "gmock.h",
+        "gtest.h",
+        "gtest-spi.h",
+        "status_matchers.h",
+    ],
+    deps = [
+        ":status_matchers",
+        "//mediapipe/framework/deps:message_matchers",
+        "@com_google_googletest//:gtest",
     ],
 )
 
 cc_library(
     name = "gtest_main",
-    testonly = 1,
+    testonly = True,
     hdrs = [
         "gmock.h",
         "gtest.h",
+        "gtest-spi.h",
         "status_matchers.h",
     ],
-    visibility = ["//visibility:public"],
     deps = [
-        "//mediapipe/framework:port",
+        ":status_matchers",
+        "//mediapipe/framework/deps:message_matchers",
+        "//mediapipe/framework/deps:status_matchers",
+        "@com_google_googletest//:gtest_main",
+    ],
+)
+
+cc_library(
+    name = "gtest_main_no_heapcheck",
+    testonly = True,
+    hdrs = [
+        "gmock.h",
+        "gtest.h",
+        "gtest-spi.h",
+        "status_matchers.h",
+    ],
+    deps = [
+        ":status_matchers",
+        "//mediapipe/framework/deps:message_matchers",
         "//mediapipe/framework/deps:status_matchers",
         "@com_google_googletest//:gtest_main",
     ],
@@ -172,10 +208,11 @@ cc_library(
     hdrs = [
         "logging.h",
     ],
-    visibility = ["//visibility:public"],
     deps = [
         "//mediapipe/framework:port",
-        "@com_google_glog//:glog",
+        "//third_party:glog",
+        "@com_google_absl//absl/strings:has_ostream_operator",
+        "@com_google_absl//absl/time",
     ],
 )
 
@@ -184,7 +221,6 @@ cc_library(
     hdrs = [
         "map_util.h",
     ],
-    visibility = ["//visibility:public"],
     deps = [
         "//mediapipe/framework:port",
         "//mediapipe/framework/deps:map_util",
@@ -194,14 +230,33 @@ cc_library(
 cc_library(
     name = "numbers",
     hdrs = ["numbers.h"],
-    visibility = ["//visibility:public"],
     deps = ["//mediapipe/framework/deps:numbers"],
+)
+
+# Disabling opencv when defining MEDIAPIPE_DISABLE_OPENCV to 1 in the bazel command.
+# Note that this only applies to a select few calculators/framework components currently.
+config_setting(
+    name = "disable_opencv",
+    define_values = {
+        "MEDIAPIPE_DISABLE_OPENCV": "1",
+    },
+)
+
+# Enable Halide when defining MEDIAPIPE_ENABLE_HALIDE to 1 in bazel command.
+# This will  automatically disable opencv, i.e. will set MEDIAPIPE_DISABLE_OPENCV to 1.
+# Note that this only applies to a select few calculators/framework components currently.
+# TODO: Improve this. This only sets MEDIAPIPE_DISABLE_OPENCV as a "defines" Make value,
+# not as a bazel "--define" variable, which has effects in C++ code but not in select() statements.
+config_setting(
+    name = "enable_halide",
+    define_values = {
+        "MEDIAPIPE_ENABLE_HALIDE": "1",
+    },
 )
 
 cc_library(
     name = "opencv_core",
     hdrs = ["opencv_core_inc.h"],
-    visibility = ["//visibility:public"],
     deps = [
         "//third_party:opencv",
     ],
@@ -210,7 +265,6 @@ cc_library(
 cc_library(
     name = "opencv_imgproc",
     hdrs = ["opencv_imgproc_inc.h"],
-    visibility = ["//visibility:public"],
     deps = [
         ":opencv_core",
         "//third_party:opencv",
@@ -220,7 +274,6 @@ cc_library(
 cc_library(
     name = "opencv_imgcodecs",
     hdrs = ["opencv_imgcodecs_inc.h"],
-    visibility = ["//visibility:public"],
     deps = [
         ":opencv_core",
         "//third_party:opencv",
@@ -228,9 +281,8 @@ cc_library(
 )
 
 cc_library(
-    name = "opencv_highgui",
-    hdrs = ["opencv_highgui_inc.h"],
-    visibility = ["//visibility:public"],
+    name = "opencv_photo",
+    hdrs = ["opencv_photo_inc.h"],
     deps = [
         ":opencv_core",
         "//third_party:opencv",
@@ -240,9 +292,46 @@ cc_library(
 cc_library(
     name = "opencv_video",
     hdrs = ["opencv_video_inc.h"],
-    visibility = ["//visibility:public"],
     deps = [
         ":opencv_core",
+        "//mediapipe/framework:port",
+        "//third_party:opencv",
+    ],
+)
+
+cc_library(
+    name = "opencv_features2d",
+    hdrs = ["opencv_features2d_inc.h"],
+    deps = [
+        ":opencv_core",
+        "//third_party:opencv",
+    ],
+)
+
+cc_library(
+    name = "opencv_calib3d",
+    hdrs = ["opencv_calib3d_inc.h"],
+    deps = [
+        ":opencv_core",
+        "//third_party:opencv",
+    ],
+)
+
+cc_library(
+    name = "opencv_highgui",
+    hdrs = ["opencv_highgui_inc.h"],
+    deps = [
+        ":opencv_core",
+        "//third_party:opencv",
+    ],
+)
+
+cc_library(
+    name = "opencv_videoio",
+    hdrs = ["opencv_videoio_inc.h"],
+    deps = [
+        ":opencv_core",
+        "//mediapipe/framework:port",
         "//third_party:opencv",
     ],
 )
@@ -253,26 +342,23 @@ cc_library(
         "parse_text_proto.h",
         "proto_ns.h",
     ],
-    visibility = ["//visibility:public"],
     deps = [
+        ":core_proto",
         ":logging",
         "//mediapipe/framework:port",
-    ] + select({
-        "//conditions:default": ["@protobuf_archive//:protobuf"],
-    }),
+        "@com_google_absl//absl/log:absl_check",
+    ],
 )
 
 cc_library(
     name = "point",
     hdrs = ["point2.h"],
-    visibility = ["//visibility:public"],
     deps = ["//mediapipe/framework/deps:point"],
 )
 
 cc_library(
     name = "port",
     hdrs = ["port.h"],
-    visibility = ["//visibility:public"],
     deps = [
         "//mediapipe/framework:port",
         "@com_google_absl//absl/base:core_headers",
@@ -282,14 +368,12 @@ cc_library(
 cc_library(
     name = "rectangle",
     hdrs = ["rectangle.h"],
-    visibility = ["//visibility:public"],
     deps = ["//mediapipe/framework/deps:rectangle"],
 )
 
 cc_library(
     name = "ret_check",
     hdrs = ["ret_check.h"],
-    visibility = ["//visibility:public"],
     deps = [
         "//mediapipe/framework:port",
         "//mediapipe/framework/deps:ret_check",
@@ -299,8 +383,9 @@ cc_library(
 cc_library(
     name = "singleton",
     hdrs = ["singleton.h"],
-    visibility = ["//visibility:public"],
-    deps = ["//mediapipe/framework/deps:singleton"],
+    deps = [
+        "//mediapipe/framework/deps:singleton",
+    ],
 )
 
 cc_library(
@@ -308,7 +393,6 @@ cc_library(
     hdrs = [
         "source_location.h",
     ],
-    visibility = ["//visibility:public"],
     deps = [
         "//mediapipe/framework:port",
         "//mediapipe/framework/deps:source_location",
@@ -323,11 +407,11 @@ cc_library(
         "status_builder.h",
         "status_macros.h",
     ],
-    visibility = ["//visibility:public"],
     deps = [
         ":source_location",
         "//mediapipe/framework:port",
         "//mediapipe/framework/deps:status",
+        "@com_google_absl//absl/status",
         "@com_google_absl//absl/strings",
     ],
 )
@@ -337,20 +421,30 @@ cc_library(
     hdrs = [
         "statusor.h",
     ],
-    visibility = ["//visibility:public"],
     deps = [
         "//mediapipe/framework:port",
-        "//mediapipe/framework/deps:statusor",
+        "@com_google_absl//absl/status:statusor",
+    ],
+)
+
+cc_library(
+    name = "status_matchers",
+    testonly = True,
+    hdrs = ["status_matchers.h"],
+    deps = [
+        ":status",
+        "@com_google_googletest//:gtest",
     ],
 )
 
 cc_library(
     name = "threadpool",
     hdrs = ["threadpool.h"],
-    visibility = ["//visibility:public"],
     deps = select({
         "//conditions:default": [":threadpool_impl_default_to_google"],
         "//mediapipe:android": [":threadpool_impl_default_to_mediapipe"],
+        "//mediapipe:apple": [":threadpool_impl_default_to_mediapipe"],
+        "//mediapipe:emscripten": [":threadpool_impl_default_to_mediapipe"],
     }),
 )
 
@@ -373,7 +467,6 @@ alias(
 cc_library(
     name = "topologicalsorter",
     hdrs = ["topologicalsorter.h"],
-    visibility = ["//visibility:public"],
     deps = [
         "//mediapipe/framework:port",
         "//mediapipe/framework/deps:topologicalsorter",
@@ -383,6 +476,11 @@ cc_library(
 cc_library(
     name = "vector",
     hdrs = ["vector.h"],
-    visibility = ["//visibility:public"],
     deps = ["//mediapipe/framework/deps:vector"],
+)
+
+cc_library(
+    name = "requires",
+    hdrs = ["requires.h"],
+    deps = ["//mediapipe/framework/deps:requires"],
 )

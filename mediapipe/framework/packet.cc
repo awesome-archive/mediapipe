@@ -14,13 +14,24 @@
 
 #include "mediapipe/framework/packet.h"
 
+#include <map>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "absl/base/optimization.h"
+#include "absl/log/absl_check.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 #include "absl/strings/str_cat.h"
-#include "mediapipe/framework/port.h"
-#include "mediapipe/framework/port/canonical_errors.h"
-#include "mediapipe/framework/port/integral_types.h"
+#include "google/protobuf/message_lite.h"
 #include "mediapipe/framework/port/ret_check.h"
-#include "mediapipe/framework/port/status.h"
-#include "mediapipe/framework/port/status_builder.h"
+#include "mediapipe/framework/port/status_macros.h"
+#include "mediapipe/framework/port/statusor.h"
+#include "mediapipe/framework/timestamp.h"
+#include "mediapipe/framework/tool/type_util.h"
+#include "mediapipe/framework/type_map.h"
 
 namespace mediapipe {
 namespace packet_internal {
@@ -40,8 +51,27 @@ Packet Create(HolderBase* holder, Timestamp timestamp) {
   return result;
 }
 
+Packet Create(std::shared_ptr<const HolderBase> holder, Timestamp timestamp) {
+  Packet result;
+  result.holder_ = std::move(holder);
+  result.timestamp_ = timestamp;
+  return result;
+}
+
 const HolderBase* GetHolder(const Packet& packet) {
   return packet.holder_.get();
+}
+
+absl::StatusOr<Packet> PacketFromDynamicProto(const std::string& type_name,
+                                              const std::string& serialized) {
+  MP_ASSIGN_OR_RETURN(
+      auto message_holder,
+      packet_internal::MessageHolderRegistry::CreateByName(type_name));
+  auto* message =
+      const_cast<proto_ns::MessageLite*>(message_holder->GetProtoMessageLite());
+  RET_CHECK_NE(message, nullptr);
+  RET_CHECK(message->ParseFromString(serialized));
+  return packet_internal::Create(message_holder.release());
 }
 
 }  // namespace packet_internal
@@ -86,25 +116,49 @@ std::string Packet::DebugString() const {
   return result;
 }
 
-::mediapipe::Status Packet::ValidateAsProtoMessageLite() const {
+absl::Status Packet::ValidateAsType(TypeId type_id) const {
   if (ABSL_PREDICT_FALSE(IsEmpty())) {
-    return ::mediapipe::InternalError("Packet is empty.");
+    return absl::InternalError(absl::StrCat(
+        "Expected a Packet of type: ", MediaPipeTypeStringOrDemangled(type_id),
+        ", but received an empty Packet."));
+  }
+  bool holder_is_right_type = holder_->GetTypeId() == type_id;
+  if (ABSL_PREDICT_FALSE(!holder_is_right_type)) {
+    return absl::InvalidArgumentError(absl::StrCat(
+        "The Packet stores \"", holder_->DebugTypeName(), "\", but \"",
+        MediaPipeTypeStringOrDemangled(type_id), "\" was requested."));
+  }
+  return absl::OkStatus();
+}
+
+absl::Status Packet::ValidateAsProtoMessageLite() const {
+  if (ABSL_PREDICT_FALSE(IsEmpty())) {
+    return absl::InternalError("Packet is empty.");
   }
   if (ABSL_PREDICT_FALSE(holder_->GetProtoMessageLite() == nullptr)) {
-    return ::mediapipe::InvalidArgumentError(
+    return absl::InvalidArgumentError(
         absl::StrCat("The Packet stores \"", holder_->DebugTypeName(), "\"",
                      "which is not convertible to proto_ns::MessageLite."));
   } else {
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 }
 
 const proto_ns::MessageLite& Packet::GetProtoMessageLite() const {
-  CHECK(holder_ != nullptr) << "The packet is empty.";
+  ABSL_CHECK(holder_ != nullptr) << "The packet is empty.";
   const proto_ns::MessageLite* proto = holder_->GetProtoMessageLite();
-  CHECK(proto != nullptr) << "The Packet stores '" << holder_->DebugTypeName()
-                          << "', it cannot be converted to MessageLite type.";
+  ABSL_CHECK(proto != nullptr)
+      << "The Packet stores '" << holder_->DebugTypeName()
+      << "', it cannot be converted to MessageLite type.";
   return *proto;
+}
+
+StatusOr<std::vector<const proto_ns::MessageLite*>>
+Packet::GetVectorOfProtoMessageLitePtrs() const {
+  if (holder_ == nullptr) {
+    return absl::InternalError("Packet is empty.");
+  }
+  return holder_->GetVectorOfProtoMessageLite();
 }
 
 MEDIAPIPE_REGISTER_TYPE(::mediapipe::Packet, "::mediapipe::Packet", nullptr,

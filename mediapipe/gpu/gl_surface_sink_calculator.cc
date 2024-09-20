@@ -12,18 +12,47 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <memory>
+
+#include "absl/log/absl_log.h"
+#include "absl/status/status.h"
 #include "absl/synchronization/mutex.h"
+#include "mediapipe/framework/api2/node.h"
+#include "mediapipe/framework/api2/packet.h"
+#include "mediapipe/framework/api2/port.h"
 #include "mediapipe/framework/calculator_framework.h"
+#include "mediapipe/framework/formats/image.h"
 #include "mediapipe/framework/port/ret_check.h"
-#include "mediapipe/framework/port/status.h"
 #include "mediapipe/framework/port/status_macros.h"
 #include "mediapipe/gpu/egl_surface_holder.h"
+#include "mediapipe/gpu/gl_base.h"
 #include "mediapipe/gpu/gl_calculator_helper.h"
 #include "mediapipe/gpu/gl_quad_renderer.h"
 #include "mediapipe/gpu/gl_surface_sink_calculator.pb.h"
-#include "mediapipe/gpu/shader_util.h"
+#include "mediapipe/gpu/gpu_buffer.h"
+
+#if HAS_EGL
+
+#ifdef __ANDROID__
+#include "EGL/eglext.h"
+#endif  // __ANDROID__
 
 namespace mediapipe {
+namespace api2 {
+namespace {
+#ifdef EGL_ANDROID_presentation_time
+// Helper function to safely initialize the eglPresentationTimeANDROID
+// function pointer.
+EGLBoolean SetPresentationTime(EGLDisplay dpy, EGLSurface surface,
+                               EGLnsecsANDROID time) {
+  static PFNEGLPRESENTATIONTIMEANDROIDPROC eglPresentationTimeANDROID =
+      reinterpret_cast<PFNEGLPRESENTATIONTIMEANDROIDPROC>(
+          eglGetProcAddress("eglPresentationTimeANDROID"));
+  if (!eglPresentationTimeANDROID) return EGL_FALSE;
+  return eglPresentationTimeANDROID(dpy, surface, time);
+}
+#endif  // EGL_ANDROID_presentation_time
+}  // namespace
 
 enum { kAttribVertex, kAttribTexturePosition, kNumberOfAttributes };
 
@@ -34,67 +63,87 @@ enum { kAttribVertex, kAttribTexturePosition, kNumberOfAttributes };
 //   VIDEO or index 0: GpuBuffers to be rendered.
 // Side inputs:
 //   SURFACE: unique_ptr to an EglSurfaceHolder to draw to.
-//   GPU_SHARED: shared GPU resources.
 //
 // See GlSurfaceSinkCalculatorOptions for options.
-class GlSurfaceSinkCalculator : public CalculatorBase {
+//
+// NOTE: all GlSurfaceSinkCalculators use a common dedicated shared GL context
+// thread by default, which is different from the main GL context thread used by
+// the graph. (If MediaPipe uses multithreading and multiple OpenGL contexts.)
+class GlSurfaceSinkCalculator : public Node {
  public:
-  GlSurfaceSinkCalculator() : initialized_(false) {}
-  ~GlSurfaceSinkCalculator() override;
+  static constexpr Input<
+      OneOf<mediapipe::Image, mediapipe::GpuBuffer>>::Optional kInVideo{
+      "VIDEO"};
+  static constexpr Input<
+      OneOf<mediapipe::Image, mediapipe::GpuBuffer>>::Optional kIn{""};
+  static constexpr SideInput<std::unique_ptr<mediapipe::EglSurfaceHolder>>
+      kSurface{"SURFACE"};
 
-  static ::mediapipe::Status GetContract(CalculatorContract* cc);
+  MEDIAPIPE_NODE_INTERFACE(GlSurfaceSinkCalculator, kInVideo, kIn, kSurface);
 
-  ::mediapipe::Status Open(CalculatorContext* cc) override;
-  ::mediapipe::Status Process(CalculatorContext* cc) override;
+  ~GlSurfaceSinkCalculator();
+
+  static absl::Status UpdateContract(CalculatorContract* cc);
+
+  absl::Status Open(CalculatorContext* cc) final;
+  absl::Status Process(CalculatorContext* cc) final;
 
  private:
-  GlCalculatorHelper helper_;
-  EglSurfaceHolder* surface_holder_;
-  bool initialized_;
-  std::unique_ptr<QuadRenderer> renderer_;
-  FrameScaleMode scale_mode_ = FrameScaleMode::kFillAndCrop;
+  mediapipe::GlCalculatorHelper helper_;
+  mediapipe::EglSurfaceHolder* surface_holder_;
+  bool initialized_ = false;
+  std::unique_ptr<mediapipe::QuadRenderer> renderer_;
+  mediapipe::FrameScaleMode scale_mode_ =
+      mediapipe::FrameScaleMode::kFillAndCrop;
 };
-REGISTER_CALCULATOR(GlSurfaceSinkCalculator);
+MEDIAPIPE_REGISTER_NODE(GlSurfaceSinkCalculator);
 
 // static
-::mediapipe::Status GlSurfaceSinkCalculator::GetContract(
-    CalculatorContract* cc) {
-  TagOrIndex(&(cc->Inputs()), "VIDEO", 0).Set<GpuBuffer>();
-  cc->InputSidePackets()
-      .Tag("SURFACE")
-      .Set<std::unique_ptr<EglSurfaceHolder>>();
+absl::Status GlSurfaceSinkCalculator::UpdateContract(CalculatorContract* cc) {
+  RET_CHECK(kInVideo(cc).IsConnected() ^ kIn(cc).IsConnected())
+      << "Only one of VIDEO or index 0 input is expected.";
+
   // Currently we pass GL context information and other stuff as external
   // inputs, which are handled by the helper.
-  return GlCalculatorHelper::UpdateContract(cc);
+  return mediapipe::GlCalculatorHelper::UpdateContract(cc);
 }
 
-::mediapipe::Status GlSurfaceSinkCalculator::Open(CalculatorContext* cc) {
-  surface_holder_ = cc->InputSidePackets()
-                        .Tag("SURFACE")
-                        .Get<std::unique_ptr<EglSurfaceHolder>>()
-                        .get();
+absl::Status GlSurfaceSinkCalculator::Open(CalculatorContext* cc) {
+  surface_holder_ = kSurface(cc).Get().get();
 
   scale_mode_ = FrameScaleModeFromProto(
-      cc->Options<GlSurfaceSinkCalculatorOptions>().frame_scale_mode(),
-      FrameScaleMode::kFillAndCrop);
+      cc->Options<mediapipe::GlSurfaceSinkCalculatorOptions>()
+          .frame_scale_mode(),
+      mediapipe::FrameScaleMode::kFillAndCrop);
 
   // Let the helper access the GL context information.
   return helper_.Open(cc);
 }
 
-::mediapipe::Status GlSurfaceSinkCalculator::Process(CalculatorContext* cc) {
-  return helper_.RunInGlContext([this, &cc]() -> ::mediapipe::Status {
+absl::Status GlSurfaceSinkCalculator::Process(CalculatorContext* cc) {
+  return helper_.RunInGlContext([this, &cc]() -> absl::Status {
     absl::MutexLock lock(&surface_holder_->mutex);
     EGLSurface surface = surface_holder_->surface;
     if (surface == EGL_NO_SURFACE) {
-      LOG_EVERY_N(INFO, 300) << "GlSurfaceSinkCalculator: no surface";
-      return ::mediapipe::OkStatus();
+      ABSL_LOG_EVERY_N(INFO, 300) << "GlSurfaceSinkCalculator: no surface";
+      return absl::OkStatus();
     }
 
-    const auto& input = TagOrIndex(cc->Inputs(), "VIDEO", 0).Get<GpuBuffer>();
+    mediapipe::Packet packet;
+    if (kInVideo(cc).IsConnected())
+      packet = kInVideo(cc).packet();
+    else
+      packet = kIn(cc).packet();
+
+    mediapipe::GpuBuffer input;
+    if (packet.ValidateAsType<mediapipe::GpuBuffer>().ok())
+      input = packet.Get<mediapipe::GpuBuffer>();
+    if (packet.ValidateAsType<mediapipe::Image>().ok())
+      input = packet.Get<mediapipe::Image>().GetGpuBuffer();
+
     if (!initialized_) {
-      renderer_ = absl::make_unique<QuadRenderer>();
-      RETURN_IF_ERROR(renderer_->GlSetup());
+      renderer_ = std::make_unique<mediapipe::QuadRenderer>();
+      MP_RETURN_IF_ERROR(renderer_->GlSetup());
       initialized_ = true;
     }
 
@@ -124,13 +173,23 @@ REGISTER_CALCULATOR(GlSurfaceSinkCalculator);
     glActiveTexture(GL_TEXTURE1);
     glBindTexture(src.target(), src.name());
 
-    RETURN_IF_ERROR(
+    MP_RETURN_IF_ERROR(
         renderer_->GlRender(src.width(), src.height(), dst_width, dst_height,
-                            scale_mode_, FrameRotation::kNone,
+                            scale_mode_, mediapipe::FrameRotation::kNone,
                             /*flip_horizontal=*/false, /*flip_vertical=*/false,
-                            /*flip_texture=*/false));
+                            /*flip_texture=*/surface_holder_->flip_y));
 
     glBindTexture(src.target(), 0);
+
+#ifdef EGL_ANDROID_presentation_time
+    // Propagate the packet timestamp as a presentation timestamp on Android.
+    // This enables consumers like ImageReader or SurfaceTexture to recover it.
+    if (surface_holder_->update_presentation_time) {
+      success = SetPresentationTime(display, surface,
+                                    packet.Timestamp().Microseconds() * 1000);
+      RET_CHECK(success) << "failed to update presentation time";
+    }
+#endif
 
     success = eglSwapBuffers(display, surface);
     RET_CHECK(success) << "failed to swap buffers";
@@ -139,14 +198,14 @@ REGISTER_CALCULATOR(GlSurfaceSinkCalculator);
     RET_CHECK(success) << "failed to restore old surface";
 
     src.Release();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   });
 }
 
 GlSurfaceSinkCalculator::~GlSurfaceSinkCalculator() {
   if (renderer_) {
     // TODO: use move capture when we have C++14 or better.
-    QuadRenderer* renderer = renderer_.release();
+    mediapipe::QuadRenderer* renderer = renderer_.release();
     helper_.RunInGlContext([renderer] {
       renderer->GlTeardown();
       delete renderer;
@@ -154,4 +213,7 @@ GlSurfaceSinkCalculator::~GlSurfaceSinkCalculator() {
   }
 }
 
+}  // namespace api2
 }  // namespace mediapipe
+
+#endif  // HAS_EGL

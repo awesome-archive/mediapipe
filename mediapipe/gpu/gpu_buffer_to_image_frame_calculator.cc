@@ -19,7 +19,7 @@
 
 #define HAVE_GPU_BUFFER
 #ifdef __APPLE__
-#include "mediapipe/framework/ios/util.h"
+#include "mediapipe/objc/util.h"
 #endif
 
 #include "mediapipe/gpu/gl_calculator_helper.h"
@@ -27,14 +27,30 @@
 namespace mediapipe {
 
 // Convert an input image (GpuBuffer or ImageFrame) to ImageFrame.
+//
+// NOTE: all GpuBufferToImageFrameCalculators use a common dedicated shared GL
+// context thread by default, which is different from the main GL context thread
+// used by the graph. (If MediaPipe uses multithreading and multiple OpenGL
+// contexts.)
+//
+// IMPORTANT: graph writer must make sure input GpuBuffer backed OpenGL texture
+// is not in use before the calculator starts processing and not used by any
+// other code until the calculator returns:
+// - pixel transfer involves attaching GpuBuffer backing texture as a logical
+//   buffer to a particular bound framebuffer.
+// - and if texture is already bound and enabled for texturing, this may lead
+//   to a "feedback loop" and undefined results.
+// See, OpenGL ES 3.0 Spec 4.4.3 "Feedback Loops between Textures and the
+// Framebuffer"
+//
 class GpuBufferToImageFrameCalculator : public CalculatorBase {
  public:
   GpuBufferToImageFrameCalculator() {}
 
-  static ::mediapipe::Status GetContract(CalculatorContract* cc);
+  static absl::Status GetContract(CalculatorContract* cc);
 
-  ::mediapipe::Status Open(CalculatorContext* cc) override;
-  ::mediapipe::Status Process(CalculatorContext* cc) override;
+  absl::Status Open(CalculatorContext* cc) override;
+  absl::Status Process(CalculatorContext* cc) override;
 
  private:
 #if !MEDIAPIPE_GPU_BUFFER_USE_CV_PIXEL_BUFFER
@@ -44,33 +60,31 @@ class GpuBufferToImageFrameCalculator : public CalculatorBase {
 REGISTER_CALCULATOR(GpuBufferToImageFrameCalculator);
 
 // static
-::mediapipe::Status GpuBufferToImageFrameCalculator::GetContract(
+absl::Status GpuBufferToImageFrameCalculator::GetContract(
     CalculatorContract* cc) {
   cc->Inputs().Index(0).SetAny();
   cc->Outputs().Index(0).Set<ImageFrame>();
   // Note: we call this method even on platforms where we don't use the helper,
   // to ensure the calculator's contract is the same. In particular, the helper
   // enables support for the legacy side packet, which several graphs still use.
-  RETURN_IF_ERROR(GlCalculatorHelper::UpdateContract(cc));
-  return ::mediapipe::OkStatus();
+  MP_RETURN_IF_ERROR(GlCalculatorHelper::UpdateContract(cc));
+  return absl::OkStatus();
 }
 
-::mediapipe::Status GpuBufferToImageFrameCalculator::Open(
-    CalculatorContext* cc) {
+absl::Status GpuBufferToImageFrameCalculator::Open(CalculatorContext* cc) {
   // Inform the framework that we always output at the same timestamp
   // as we receive a packet at.
   cc->SetOffset(TimestampDiff(0));
 #if !MEDIAPIPE_GPU_BUFFER_USE_CV_PIXEL_BUFFER
-  RETURN_IF_ERROR(helper_.Open(cc));
+  MP_RETURN_IF_ERROR(helper_.Open(cc));
 #endif  // MEDIAPIPE_GPU_BUFFER_USE_CV_PIXEL_BUFFER
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-::mediapipe::Status GpuBufferToImageFrameCalculator::Process(
-    CalculatorContext* cc) {
+absl::Status GpuBufferToImageFrameCalculator::Process(CalculatorContext* cc) {
   if (cc->Inputs().Index(0).Value().ValidateAsType<ImageFrame>().ok()) {
     cc->Outputs().Index(0).AddPacket(cc->Inputs().Index(0).Value());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
 #ifdef HAVE_GPU_BUFFER
@@ -78,7 +92,7 @@ REGISTER_CALCULATOR(GpuBufferToImageFrameCalculator);
     const auto& input = cc->Inputs().Index(0).Get<GpuBuffer>();
 #if MEDIAPIPE_GPU_BUFFER_USE_CV_PIXEL_BUFFER
     std::unique_ptr<ImageFrame> frame =
-        CreateImageFrameForCVPixelBuffer(input.GetCVPixelBufferRef());
+        CreateImageFrameForCVPixelBuffer(GetCVPixelBufferRef(input));
     cc->Outputs().Index(0).Add(frame.release(), cc->InputTimestamp());
 #else
     helper_.RunInGlContext([this, &input, &cc]() {
@@ -87,20 +101,20 @@ REGISTER_CALCULATOR(GpuBufferToImageFrameCalculator);
           ImageFormatForGpuBufferFormat(input.format()), src.width(),
           src.height(), ImageFrame::kGlDefaultAlignmentBoundary);
       helper_.BindFramebuffer(src);
-      const auto info = GlTextureInfoForGpuBufferFormat(input.format(), 0);
+      const auto info = GlTextureInfoForGpuBufferFormat(input.format(), 0,
+                                                        helper_.GetGlVersion());
       glReadPixels(0, 0, src.width(), src.height(), info.gl_format,
                    info.gl_type, frame->MutablePixelData());
-      glFlush();
       cc->Outputs().Index(0).Add(frame.release(), cc->InputTimestamp());
       src.Release();
     });
 #endif  // MEDIAPIPE_GPU_BUFFER_USE_CV_PIXEL_BUFFER
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 #endif  // defined(HAVE_GPU_BUFFER)
 
-  return ::mediapipe::Status(::mediapipe::StatusCode::kInvalidArgument,
-                             "Input packets must be ImageFrame or GpuBuffer.");
+  return absl::Status(absl::StatusCode::kInvalidArgument,
+                      "Input packets must be ImageFrame or GpuBuffer.");
 }
 
 }  // namespace mediapipe

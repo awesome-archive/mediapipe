@@ -12,6 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "mediapipe/calculators/core/packet_resampler_calculator.h"
+
 #include <memory>
 #include <string>
 #include <vector>
@@ -28,7 +30,13 @@
 
 namespace mediapipe {
 
+using ::testing::ElementsAre;
 namespace {
+
+constexpr char kOptionsTag[] = "OPTIONS";
+constexpr char kSeedTag[] = "SEED";
+constexpr char kVideoHeaderTag[] = "VIDEO_HEADER";
+constexpr char kDataTag[] = "DATA";
 
 // A simple version of CalculatorRunner with built-in convenience
 // methods for setting inputs from a vector and checking outputs
@@ -43,9 +51,9 @@ class SimpleRunner : public CalculatorRunner {
 
   virtual ~SimpleRunner() {}
 
-  void SetInput(const std::vector<int64>& timestamp_list) {
+  void SetInput(const std::vector<int64_t>& timestamp_list) {
     MutableInputs()->Index(0).packets.clear();
-    for (const int64 ts : timestamp_list) {
+    for (const int64_t ts : timestamp_list) {
       MutableInputs()->Index(0).packets.push_back(
           Adopt(new std::string(absl::StrCat("Frame #", ts)))
               .At(Timestamp(ts)));
@@ -64,8 +72,8 @@ class SimpleRunner : public CalculatorRunner {
   }
 
   void CheckOutputTimestamps(
-      const std::vector<int64>& expected_frames,
-      const std::vector<int64>& expected_timestamps) const {
+      const std::vector<int64_t>& expected_frames,
+      const std::vector<int64_t>& expected_timestamps) const {
     EXPECT_EQ(expected_frames.size(), Outputs().Index(0).packets.size());
     EXPECT_EQ(expected_timestamps.size(), Outputs().Index(0).packets.size());
     int count = 0;
@@ -95,6 +103,77 @@ class SimpleRunner : public CalculatorRunner {
   static int static_count_;
 };
 
+// Matcher for Packets with uint64 payload, comparing arg packet's
+// timestamp and uint64 payload.
+MATCHER_P2(PacketAtTimestamp, payload, timestamp,
+           absl::StrCat(negation ? "isn't" : "is", " a packet with payload ",
+                        payload, " @ time ", timestamp)) {
+  if (timestamp != arg.Timestamp().Value()) {
+    *result_listener << "at incorrect timestamp = " << arg.Timestamp().Value();
+    return false;
+  }
+  int64_t actual_payload = arg.template Get<int64_t>();
+  if (actual_payload != payload) {
+    *result_listener << "with incorrect payload = " << actual_payload;
+    return false;
+  }
+  return true;
+}
+
+// JitterWithReflectionStrategy child class which injects a specified stream
+// of "random" numbers.
+//
+// Calculators are created through factory methods, making testing and injection
+// tricky.  This class utilizes a static variable, random_sequence, to pass
+// the desired random sequence into the calculator.
+class ReproducibleJitterWithReflectionStrategyForTesting
+    : public ReproducibleJitterWithReflectionStrategy {
+ public:
+  ReproducibleJitterWithReflectionStrategyForTesting(
+      PacketResamplerCalculator* calculator)
+      : ReproducibleJitterWithReflectionStrategy(calculator) {}
+
+  // Statically accessed random sequence to use for jitter with reflection.
+  //
+  // An EXPECT will fail if sequence is less than the number requested during
+  // processing.
+  static std::vector<uint64_t> random_sequence;
+
+ protected:
+  virtual uint64_t GetNextRandom(uint64_t n) {
+    EXPECT_LT(sequence_index_, random_sequence.size());
+    return random_sequence[sequence_index_++] % n;
+  }
+
+ private:
+  int32_t sequence_index_ = 0;
+};
+std::vector<uint64_t>
+    ReproducibleJitterWithReflectionStrategyForTesting::random_sequence;
+
+// PacketResamplerCalculator child class which injects a specified stream
+// of "random" numbers.
+//
+// Calculators are created through factory methods, making testing and injection
+// tricky.  This class utilizes a static variable, random_sequence, to pass
+// the desired random sequence into the calculator.
+class ReproducibleResamplerCalculatorForTesting
+    : public PacketResamplerCalculator {
+ public:
+  static absl::Status GetContract(CalculatorContract* cc) {
+    return PacketResamplerCalculator::GetContract(cc);
+  }
+
+ protected:
+  std::unique_ptr<class PacketResamplerStrategy> GetSamplingStrategy(
+      const mediapipe::PacketResamplerCalculatorOptions& Options) {
+    return absl::make_unique<
+        ReproducibleJitterWithReflectionStrategyForTesting>(this);
+  }
+};
+
+REGISTER_CALCULATOR(ReproducibleResamplerCalculatorForTesting);
+
 int SimpleRunner::static_count_ = 0;
 
 TEST(PacketResamplerCalculatorTest, NoPacketsInStream) {
@@ -103,7 +182,7 @@ TEST(PacketResamplerCalculatorTest, NoPacketsInStream) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:30}");
     runner.SetInput({});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
   }
 }
 
@@ -114,7 +193,7 @@ TEST(PacketResamplerCalculatorTest, SinglePacketInStream) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:30}");
     runner.SetInput({0});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({0}, {0});
   }
 
@@ -124,7 +203,7 @@ TEST(PacketResamplerCalculatorTest, SinglePacketInStream) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:30}");
     runner.SetInput({1000});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({1000}, {1000});
   }
 
@@ -134,7 +213,7 @@ TEST(PacketResamplerCalculatorTest, SinglePacketInStream) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:30}");
     runner.SetInput({16668});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({16668}, {16668});
   }
 }
@@ -146,7 +225,7 @@ TEST(PacketResamplerCalculatorTest, TwoPacketsInStream) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:30}");
     runner.SetInput({0, 16666});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({0}, {0});
   }
 
@@ -156,7 +235,7 @@ TEST(PacketResamplerCalculatorTest, TwoPacketsInStream) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:30}");
     runner.SetInput({0, 16667});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({0, 16667}, {0, 33333});
   }
 
@@ -166,7 +245,7 @@ TEST(PacketResamplerCalculatorTest, TwoPacketsInStream) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:30}");
     runner.SetInput({0, 49999});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({0, 49999}, {0, 33333});
   }
 
@@ -176,7 +255,7 @@ TEST(PacketResamplerCalculatorTest, TwoPacketsInStream) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:30}");
     runner.SetInput({0, 50000});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({0, 0, 50000}, {0, 33333, 66667});
   }
 
@@ -186,7 +265,7 @@ TEST(PacketResamplerCalculatorTest, TwoPacketsInStream) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:30}");
     runner.SetInput({2000, 118666});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({2000, 2000, 2000, 118666},
                                  {2000, 35333, 68667, 102000});
   }
@@ -197,7 +276,7 @@ TEST(PacketResamplerCalculatorTest, InputAtExactFrequencyMiddlepoints) {
       "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
       "{frame_rate:30}");
   runner.SetInput({0, 33333, 66667, 100000, 133333, 166667, 200000});
-  MEDIAPIPE_ASSERT_OK(runner.Run());
+  MP_ASSERT_OK(runner.Run());
   runner.CheckOutputTimestamps(
       {0, 33333, 66667, 100000, 133333, 166667, 200000},
       {0, 33333, 66667, 100000, 133333, 166667, 200000});
@@ -210,7 +289,7 @@ TEST(PacketResamplerCalculatorTest, MultiplePacketsForPeriods) {
       "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
       "{frame_rate:30}");
   runner.SetInput({0, 16666, 16667, 20000, 33300, 49999, 50000, 66600});
-  MEDIAPIPE_ASSERT_OK(runner.Run());
+  MP_ASSERT_OK(runner.Run());
   runner.CheckOutputTimestamps({0, 33300, 66600}, {0, 33333, 66667});
 }
 
@@ -222,7 +301,7 @@ TEST(PacketResamplerCalculatorTest, FillPeriodsWithLatestPacket) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:30}");
     runner.SetInput({0, 5000, 16666, 83334});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({0, 16666, 16666, 83334},
                                  {0, 33333, 66667, 100000});
   }
@@ -232,7 +311,7 @@ TEST(PacketResamplerCalculatorTest, FillPeriodsWithLatestPacket) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:30}");
     runner.SetInput({0, 16666, 16667, 25000, 33000, 35000, 135000});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({0, 33000, 35000, 35000, 135000},
                                  {0, 33333, 66667, 100000, 133333});
   }
@@ -242,7 +321,7 @@ TEST(PacketResamplerCalculatorTest, FillPeriodsWithLatestPacket) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:30}");
     runner.SetInput({0, 15000, 32000, 49999, 150000});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({0, 32000, 49999, 49999, 49999, 150000},
                                  {0, 33333, 66667, 100000, 133333, 166667});
   }
@@ -255,7 +334,7 @@ TEST(PacketResamplerCalculatorTest, SuperHighFrameRate) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:500000}");
     runner.SetInput({0, 10, 13});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({0, 0, 0, 0, 0, 10, 10, 13},
                                  {0, 2, 4, 6, 8, 10, 12, 14});
   }
@@ -266,7 +345,7 @@ TEST(PacketResamplerCalculatorTest, SuperHighFrameRate) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:1000000}");
     runner.SetInput({0, 10, 13});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps(
         {0, 0, 0, 0, 0, 0, 0, 0, 0, 0, 10, 10, 10, 13},
         {0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11, 12, 13});
@@ -280,7 +359,7 @@ TEST(PacketResamplerCalculatorTest, NegativeTimestampTest) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:30}");
     runner.SetInput({-200, -20, 16466});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({-200}, {-200});
   }
 
@@ -290,7 +369,7 @@ TEST(PacketResamplerCalculatorTest, NegativeTimestampTest) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:30}");
     runner.SetInput({-200, -20, 16467});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({-200, 16467}, {-200, 33133});
   }
 
@@ -300,7 +379,7 @@ TEST(PacketResamplerCalculatorTest, NegativeTimestampTest) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:30}");
     runner.SetInput({-500, 66667});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({-500, -500, 66667}, {-500, 32833, 66167});
   }
 
@@ -310,7 +389,7 @@ TEST(PacketResamplerCalculatorTest, NegativeTimestampTest) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:30}");
     runner.SetInput({-50000, -33334, 33334});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({-50000, -33334, -33334, 33334},
                                  {-50000, -16667, 16667, 50000});
   }
@@ -323,7 +402,7 @@ TEST(PacketResamplerCalculatorTest, ExactFramesPerSecond) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:50}");
     runner.SetInput({0, 9999, 29999});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({0, 29999}, {0, 20000});
   }
 
@@ -333,7 +412,7 @@ TEST(PacketResamplerCalculatorTest, ExactFramesPerSecond) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:50}");
     runner.SetInput({0, 10000, 50000});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({0, 10000, 10000, 50000},
                                  {0, 20000, 40000, 60000});
   }
@@ -347,7 +426,7 @@ TEST(PacketResamplerCalculatorTest, FrameRateTest) {
         "{frame_rate:50, output_header:UPDATE_VIDEO_HEADER}");
     runner.SetInput({0, 10000, 30000, 50000, 60000});
     runner.SetVideoHeader(50.0);
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({0, 10000, 30000, 60000},
                                  {0, 20000, 40000, 60000});
     runner.CheckVideoHeader(50.0);
@@ -360,7 +439,7 @@ TEST(PacketResamplerCalculatorTest, FrameRateTest) {
         "{frame_rate:50, output_header:UPDATE_VIDEO_HEADER}");
     runner.SetInput({0, 5000, 10010, 15001, 19990});
     runner.SetVideoHeader(200.0);
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({0, 19990}, {0, 20000});
     runner.CheckVideoHeader(50.0);
   }
@@ -372,14 +451,14 @@ TEST(PacketResamplerCalculatorTest, FrameRateTest) {
         "{frame_rate:50, output_header:PASS_HEADER}");
     runner.SetInput({0, 5000, 10010, 15001, 19990});
     runner.SetVideoHeader(200.0);
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({0, 19990}, {0, 20000});
     runner.CheckVideoHeader(200.0);
   }
 }
 
 TEST(PacketResamplerCalculatorTest, SetVideoHeader) {
-  CalculatorRunner runner(ParseTextProtoOrDie<CalculatorGraphConfig::Node>(R"(
+  CalculatorRunner runner(ParseTextProtoOrDie<CalculatorGraphConfig::Node>(R"pb(
     calculator: "PacketResamplerCalculator"
     input_stream: "DATA:in_data"
     input_stream: "VIDEO_HEADER:in_video_header"
@@ -388,10 +467,10 @@ TEST(PacketResamplerCalculatorTest, SetVideoHeader) {
     options {
       [mediapipe.PacketResamplerCalculatorOptions.ext] { frame_rate: 50.0 }
     }
-  )"));
+  )pb"));
 
-  for (const int64 ts : {0, 5000, 10010, 15001, 19990}) {
-    runner.MutableInputs()->Tag("DATA").packets.push_back(
+  for (const int64_t ts : {0, 5000, 10010, 15001, 19990}) {
+    runner.MutableInputs()->Tag(kDataTag).packets.push_back(
         Adopt(new std::string(absl::StrCat("Frame #", ts))).At(Timestamp(ts)));
   }
   VideoHeader video_header_in;
@@ -401,16 +480,16 @@ TEST(PacketResamplerCalculatorTest, SetVideoHeader) {
   video_header_in.duration = 1.0;
   video_header_in.format = ImageFormat::SRGB;
   runner.MutableInputs()
-      ->Tag("VIDEO_HEADER")
+      ->Tag(kVideoHeaderTag)
       .packets.push_back(
           Adopt(new VideoHeader(video_header_in)).At(Timestamp::PreStream()));
-  MEDIAPIPE_ASSERT_OK(runner.Run());
+  MP_ASSERT_OK(runner.Run());
 
-  ASSERT_EQ(1, runner.Outputs().Tag("VIDEO_HEADER").packets.size());
+  ASSERT_EQ(1, runner.Outputs().Tag(kVideoHeaderTag).packets.size());
   EXPECT_EQ(Timestamp::PreStream(),
-            runner.Outputs().Tag("VIDEO_HEADER").packets[0].Timestamp());
+            runner.Outputs().Tag(kVideoHeaderTag).packets[0].Timestamp());
   const VideoHeader& video_header_out =
-      runner.Outputs().Tag("VIDEO_HEADER").packets[0].Get<VideoHeader>();
+      runner.Outputs().Tag(kVideoHeaderTag).packets[0].Get<VideoHeader>();
   EXPECT_EQ(video_header_in.width, video_header_out.width);
   EXPECT_EQ(video_header_in.height, video_header_out.height);
   EXPECT_DOUBLE_EQ(50.0, video_header_out.frame_rate);
@@ -424,7 +503,7 @@ TEST(PacketResamplerCalculatorTest, FlushLastPacketWithoutRound) {
         frame_rate: 1
       })");
   runner.SetInput({0, 333333, 666667, 1000000, 1333333});
-  MEDIAPIPE_ASSERT_OK(runner.Run());
+  MP_ASSERT_OK(runner.Run());
   // 1333333 is not emitted as 2000000, because it does not round to 2000000.
   runner.CheckOutputTimestamps({0, 1000000}, {0, 1000000});
 }
@@ -435,7 +514,7 @@ TEST(PacketResamplerCalculatorTest, FlushLastPacketWithRound) {
         frame_rate: 1
       })");
   runner.SetInput({0, 333333, 666667, 1000000, 1333333, 1666667});
-  MEDIAPIPE_ASSERT_OK(runner.Run());
+  MP_ASSERT_OK(runner.Run());
   // 1666667 is emitted as 2000000, because it rounds to 2000000.
   runner.CheckOutputTimestamps({0, 1000000, 1666667}, {0, 1000000, 2000000});
 }
@@ -447,7 +526,7 @@ TEST(PacketResamplerCalculatorTest, DoNotFlushLastPacketWithoutRound) {
         flush_last_packet: false
       })");
   runner.SetInput({0, 333333, 666667, 1000000, 1333333});
-  MEDIAPIPE_ASSERT_OK(runner.Run());
+  MP_ASSERT_OK(runner.Run());
   // 1333333 is not emitted no matter what; see FlushLastPacketWithoutRound.
   runner.CheckOutputTimestamps({0, 1000000}, {0, 1000000});
 }
@@ -459,7 +538,7 @@ TEST(PacketResamplerCalculatorTest, DoNotFlushLastPacketWithRound) {
         flush_last_packet: false
       })");
   runner.SetInput({0, 333333, 666667, 1000000, 1333333, 1666667});
-  MEDIAPIPE_ASSERT_OK(runner.Run());
+  MP_ASSERT_OK(runner.Run());
   // 1666667 is not emitted due to flush_last_packet: false.
   runner.CheckOutputTimestamps({0, 1000000}, {0, 1000000});
 }
@@ -473,7 +552,7 @@ TEST(PacketResamplerCalculatorTest, InputAtExactFrequencyMiddlepointsAligned) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:30}");
     runner.SetInput({33111, 66667, 100000, 133333, 166667, 200000});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({33111, 66667, 100000, 133333, 166667, 200000},
                                  {33111, 66444, 99778, 133111, 166444, 199778});
   }
@@ -484,7 +563,7 @@ TEST(PacketResamplerCalculatorTest, InputAtExactFrequencyMiddlepointsAligned) {
         "{frame_rate:30 "
         "base_timestamp:0}");
     runner.SetInput({33111, 66667, 100000, 133333, 166667, 200000});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps(
         {33111, 66667, 100000, 133333, 166667, 200000},
         {33333, 66666, 100000, 133333, 166666, 200000});
@@ -499,7 +578,7 @@ TEST(PacketResamplerCalculatorTest, MultiplePacketsForPeriodsAligned) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:30}");
     runner.SetInput({-222, 16666, 16667, 20000, 33300, 49999, 50000, 66600});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({-222, 33300, 66600}, {-222, 33111, 66445});
   }
   {
@@ -509,7 +588,7 @@ TEST(PacketResamplerCalculatorTest, MultiplePacketsForPeriodsAligned) {
         "{frame_rate:30 "
         "base_timestamp:900011}");
     runner.SetInput({-222, 16666, 16667, 20000, 33300, 49999, 50000, 66600});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({-222, 33300, 66600}, {11, 33344, 66678});
   }
   {
@@ -521,7 +600,7 @@ TEST(PacketResamplerCalculatorTest, MultiplePacketsForPeriodsAligned) {
         "base_timestamp:11}");
     runner.SetInput(
         {899888, 916666, 916667, 920000, 933300, 949999, 950000, 966600});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({899888, 933300, 966600},
                                  {900011, 933344, 966678});
   }
@@ -536,7 +615,7 @@ TEST(PacketResamplerCalculatorTest, FillPeriodsWithLatestPacketAligned) {
         "[mediapipe.PacketResamplerCalculatorOptions.ext]: "
         "{frame_rate:30}");
     runner.SetInput({-222, 15000, 32000, 49999, 150000});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({-222, 32000, 49999, 49999, 49999, 150000},
                                  {-222, 33111, 66445, 99778, 133111, 166445});
   }
@@ -547,7 +626,7 @@ TEST(PacketResamplerCalculatorTest, FillPeriodsWithLatestPacketAligned) {
         "{frame_rate:30 "
         "base_timestamp:0}");
     runner.SetInput({-222, 15000, 32000, 49999, 150000});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({-222, 32000, 49999, 49999, 49999, 150000},
                                  {0, 33333, 66667, 100000, 133333, 166667});
   }
@@ -565,7 +644,7 @@ TEST(PacketResamplerCalculatorTest, FirstInputAfterMiddlepointAligned) {
         "{frame_rate:30 "
         "base_timestamp:0}");
     runner.SetInput({66667, 100020, 133333, 166667});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({66667, 100020, 133333, 166667},
                                  {66667, 100000, 133334, 166667});
   }
@@ -582,7 +661,7 @@ TEST(PacketResamplerCalculatorTest, FirstInputAfterMiddlepointAligned) {
         "{frame_rate:30 "
         "base_timestamp:0}");
     runner.SetInput({100020, 133333, 166667});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({100020, 133333, 166667},
                                  {100000, 133333, 166667});
   }
@@ -596,7 +675,7 @@ TEST(PacketResamplerCalculatorTest, OutputTimestampRangeAligned) {
         "{frame_rate:30 "
         "base_timestamp:0}");
     runner.SetInput({-222, 15000, 32000, 49999, 150000});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({-222, 32000, 49999, 49999, 49999, 150000},
                                  {0, 33333, 66667, 100000, 133333, 166667});
   }
@@ -609,7 +688,7 @@ TEST(PacketResamplerCalculatorTest, OutputTimestampRangeAligned) {
         "start_time:40000 "
         "end_time:160000}");
     runner.SetInput({-222, 15000, 32000, 49999, 150000});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({49999, 49999, 49999},
                                  {66667, 100000, 133333});
   }
@@ -624,7 +703,7 @@ TEST(PacketResamplerCalculatorTest, OutputTimestampRangeAligned) {
         "end_time:160000 "
         "round_limits:true}");
     runner.SetInput({-222, 15000, 32000, 49999, 150000});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     runner.CheckOutputTimestamps({32000, 49999, 49999, 49999, 150000},
                                  {33333, 66667, 100000, 133333, 166667});
   }
@@ -632,7 +711,7 @@ TEST(PacketResamplerCalculatorTest, OutputTimestampRangeAligned) {
 
 TEST(PacketResamplerCalculatorTest, OptionsSidePacket) {
   CalculatorGraphConfig::Node node_config =
-      ParseTextProtoOrDie<CalculatorGraphConfig::Node>(R"(
+      ParseTextProtoOrDie<CalculatorGraphConfig::Node>(R"pb(
         calculator: "PacketResamplerCalculator"
         input_side_packet: "OPTIONS:options"
         input_stream: "input"
@@ -642,35 +721,35 @@ TEST(PacketResamplerCalculatorTest, OptionsSidePacket) {
             frame_rate: 60
             base_timestamp: 0
           }
-        })");
+        })pb");
 
   {
     SimpleRunner runner(node_config);
     auto options =
         new CalculatorOptions(ParseTextProtoOrDie<CalculatorOptions>(
-            R"(
+            R"pb(
               [mediapipe.PacketResamplerCalculatorOptions.ext] {
                 frame_rate: 30
-              })"));
-    runner.MutableSidePackets()->Tag("OPTIONS") = Adopt(options);
+              })pb"));
+    runner.MutableSidePackets()->Tag(kOptionsTag) = Adopt(options);
     runner.SetInput({-222, 15000, 32000, 49999, 150000});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     EXPECT_EQ(6, runner.Outputs().Index(0).packets.size());
   }
   {
     SimpleRunner runner(node_config);
 
     auto options =
-        new CalculatorOptions(ParseTextProtoOrDie<CalculatorOptions>(R"(
+        new CalculatorOptions(ParseTextProtoOrDie<CalculatorOptions>(R"pb(
           merge_fields: false
           [mediapipe.PacketResamplerCalculatorOptions.ext] {
             frame_rate: 30
             base_timestamp: 0
-          })"));
-    runner.MutableSidePackets()->Tag("OPTIONS") = Adopt(options);
+          })pb"));
+    runner.MutableSidePackets()->Tag(kOptionsTag) = Adopt(options);
 
     runner.SetInput({-222, 15000, 32000, 49999, 150000});
-    MEDIAPIPE_ASSERT_OK(runner.Run());
+    MP_ASSERT_OK(runner.Run());
     EXPECT_EQ(6, runner.Outputs().Index(0).packets.size());
   }
 }

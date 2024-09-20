@@ -15,7 +15,6 @@
 #include <utility>
 
 #include "absl/memory/memory.h"
-#include "mediapipe/framework/port/logging.h"
 #include "mediapipe/framework/port/ret_check.h"
 #include "mediapipe/framework/port/status.h"
 #include "mediapipe/framework/port/status_builder.h"
@@ -48,12 +47,12 @@ GlContext::StatusOrGlContext GlContext::Create(EAGLContext* share_context,
 GlContext::StatusOrGlContext GlContext::Create(EAGLSharegroup* sharegroup,
                                                bool create_thread) {
   std::shared_ptr<GlContext> context(new GlContext());
-  RETURN_IF_ERROR(context->CreateContext(sharegroup));
-  RETURN_IF_ERROR(context->FinishInitialization(create_thread));
+  MP_RETURN_IF_ERROR(context->CreateContext(sharegroup));
+  MP_RETURN_IF_ERROR(context->FinishInitialization(create_thread));
   return std::move(context);
 }
 
-::mediapipe::Status GlContext::CreateContext(EAGLSharegroup* sharegroup) {
+absl::Status GlContext::CreateContext(EAGLSharegroup* sharegroup) {
   context_ = [[EAGLContext alloc] initWithAPI:kEAGLRenderingAPIOpenGLES3
                                    sharegroup:sharegroup];
   if (context_) {
@@ -72,14 +71,20 @@ GlContext::StatusOrGlContext GlContext::Create(EAGLSharegroup* sharegroup,
       << "Error at CVOpenGLESTextureCacheCreate";
   texture_cache_.adopt(cache);
 
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-void GlContext::DestroyContext() {}
+void GlContext::DestroyContext() {
+  if (*texture_cache_) {
+    // The texture cache must be flushed on tear down, otherwise we potentially
+    // leak pixel buffers whose textures have pending GL operations after the
+    // CVOpenGLESTextureRef is released in GlTexture::Release.
+    CVOpenGLESTextureCacheFlush(*texture_cache_, 0);
+  }
+}
 
-GlContext::ContextBinding GlContext::ThisContextBinding() {
+GlContext::ContextBinding GlContext::ThisContextBindingPlatform() {
   GlContext::ContextBinding result;
-  result.context_object = shared_from_this();
   result.context = context_;
   return result;
 }
@@ -88,11 +93,11 @@ void GlContext::GetCurrentContextBinding(GlContext::ContextBinding* binding) {
   binding->context = [EAGLContext currentContext];
 }
 
-::mediapipe::Status GlContext::SetCurrentContextBinding(
+absl::Status GlContext::SetCurrentContextBinding(
     const ContextBinding& new_binding) {
   BOOL success = [EAGLContext setCurrentContext:new_binding.context];
   RET_CHECK(success) << "Cannot set OpenGL context";
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 bool GlContext::HasContext() const { return context_ != nil; }

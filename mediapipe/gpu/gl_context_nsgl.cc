@@ -14,8 +14,8 @@
 
 #include <utility>
 
+#include "absl/log/absl_log.h"
 #include "absl/memory/memory.h"
-#include "mediapipe/framework/port/logging.h"
 #include "mediapipe/framework/port/ret_check.h"
 #include "mediapipe/framework/port/status.h"
 #include "mediapipe/framework/port/status_builder.h"
@@ -39,27 +39,50 @@ GlContext::StatusOrGlContext GlContext::Create(const GlContext& share_context,
 GlContext::StatusOrGlContext GlContext::Create(NSOpenGLContext* share_context,
                                                bool create_thread) {
   std::shared_ptr<GlContext> context(new GlContext());
-  RETURN_IF_ERROR(context->CreateContext(share_context));
-  RETURN_IF_ERROR(context->FinishInitialization(create_thread));
+  MP_RETURN_IF_ERROR(context->CreateContext(share_context));
+  MP_RETURN_IF_ERROR(context->FinishInitialization(create_thread));
   return std::move(context);
 }
 
-::mediapipe::Status GlContext::CreateContext(NSOpenGLContext* share_context) {
+absl::Status GlContext::CreateContext(NSOpenGLContext* share_context) {
   // TODO: choose a better list?
-  NSOpenGLPixelFormatAttribute attrs[] = {NSOpenGLPFAAccelerated,
-                                          NSOpenGLPFAColorSize,
-                                          24,
-                                          NSOpenGLPFAAlphaSize,
-                                          8,
-                                          NSOpenGLPFADepthSize,
-                                          16,
-                                          0};
+  NSOpenGLPixelFormatAttribute attrs[] = {
+  // This is required to get any OpenGL version 3.2 or higher. Note that
+  // once this is enabled up to version 4.1 can be supported (depending on
+  // hardware).
+  // TODO: Remove the need for the OSX_ENABLE_3_2_CORE if this
+  // proves to be safe in general.
+#if defined(TARGET_OS_OSX) && defined(OSX_ENABLE_3_2_CORE)
+      NSOpenGLPFAOpenGLProfile,
+      NSOpenGLProfileVersion3_2Core,
+#endif
+      NSOpenGLPFAAccelerated,
+      NSOpenGLPFAColorSize,
+      24,
+      NSOpenGLPFAAlphaSize,
+      8,
+      NSOpenGLPFADepthSize,
+      16,
+      0};
 
   pixel_format_ = [[NSOpenGLPixelFormat alloc] initWithAttributes:attrs];
+  // If OpenGL 3.2 Core does not work, try again without it.
+  if (!pixel_format_) {
+    NSOpenGLPixelFormatAttribute attrs_2_1[] = {NSOpenGLPFAAccelerated,
+                                                NSOpenGLPFAColorSize,
+                                                24,
+                                                NSOpenGLPFAAlphaSize,
+                                                8,
+                                                NSOpenGLPFADepthSize,
+                                                16,
+                                                0};
+
+    pixel_format_ = [[NSOpenGLPixelFormat alloc] initWithAttributes:attrs_2_1];
+  }
   if (!pixel_format_) {
     // On several Forge machines, the default config fails. For now let's do
     // this.
-    LOG(WARNING)
+    ABSL_LOG(WARNING)
         << "failed to create pixel format; trying without acceleration";
     NSOpenGLPixelFormatAttribute attrs_no_accel[] = {NSOpenGLPFAColorSize,
                                                      24,
@@ -72,14 +95,14 @@ GlContext::StatusOrGlContext GlContext::Create(NSOpenGLContext* share_context,
         [[NSOpenGLPixelFormat alloc] initWithAttributes:attrs_no_accel];
   }
   if (!pixel_format_)
-    return ::mediapipe::InternalError(
-        "Could not create an NSOpenGLPixelFormat");
+    return absl::InternalError("Could not create an NSOpenGLPixelFormat");
   context_ = [[NSOpenGLContext alloc] initWithFormat:pixel_format_
                                         shareContext:share_context];
 
   // Try to query pixel format from shared context.
   if (!context_) {
-    LOG(WARNING) << "Requested context not created, using queried context.";
+    ABSL_LOG(WARNING)
+        << "Requested context not created, using queried context.";
     CGLContextObj cgl_ctx =
         static_cast<CGLContextObj>([share_context CGLContextObj]);
     CGLPixelFormatObj cgl_fmt =
@@ -99,14 +122,20 @@ GlContext::StatusOrGlContext GlContext::Create(NSOpenGLContext* share_context,
   RET_CHECK_EQ(err, kCVReturnSuccess) << "Error at CVOpenGLTextureCacheCreate";
   texture_cache_.adopt(cache);
 
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-void GlContext::DestroyContext() {}
+void GlContext::DestroyContext() {
+  if (*texture_cache_) {
+    // The texture cache must be flushed on tear down, otherwise we potentially
+    // leak pixel buffers whose textures have pending GL operations after the
+    // CVOpenGLTextureRef is released in GlTexture::Release.
+    CVOpenGLTextureCacheFlush(*texture_cache_, 0);
+  }
+}
 
-GlContext::ContextBinding GlContext::ThisContextBinding() {
+GlContext::ContextBinding GlContext::ThisContextBindingPlatform() {
   GlContext::ContextBinding result;
-  result.context_object = shared_from_this();
   result.context = context_;
   return result;
 }
@@ -115,14 +144,14 @@ void GlContext::GetCurrentContextBinding(GlContext::ContextBinding* binding) {
   binding->context = [NSOpenGLContext currentContext];
 }
 
-::mediapipe::Status GlContext::SetCurrentContextBinding(
+absl::Status GlContext::SetCurrentContextBinding(
     const ContextBinding& new_binding) {
   if (new_binding.context) {
     [new_binding.context makeCurrentContext];
   } else {
     [NSOpenGLContext clearCurrentContext];
   }
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 bool GlContext::HasContext() const { return context_ != nil; }

@@ -18,8 +18,10 @@
 #include <memory>
 #include <vector>
 
+#include "absl/log/absl_check.h"
 #include "absl/strings/str_cat.h"
 #include "mediapipe/framework/calculator_contract.h"
+#include "mediapipe/framework/calculator_framework.h"
 #include "mediapipe/framework/legacy_calculator_support.h"
 #include "mediapipe/framework/packet_generator.h"
 #include "mediapipe/framework/packet_generator.pb.h"
@@ -38,13 +40,13 @@
 namespace mediapipe {
 
 namespace tool {
-::mediapipe::Status RunGeneratorFillExpectations(
+absl::Status RunGeneratorFillExpectations(
     const PacketGeneratorConfig& input_config, const std::string& package) {
   // TODO Remove conversion after everyone uses input/output
   // side packet.
   PacketGeneratorConfig config = input_config;
 
-  ASSIGN_OR_RETURN(
+  MP_ASSIGN_OR_RETURN(
       auto static_access,
       internal::StaticAccessToGeneratorRegistry::CreateByNameInNamespace(
           package, config.packet_generator()),
@@ -52,19 +54,19 @@ namespace tool {
         << " is not a registered packet generator.");
 
   CalculatorContract contract;
-  RETURN_IF_ERROR(contract.Initialize(config));
+  MP_RETURN_IF_ERROR(contract.Initialize(config, ""));
 
   {
     LegacyCalculatorSupport::Scoped<CalculatorContract> s(&contract);
-    RETURN_IF_ERROR(static_access->FillExpectations(
-                        config.options(), &contract.InputSidePackets(),
-                        &contract.OutputSidePackets()))
+    MP_RETURN_IF_ERROR(static_access->FillExpectations(
+                           config.options(), &contract.InputSidePackets(),
+                           &contract.OutputSidePackets()))
             .SetPrepend()
         << config.packet_generator() << "::FillExpectations failed: ";
   }
 
   // Check that everything got initialized.
-  std::vector<::mediapipe::Status> statuses;
+  std::vector<absl::Status> statuses;
   statuses.push_back(ValidatePacketTypeSet(contract.InputSidePackets()));
   statuses.push_back(ValidatePacketTypeSet(contract.OutputSidePackets()));
   return tool::CombinedStatus(
@@ -72,14 +74,14 @@ namespace tool {
       statuses);
 }
 
-::mediapipe::Status RunGenerateAndValidateTypes(
+absl::Status RunGenerateAndValidateTypes(
     const std::string& packet_generator_name,
     const PacketGeneratorOptions& extendable_options,
     const PacketSet& input_side_packets, PacketSet* output_side_packets,
     const std::string& package) {
-  CHECK(output_side_packets);
+  ABSL_CHECK(output_side_packets);
   // Get static access to functions.
-  ASSIGN_OR_RETURN(
+  MP_ASSIGN_OR_RETURN(
       auto static_access,
       internal::StaticAccessToGeneratorRegistry::CreateByNameInNamespace(
           package, packet_generator_name),
@@ -89,36 +91,36 @@ namespace tool {
   PacketTypeSet output_side_packet_types(output_side_packets->TagMap());
 
   // Fill the PacketTypeSets with type information.
-  RETURN_IF_ERROR(static_access->FillExpectations(extendable_options,
-                                                  &input_side_packet_types,
-                                                  &output_side_packet_types))
+  MP_RETURN_IF_ERROR(static_access->FillExpectations(extendable_options,
+                                                     &input_side_packet_types,
+                                                     &output_side_packet_types))
           .SetPrepend()
       << packet_generator_name << "::FillExpectations failed: ";
   // Check that the types were filled well.
-  std::vector<::mediapipe::Status> statuses;
+  std::vector<absl::Status> statuses;
   statuses.push_back(ValidatePacketTypeSet(input_side_packet_types));
   statuses.push_back(ValidatePacketTypeSet(output_side_packet_types));
-  RETURN_IF_ERROR(tool::CombinedStatus(
+  MP_RETURN_IF_ERROR(tool::CombinedStatus(
       absl::StrCat(packet_generator_name, "::FillExpectations failed: "),
       statuses));
 
-  RETURN_IF_ERROR(
+  MP_RETURN_IF_ERROR(
       ValidatePacketSet(input_side_packet_types, input_side_packets))
           .SetPrepend()
       << packet_generator_name
       << "::FillExpectations expected different input type than those given: ";
-  RETURN_IF_ERROR(static_access->Generate(extendable_options,
-                                          input_side_packets,
-                                          output_side_packets))
+  MP_RETURN_IF_ERROR(static_access->Generate(extendable_options,
+                                             input_side_packets,
+                                             output_side_packets))
           .SetPrepend()
       << packet_generator_name << "::Generate failed: ";
-  RETURN_IF_ERROR(
+  MP_RETURN_IF_ERROR(
       ValidatePacketSet(output_side_packet_types, *output_side_packets))
           .SetPrepend()
       << packet_generator_name
       << "::FillExpectations expected different "
          "output type than those produced: ";
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace tool

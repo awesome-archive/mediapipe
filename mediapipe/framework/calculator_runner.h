@@ -62,7 +62,7 @@ class CalculatorRunner {
   //   )");
   explicit CalculatorRunner(const CalculatorGraphConfig::Node& node_config);
 #if !defined(MEDIAPIPE_PROTO_LITE)
-  // Convenience constructor which takes a node_config std::string directly.
+  // Convenience constructor which takes a node_config string directly.
   explicit CalculatorRunner(const std::string& node_config_string);
   // Convenience constructor to initialize a calculator which uses indexes
   // (not tags) for all its fields.
@@ -109,11 +109,11 @@ class CalculatorRunner {
 
   // Runs the calculator, by calling Open(), Process() with the
   // inputs provided via mutable_inputs(), and Close(). Returns the
-  // ::mediapipe::Status from CalculatorGraph::Run().  Internally, Run()
+  // absl::Status from CalculatorGraph::Run().  Internally, Run()
   // constructs a CalculatorGraph in the first call, and calls
   // CalculatorGraph::Run().  A single instance of CalculatorRunner
   // uses the same instance of CalculatorGraph for all runs.
-  ::mediapipe::Status Run();
+  absl::Status Run();
 
   // Returns the vector of contents of the output streams. The .header
   // field contains the stream header and the .packets field contains
@@ -122,21 +122,24 @@ class CalculatorRunner {
   const StreamContentsSet& Outputs() const { return *outputs_; }
 
   // Returns the access to the output side packets.
-  const PacketSet& OutputSidePackets() { return *output_side_packets_.get(); }
+  const PacketSet& OutputSidePackets() { return *output_side_packets_; }
 
   // Returns a graph counter.
   mediapipe::Counter* GetCounter(const std::string& name);
+
+  // Returns all graph counters values.
+  std::map<std::string, int64_t> GetCountersValues();
 
  private:
   static const char kSourcePrefix[];
   static const char kSinkPrefix[];
 
   // Initialize using a node config (does the constructor's work).
-  ::mediapipe::Status InitializeFromNodeConfig(
+  absl::Status InitializeFromNodeConfig(
       const CalculatorGraphConfig::Node& node_config);
 
   // Builds the graph if one does not already exist.
-  ::mediapipe::Status BuildGraph();
+  absl::Status BuildGraph();
 
   CalculatorGraphConfig::Node node_config_;
 

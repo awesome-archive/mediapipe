@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "absl/log/absl_log.h"
 #include "mediapipe/calculators/tensorflow/tensor_squeeze_dimensions_calculator.pb.h"
 #include "mediapipe/framework/calculator_framework.h"
 #include "mediapipe/framework/port/ret_check.h"
@@ -27,7 +28,7 @@ namespace tf = ::tensorflow;
 // containing identical data (example output dimensions [1024, 5]).
 class TensorSqueezeDimensionsCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     RET_CHECK_EQ(cc->Inputs().NumEntries(), 1) << "Need one input";
     cc->Inputs().Index(0).Set<tf::Tensor>(
         // Input Tensor
@@ -36,10 +37,10 @@ class TensorSqueezeDimensionsCalculator : public CalculatorBase {
     cc->Outputs().Index(0).Set<tf::Tensor>(
         // Output Tensor Reduced Dimensions
     );
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) override {
+  absl::Status Open(CalculatorContext* cc) override {
     options_ = cc->Options<TensorSqueezeDimensionsCalculatorOptions>();
     RET_CHECK(options_.squeeze_all_single_dims() ^ (options_.dim_size() > 0))
         << "Must specify dimensions to remove, or set squeeze_all_single_dims, "
@@ -47,15 +48,15 @@ class TensorSqueezeDimensionsCalculator : public CalculatorBase {
         << options_.DebugString();
     if (options_.dim_size() > 0) {
       remove_dims_ =
-          std::vector<int32>(options_.dim().begin(), options_.dim().end());
+          std::vector<int32_t>(options_.dim().begin(), options_.dim().end());
       std::sort(remove_dims_.rbegin(), remove_dims_.rend());
       remove_dims_initialized_ = true;
     }
     cc->SetOffset(0);
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
+  absl::Status Process(CalculatorContext* cc) override {
     const tf::Tensor& input_tensor = cc->Inputs().Index(0).Get<tf::Tensor>();
     tf::TensorShape tensor_shape = input_tensor.shape();
     if (!remove_dims_initialized_) {
@@ -78,16 +79,16 @@ class TensorSqueezeDimensionsCalculator : public CalculatorBase {
     std::unique_ptr<tf::Tensor> output_tensor(new tf::Tensor);
     RET_CHECK(output_tensor->CopyFrom(input_tensor, tensor_shape));
     cc->Outputs().Index(0).Add(output_tensor.release(), cc->InputTimestamp());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Close(CalculatorContext* cc) override {
-    return ::mediapipe::OkStatus();
+  absl::Status Close(CalculatorContext* cc) override {
+    return absl::OkStatus();
   }
 
  private:
   TensorSqueezeDimensionsCalculatorOptions options_;
-  std::vector<int32> remove_dims_;
+  std::vector<int32_t> remove_dims_;
   bool remove_dims_initialized_;
 
   void InitializeToRemoveAllSingletonDimensions(
@@ -99,10 +100,11 @@ class TensorSqueezeDimensionsCalculator : public CalculatorBase {
       }
     }
     if (remove_dims_.empty()) {
-      LOG(ERROR) << "TensorSqueezeDimensionsCalculator is squeezing input with "
-                    "no single-dimensions. Calculator will be a no-op.";
-      LOG(ERROR) << "Input to TensorSqueezeDimensionsCalculator has shape "
-                 << tensor_shape.DebugString();
+      ABSL_LOG(ERROR)
+          << "TensorSqueezeDimensionsCalculator is squeezing input with "
+             "no single-dimensions. Calculator will be a no-op.";
+      ABSL_LOG(ERROR) << "Input to TensorSqueezeDimensionsCalculator has shape "
+                      << tensor_shape.DebugString();
     }
   }
 };

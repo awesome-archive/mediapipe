@@ -1,4 +1,4 @@
-// Copyright 2019 The MediaPipe Authors.
+// Copyright 2022 The MediaPipe Authors.
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -17,11 +17,12 @@
 
 #include <opencv2/core/version.hpp>
 
+#include "mediapipe/framework/port.h"
 #include "mediapipe/framework/port/opencv_core_inc.h"
 
 #ifdef CV_VERSION_EPOCH  // for OpenCV 2.x
 #include <opencv2/highgui/highgui.hpp>
-
+#include <opencv2/video/video.hpp>
 // Copied from "opencv2/videoio.hpp" in OpenCV 4.0.1
 namespace cv {
 enum VideoCaptureProperties {
@@ -80,7 +81,19 @@ inline int fourcc(char c1, char c2, char c3, char c4) {
 }  // namespace mediapipe
 
 #else
+#include <opencv2/video.hpp>
 #include <opencv2/videoio.hpp>
+
+#if CV_VERSION_MAJOR == 4 && !defined(MEDIAPIPE_MOBILE)
+#include <opencv2/optflow.hpp>
+
+namespace cv {
+inline Ptr<DenseOpticalFlow> createOptFlow_DualTVL1() {
+  return optflow::createOptFlow_DualTVL1();
+}
+}  // namespace cv
+#endif
+
 namespace mediapipe {
 inline int fourcc(char c1, char c2, char c3, char c4) {
   return cv::VideoWriter::fourcc(c1, c2, c3, c4);

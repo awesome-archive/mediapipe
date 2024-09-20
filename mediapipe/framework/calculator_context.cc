@@ -14,31 +14,38 @@
 
 #include "mediapipe/framework/calculator_context.h"
 
+#include "absl/log/absl_check.h"
+
 namespace mediapipe {
 
 const std::string& CalculatorContext::CalculatorType() const {
-  CHECK(calculator_state_);
+  ABSL_CHECK(calculator_state_);
   return calculator_state_->CalculatorType();
 }
 
 const CalculatorOptions& CalculatorContext::Options() const {
-  CHECK(calculator_state_);
+  ABSL_CHECK(calculator_state_);
   return calculator_state_->Options();
 }
 
 const std::string& CalculatorContext::NodeName() const {
-  CHECK(calculator_state_);
+  ABSL_CHECK(calculator_state_);
   return calculator_state_->NodeName();
 }
 
 int CalculatorContext::NodeId() const {
-  CHECK(calculator_state_);
+  ABSL_CHECK(calculator_state_);
   return calculator_state_->NodeId();
 }
 
 Counter* CalculatorContext::GetCounter(const std::string& name) {
-  CHECK(calculator_state_);
+  ABSL_CHECK(calculator_state_);
   return calculator_state_->GetCounter(name);
+}
+
+CounterFactory* CalculatorContext::GetCounterFactory() {
+  ABSL_CHECK(calculator_state_);
+  return calculator_state_->GetCounterFactory();
 }
 
 const PacketSet& CalculatorContext::InputSidePackets() const {
@@ -66,11 +73,26 @@ void CalculatorContext::SetOffset(TimestampDiff offset) {
 }
 
 const InputStreamSet& CalculatorContext::InputStreams() const {
-  return calculator_state_->InputStreams();
+  if (!input_streams_) {
+    input_streams_ = absl::make_unique<InputStreamSet>(inputs_.TagMap());
+    for (CollectionItemId id = input_streams_->BeginId();
+         id < input_streams_->EndId(); ++id) {
+      input_streams_->Get(id) = const_cast<InputStreamShard*>(&inputs_.Get(id));
+    }
+  }
+  return *input_streams_;
 }
 
 const OutputStreamSet& CalculatorContext::OutputStreams() const {
-  return calculator_state_->OutputStreams();
+  if (!output_streams_) {
+    output_streams_ = absl::make_unique<OutputStreamSet>(outputs_.TagMap());
+    for (CollectionItemId id = output_streams_->BeginId();
+         id < output_streams_->EndId(); ++id) {
+      output_streams_->Get(id) =
+          const_cast<OutputStreamShard*>(&outputs_.Get(id));
+    }
+  }
+  return *output_streams_;
 }
 
 }  // namespace mediapipe

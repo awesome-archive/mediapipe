@@ -17,6 +17,7 @@
 
 #include <string>
 
+#include "mediapipe/framework/port/status.h"
 #include "mediapipe/framework/port/statusor.h"
 
 namespace mediapipe {
@@ -25,6 +26,10 @@ namespace mediapipe {
 // If the function is unable to find an appropriate directory, it returns an
 // error.
 StatusOr<std::string> GetDefaultTraceLogDirectory();
+
+// Given a log file path, this function provides an absolute path with which
+// it can be accessed as a file.  Enclosing directories are created as needed.
+StatusOr<std::string> PathToLogFile(const std::string& path);
 
 }  // namespace mediapipe
 

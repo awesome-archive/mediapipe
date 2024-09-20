@@ -16,11 +16,15 @@
 
 #include <math.h>
 
+#include <algorithm>
 #include <cmath>
 
+#include "absl/log/absl_check.h"
+#include "absl/log/absl_log.h"
 #include "mediapipe/framework/port/logging.h"
 #include "mediapipe/framework/port/vector.h"
 #include "mediapipe/util/color.pb.h"
+#include "mediapipe/util/render_data.pb.h"
 
 namespace mediapipe {
 namespace {
@@ -31,35 +35,59 @@ using FilledRectangle = RenderAnnotation::FilledRectangle;
 using FilledRoundedRectangle = RenderAnnotation::FilledRoundedRectangle;
 using Point = RenderAnnotation::Point;
 using Line = RenderAnnotation::Line;
+using GradientLine = RenderAnnotation::GradientLine;
 using Oval = RenderAnnotation::Oval;
 using Rectangle = RenderAnnotation::Rectangle;
 using RoundedRectangle = RenderAnnotation::RoundedRectangle;
 using Text = RenderAnnotation::Text;
 
+int ClampThickness(int thickness) {
+  constexpr int kMaxThickness = 32767;  // OpenCV MAX_THICKNESS
+  return std::clamp(thickness, 1, kMaxThickness);
+}
+
 bool NormalizedtoPixelCoordinates(double normalized_x, double normalized_y,
                                   int image_width, int image_height, int* x_px,
                                   int* y_px) {
-  CHECK(x_px != nullptr);
-  CHECK(y_px != nullptr);
-  CHECK_GT(image_width, 0);
-  CHECK_GT(image_height, 0);
+  ABSL_CHECK(x_px != nullptr);
+  ABSL_CHECK(y_px != nullptr);
+  ABSL_CHECK_GT(image_width, 0);
+  ABSL_CHECK_GT(image_height, 0);
 
   if (normalized_x < 0 || normalized_x > 1.0 || normalized_y < 0 ||
       normalized_y > 1.0) {
     VLOG(1) << "Normalized coordinates must be between 0.0 and 1.0";
   }
 
-  *x_px = static_cast<int32>(round(normalized_x * image_width));
-  *y_px = static_cast<int32>(round(normalized_y * image_height));
+  *x_px = static_cast<int32_t>(round(normalized_x * image_width));
+  *y_px = static_cast<int32_t>(round(normalized_y * image_height));
 
   return true;
 }
 
 cv::Scalar MediapipeColorToOpenCVColor(const Color& color) {
-  return cv::Scalar(static_cast<int32>(color.r() * 255.0f),
-                    static_cast<int32>(color.g() * 255.0f),
-                    static_cast<int32>(color.b() * 255.0f));
+  return cv::Scalar(color.r(), color.g(), color.b());
 }
+
+cv::RotatedRect RectangleToOpenCVRotatedRect(int left, int top, int right,
+                                             int bottom, double rotation) {
+  return cv::RotatedRect(
+      cv::Point2f((left + right) / 2.f, (top + bottom) / 2.f),
+      cv::Size2f(right - left, bottom - top), rotation / M_PI * 180.f);
+}
+
+void cv_line2(cv::Mat& img, const cv::Point& start, const cv::Point& end,
+              const cv::Scalar& color1, const cv::Scalar& color2,
+              int thickness) {
+  cv::LineIterator iter(img, start, end, /*cv::LINE_4=*/4);
+  for (int i = 0; i < iter.count; i++, iter++) {
+    const double alpha = static_cast<double>(i) / iter.count;
+    const cv::Scalar new_color(color1 * (1.0 - alpha) + color2 * alpha);
+    const cv::Rect rect(iter.pos(), cv::Size(thickness, thickness));
+    cv::rectangle(img, rect, new_color, /*cv::FILLED=*/-1, /*cv::LINE_4=*/4);
+  }
+}
+
 }  // namespace
 
 void AnnotationRenderer::RenderDataOnImage(const RenderData& render_data) {
@@ -83,10 +111,14 @@ void AnnotationRenderer::RenderDataOnImage(const RenderData& render_data) {
       DrawPoint(annotation);
     } else if (annotation.data_case() == RenderAnnotation::kLine) {
       DrawLine(annotation);
+    } else if (annotation.data_case() == RenderAnnotation::kGradientLine) {
+      DrawGradientLine(annotation);
     } else if (annotation.data_case() == RenderAnnotation::kArrow) {
       DrawArrow(annotation);
+    } else if (annotation.data_case() == RenderAnnotation::kScribble) {
+      DrawScribble(annotation);
     } else {
-      LOG(FATAL) << "Unknown annotation type: " << annotation.data_case();
+      ABSL_LOG(FATAL) << "Unknown annotation type: " << annotation.data_case();
     }
   }
 }
@@ -106,6 +138,10 @@ void AnnotationRenderer::SetFlipTextVertically(bool flip) {
   flip_text_vertically_ = flip;
 }
 
+void AnnotationRenderer::SetScaleFactor(float scale_factor) {
+  if (scale_factor > 0.0f) scale_factor_ = std::min(scale_factor, 1.0f);
+}
+
 void AnnotationRenderer::DrawRectangle(const RenderAnnotation& annotation) {
   int left = -1;
   int top = -1;
@@ -113,23 +149,48 @@ void AnnotationRenderer::DrawRectangle(const RenderAnnotation& annotation) {
   int bottom = -1;
   const auto& rectangle = annotation.rectangle();
   if (rectangle.normalized()) {
-    CHECK(NormalizedtoPixelCoordinates(rectangle.left(), rectangle.top(),
-                                       image_width_, image_height_, &left,
-                                       &top));
-    CHECK(NormalizedtoPixelCoordinates(rectangle.right(), rectangle.bottom(),
-                                       image_width_, image_height_, &right,
-                                       &bottom));
+    ABSL_CHECK(NormalizedtoPixelCoordinates(rectangle.left(), rectangle.top(),
+                                            image_width_, image_height_, &left,
+                                            &top));
+    ABSL_CHECK(NormalizedtoPixelCoordinates(rectangle.right(),
+                                            rectangle.bottom(), image_width_,
+                                            image_height_, &right, &bottom));
   } else {
-    left = static_cast<int>(rectangle.left());
-    top = static_cast<int>(rectangle.top());
-    right = static_cast<int>(rectangle.right());
-    bottom = static_cast<int>(rectangle.bottom());
+    left = static_cast<int>(rectangle.left() * scale_factor_);
+    top = static_cast<int>(rectangle.top() * scale_factor_);
+    right = static_cast<int>(rectangle.right() * scale_factor_);
+    bottom = static_cast<int>(rectangle.bottom() * scale_factor_);
   }
 
-  cv::Rect rect(left, top, right - left, bottom - top);
   const cv::Scalar color = MediapipeColorToOpenCVColor(annotation.color());
-  const int thickness = annotation.thickness();
-  cv::rectangle(mat_image_, rect, color, thickness);
+  const int thickness =
+      ClampThickness(round(annotation.thickness() * scale_factor_));
+  if (rectangle.rotation() != 0.0) {
+    const auto& rect = RectangleToOpenCVRotatedRect(left, top, right, bottom,
+                                                    rectangle.rotation());
+    const int kNumVertices = 4;
+    cv::Point2f vertices[kNumVertices];
+    rect.points(vertices);
+    for (int i = 0; i < kNumVertices; i++) {
+      cv::line(mat_image_, vertices[i], vertices[(i + 1) % kNumVertices], color,
+               thickness);
+    }
+  } else {
+    cv::Rect rect(left, top, right - left, bottom - top);
+    cv::rectangle(mat_image_, rect, color, thickness);
+  }
+  if (rectangle.has_top_left_thickness()) {
+    const auto& rect = RectangleToOpenCVRotatedRect(left, top, right, bottom,
+                                                    rectangle.rotation());
+    const int kNumVertices = 4;
+    cv::Point2f vertices[kNumVertices];
+    rect.points(vertices);
+    const int top_left_thickness =
+        ClampThickness(round(rectangle.top_left_thickness() * scale_factor_));
+    cv::ellipse(mat_image_, vertices[1],
+                cv::Size(top_left_thickness, top_left_thickness), 0.0, 0, 360,
+                color, -1);
+  }
 }
 
 void AnnotationRenderer::DrawFilledRectangle(
@@ -138,25 +199,38 @@ void AnnotationRenderer::DrawFilledRectangle(
   int top = -1;
   int right = -1;
   int bottom = -1;
-
   const auto& rectangle = annotation.filled_rectangle().rectangle();
   if (rectangle.normalized()) {
-    CHECK(NormalizedtoPixelCoordinates(rectangle.left(), rectangle.top(),
-                                       image_width_, image_height_, &left,
-                                       &top));
-    CHECK(NormalizedtoPixelCoordinates(rectangle.right(), rectangle.bottom(),
-                                       image_width_, image_height_, &right,
-                                       &bottom));
+    ABSL_CHECK(NormalizedtoPixelCoordinates(rectangle.left(), rectangle.top(),
+                                            image_width_, image_height_, &left,
+                                            &top));
+    ABSL_CHECK(NormalizedtoPixelCoordinates(rectangle.right(),
+                                            rectangle.bottom(), image_width_,
+                                            image_height_, &right, &bottom));
   } else {
-    left = static_cast<int>(rectangle.left());
-    top = static_cast<int>(rectangle.top());
-    right = static_cast<int>(rectangle.right());
-    bottom = static_cast<int>(rectangle.bottom());
+    left = static_cast<int>(rectangle.left() * scale_factor_);
+    top = static_cast<int>(rectangle.top() * scale_factor_);
+    right = static_cast<int>(rectangle.right() * scale_factor_);
+    bottom = static_cast<int>(rectangle.bottom() * scale_factor_);
   }
 
-  cv::Rect rect(left, top, right - left, bottom - top);
   const cv::Scalar color = MediapipeColorToOpenCVColor(annotation.color());
-  cv::rectangle(mat_image_, rect, color, -1);
+  if (rectangle.rotation() != 0.0) {
+    const auto& rect = RectangleToOpenCVRotatedRect(left, top, right, bottom,
+                                                    rectangle.rotation());
+    const int kNumVertices = 4;
+    cv::Point2f vertices2f[kNumVertices];
+    rect.points(vertices2f);
+    // Convert cv::Point2f[] to cv::Point[].
+    cv::Point vertices[kNumVertices];
+    for (int i = 0; i < kNumVertices; ++i) {
+      vertices[i] = vertices2f[i];
+    }
+    cv::fillConvexPoly(mat_image_, vertices, kNumVertices, color);
+  } else {
+    cv::Rect rect(left, top, right - left, bottom - top);
+    cv::rectangle(mat_image_, rect, color, -1);
+  }
 }
 
 void AnnotationRenderer::DrawRoundedRectangle(
@@ -167,22 +241,24 @@ void AnnotationRenderer::DrawRoundedRectangle(
   int bottom = -1;
   const auto& rectangle = annotation.rounded_rectangle().rectangle();
   if (rectangle.normalized()) {
-    CHECK(NormalizedtoPixelCoordinates(rectangle.left(), rectangle.top(),
-                                       image_width_, image_height_, &left,
-                                       &top));
-    CHECK(NormalizedtoPixelCoordinates(rectangle.right(), rectangle.bottom(),
-                                       image_width_, image_height_, &right,
-                                       &bottom));
+    ABSL_CHECK(NormalizedtoPixelCoordinates(rectangle.left(), rectangle.top(),
+                                            image_width_, image_height_, &left,
+                                            &top));
+    ABSL_CHECK(NormalizedtoPixelCoordinates(rectangle.right(),
+                                            rectangle.bottom(), image_width_,
+                                            image_height_, &right, &bottom));
   } else {
-    left = static_cast<int>(rectangle.left());
-    top = static_cast<int>(rectangle.top());
-    right = static_cast<int>(rectangle.right());
-    bottom = static_cast<int>(rectangle.bottom());
+    left = static_cast<int>(rectangle.left() * scale_factor_);
+    top = static_cast<int>(rectangle.top() * scale_factor_);
+    right = static_cast<int>(rectangle.right() * scale_factor_);
+    bottom = static_cast<int>(rectangle.bottom() * scale_factor_);
   }
 
   const cv::Scalar color = MediapipeColorToOpenCVColor(annotation.color());
-  const int thickness = annotation.thickness();
-  const int corner_radius = annotation.rounded_rectangle().corner_radius();
+  const int thickness =
+      ClampThickness(round(annotation.thickness() * scale_factor_));
+  const int corner_radius =
+      round(annotation.rounded_rectangle().corner_radius() * scale_factor_);
   const int line_type = annotation.rounded_rectangle().line_type();
   DrawRoundedRectangle(mat_image_, cv::Point(left, top),
                        cv::Point(right, bottom), color, thickness, line_type,
@@ -198,21 +274,22 @@ void AnnotationRenderer::DrawFilledRoundedRectangle(
   const auto& rectangle =
       annotation.filled_rounded_rectangle().rounded_rectangle().rectangle();
   if (rectangle.normalized()) {
-    CHECK(NormalizedtoPixelCoordinates(rectangle.left(), rectangle.top(),
-                                       image_width_, image_height_, &left,
-                                       &top));
-    CHECK(NormalizedtoPixelCoordinates(rectangle.right(), rectangle.bottom(),
-                                       image_width_, image_height_, &right,
-                                       &bottom));
+    ABSL_CHECK(NormalizedtoPixelCoordinates(rectangle.left(), rectangle.top(),
+                                            image_width_, image_height_, &left,
+                                            &top));
+    ABSL_CHECK(NormalizedtoPixelCoordinates(rectangle.right(),
+                                            rectangle.bottom(), image_width_,
+                                            image_height_, &right, &bottom));
   } else {
-    left = static_cast<int>(rectangle.left());
-    top = static_cast<int>(rectangle.top());
-    right = static_cast<int>(rectangle.right());
-    bottom = static_cast<int>(rectangle.bottom());
+    left = static_cast<int>(rectangle.left() * scale_factor_);
+    top = static_cast<int>(rectangle.top() * scale_factor_);
+    right = static_cast<int>(rectangle.right() * scale_factor_);
+    bottom = static_cast<int>(rectangle.bottom() * scale_factor_);
   }
 
   const cv::Scalar color = MediapipeColorToOpenCVColor(annotation.color());
-  const int corner_radius = annotation.rounded_rectangle().corner_radius();
+  const int corner_radius =
+      annotation.rounded_rectangle().corner_radius() * scale_factor_;
   const int line_type = annotation.rounded_rectangle().line_type();
   DrawRoundedRectangle(mat_image_, cv::Point(left, top),
                        cv::Point(right, bottom), color, -1, line_type,
@@ -269,23 +346,26 @@ void AnnotationRenderer::DrawOval(const RenderAnnotation& annotation) {
   int bottom = -1;
   const auto& enclosing_rectangle = annotation.oval().rectangle();
   if (enclosing_rectangle.normalized()) {
-    CHECK(NormalizedtoPixelCoordinates(enclosing_rectangle.left(),
-                                       enclosing_rectangle.top(), image_width_,
-                                       image_height_, &left, &top));
-    CHECK(NormalizedtoPixelCoordinates(
+    ABSL_CHECK(NormalizedtoPixelCoordinates(
+        enclosing_rectangle.left(), enclosing_rectangle.top(), image_width_,
+        image_height_, &left, &top));
+    ABSL_CHECK(NormalizedtoPixelCoordinates(
         enclosing_rectangle.right(), enclosing_rectangle.bottom(), image_width_,
         image_height_, &right, &bottom));
   } else {
-    left = static_cast<int>(enclosing_rectangle.left());
-    top = static_cast<int>(enclosing_rectangle.top());
-    right = static_cast<int>(enclosing_rectangle.right());
-    bottom = static_cast<int>(enclosing_rectangle.bottom());
+    left = static_cast<int>(enclosing_rectangle.left() * scale_factor_);
+    top = static_cast<int>(enclosing_rectangle.top() * scale_factor_);
+    right = static_cast<int>(enclosing_rectangle.right() * scale_factor_);
+    bottom = static_cast<int>(enclosing_rectangle.bottom() * scale_factor_);
   }
+
   cv::Point center((left + right) / 2, (top + bottom) / 2);
   cv::Size size((right - left) / 2, (bottom - top) / 2);
+  const double rotation = enclosing_rectangle.rotation() / M_PI * 180.f;
   const cv::Scalar color = MediapipeColorToOpenCVColor(annotation.color());
-  const int thickness = annotation.thickness();
-  cv::ellipse(mat_image_, center, size, 0, 0, 360, color, thickness);
+  const int thickness =
+      ClampThickness(round(annotation.thickness() * scale_factor_));
+  cv::ellipse(mat_image_, center, size, rotation, 0, 360, color, thickness);
 }
 
 void AnnotationRenderer::DrawFilledOval(const RenderAnnotation& annotation) {
@@ -295,22 +375,25 @@ void AnnotationRenderer::DrawFilledOval(const RenderAnnotation& annotation) {
   int bottom = -1;
   const auto& enclosing_rectangle = annotation.filled_oval().oval().rectangle();
   if (enclosing_rectangle.normalized()) {
-    CHECK(NormalizedtoPixelCoordinates(enclosing_rectangle.left(),
-                                       enclosing_rectangle.top(), image_width_,
-                                       image_height_, &left, &top));
-    CHECK(NormalizedtoPixelCoordinates(
+    ABSL_CHECK(NormalizedtoPixelCoordinates(
+        enclosing_rectangle.left(), enclosing_rectangle.top(), image_width_,
+        image_height_, &left, &top));
+    ABSL_CHECK(NormalizedtoPixelCoordinates(
         enclosing_rectangle.right(), enclosing_rectangle.bottom(), image_width_,
         image_height_, &right, &bottom));
   } else {
-    left = static_cast<int>(enclosing_rectangle.left());
-    top = static_cast<int>(enclosing_rectangle.top());
-    right = static_cast<int>(enclosing_rectangle.right());
-    bottom = static_cast<int>(enclosing_rectangle.bottom());
+    left = static_cast<int>(enclosing_rectangle.left() * scale_factor_);
+    top = static_cast<int>(enclosing_rectangle.top() * scale_factor_);
+    right = static_cast<int>(enclosing_rectangle.right() * scale_factor_);
+    bottom = static_cast<int>(enclosing_rectangle.bottom() * scale_factor_);
   }
+
   cv::Point center((left + right) / 2, (top + bottom) / 2);
-  cv::Size size((right - left) / 2, (bottom - top) / 2);
+  cv::Size size(std::max(0, (right - left) / 2),
+                std::max(0, (bottom - top) / 2));
+  const double rotation = enclosing_rectangle.rotation() / M_PI * 180.f;
   const cv::Scalar color = MediapipeColorToOpenCVColor(annotation.color());
-  cv::ellipse(mat_image_, center, size, 0, 0, 360, color, -1);
+  cv::ellipse(mat_image_, center, size, rotation, 0, 360, color, -1);
 }
 
 void AnnotationRenderer::DrawArrow(const RenderAnnotation& annotation) {
@@ -321,23 +404,24 @@ void AnnotationRenderer::DrawArrow(const RenderAnnotation& annotation) {
 
   const auto& arrow = annotation.arrow();
   if (arrow.normalized()) {
-    CHECK(NormalizedtoPixelCoordinates(arrow.x_start(), arrow.y_start(),
-                                       image_width_, image_height_, &x_start,
-                                       &y_start));
-    CHECK(NormalizedtoPixelCoordinates(arrow.x_end(), arrow.y_end(),
-                                       image_width_, image_height_, &x_end,
-                                       &y_end));
+    ABSL_CHECK(NormalizedtoPixelCoordinates(arrow.x_start(), arrow.y_start(),
+                                            image_width_, image_height_,
+                                            &x_start, &y_start));
+    ABSL_CHECK(NormalizedtoPixelCoordinates(arrow.x_end(), arrow.y_end(),
+                                            image_width_, image_height_, &x_end,
+                                            &y_end));
   } else {
-    x_start = static_cast<int>(arrow.x_start());
-    y_start = static_cast<int>(arrow.y_start());
-    x_end = static_cast<int>(arrow.x_end());
-    y_end = static_cast<int>(arrow.y_end());
+    x_start = static_cast<int>(arrow.x_start() * scale_factor_);
+    y_start = static_cast<int>(arrow.y_start() * scale_factor_);
+    x_end = static_cast<int>(arrow.x_end() * scale_factor_);
+    y_end = static_cast<int>(arrow.y_end() * scale_factor_);
   }
 
   cv::Point arrow_start(x_start, y_start);
   cv::Point arrow_end(x_end, y_end);
   const cv::Scalar color = MediapipeColorToOpenCVColor(annotation.color());
-  const int thickness = annotation.thickness();
+  const int thickness =
+      ClampThickness(round(annotation.thickness() * scale_factor_));
 
   // Draw the main arrow line.
   cv::line(mat_image_, arrow_start, arrow_end, color, thickness);
@@ -363,20 +447,32 @@ void AnnotationRenderer::DrawArrow(const RenderAnnotation& annotation) {
 }
 
 void AnnotationRenderer::DrawPoint(const RenderAnnotation& annotation) {
-  const auto& point = annotation.point();
+  DrawPoint(annotation.point(), annotation);
+}
+
+void AnnotationRenderer::DrawPoint(const RenderAnnotation::Point& point,
+                                   const RenderAnnotation& annotation) {
   int x = -1;
   int y = -1;
   if (point.normalized()) {
-    CHECK(NormalizedtoPixelCoordinates(point.x(), point.y(), image_width_,
-                                       image_height_, &x, &y));
+    ABSL_CHECK(NormalizedtoPixelCoordinates(point.x(), point.y(), image_width_,
+                                            image_height_, &x, &y));
   } else {
-    x = static_cast<int>(point.x());
-    y = static_cast<int>(point.y());
+    x = static_cast<int>(point.x() * scale_factor_);
+    y = static_cast<int>(point.y() * scale_factor_);
   }
+
   cv::Point point_to_draw(x, y);
   const cv::Scalar color = MediapipeColorToOpenCVColor(annotation.color());
-  const int thickness = annotation.thickness();
-  cv::circle(mat_image_, point_to_draw, thickness, color, thickness);
+  const int thickness =
+      ClampThickness(round(annotation.thickness() * scale_factor_));
+  cv::circle(mat_image_, point_to_draw, thickness, color, -1);
+}
+
+void AnnotationRenderer::DrawScribble(const RenderAnnotation& annotation) {
+  for (const RenderAnnotation::Point& point : annotation.scribble().point()) {
+    DrawPoint(point, annotation);
+  }
 }
 
 void AnnotationRenderer::DrawLine(const RenderAnnotation& annotation) {
@@ -387,22 +483,55 @@ void AnnotationRenderer::DrawLine(const RenderAnnotation& annotation) {
 
   const auto& line = annotation.line();
   if (line.normalized()) {
-    CHECK(NormalizedtoPixelCoordinates(line.x_start(), line.y_start(),
-                                       image_width_, image_height_, &x_start,
-                                       &y_start));
-    CHECK(NormalizedtoPixelCoordinates(line.x_end(), line.y_end(), image_width_,
-                                       image_height_, &x_end, &y_end));
+    ABSL_CHECK(NormalizedtoPixelCoordinates(line.x_start(), line.y_start(),
+                                            image_width_, image_height_,
+                                            &x_start, &y_start));
+    ABSL_CHECK(NormalizedtoPixelCoordinates(line.x_end(), line.y_end(),
+                                            image_width_, image_height_, &x_end,
+                                            &y_end));
   } else {
-    x_start = static_cast<int>(line.x_start());
-    y_start = static_cast<int>(line.y_start());
-    x_end = static_cast<int>(line.x_end());
-    y_end = static_cast<int>(line.y_end());
+    x_start = static_cast<int>(line.x_start() * scale_factor_);
+    y_start = static_cast<int>(line.y_start() * scale_factor_);
+    x_end = static_cast<int>(line.x_end() * scale_factor_);
+    y_end = static_cast<int>(line.y_end() * scale_factor_);
   }
+
   cv::Point start(x_start, y_start);
   cv::Point end(x_end, y_end);
   const cv::Scalar color = MediapipeColorToOpenCVColor(annotation.color());
-  const int thickness = annotation.thickness();
+  const int thickness =
+      ClampThickness(round(annotation.thickness() * scale_factor_));
   cv::line(mat_image_, start, end, color, thickness);
+}
+
+void AnnotationRenderer::DrawGradientLine(const RenderAnnotation& annotation) {
+  int x_start = -1;
+  int y_start = -1;
+  int x_end = -1;
+  int y_end = -1;
+
+  const auto& line = annotation.gradient_line();
+  if (line.normalized()) {
+    ABSL_CHECK(NormalizedtoPixelCoordinates(line.x_start(), line.y_start(),
+                                            image_width_, image_height_,
+                                            &x_start, &y_start));
+    ABSL_CHECK(NormalizedtoPixelCoordinates(line.x_end(), line.y_end(),
+                                            image_width_, image_height_, &x_end,
+                                            &y_end));
+  } else {
+    x_start = static_cast<int>(line.x_start() * scale_factor_);
+    y_start = static_cast<int>(line.y_start() * scale_factor_);
+    x_end = static_cast<int>(line.x_end() * scale_factor_);
+    y_end = static_cast<int>(line.y_end() * scale_factor_);
+  }
+
+  const cv::Point start(x_start, y_start);
+  const cv::Point end(x_end, y_end);
+  const int thickness =
+      ClampThickness(round(annotation.thickness() * scale_factor_));
+  const cv::Scalar color1 = MediapipeColorToOpenCVColor(line.color1());
+  const cv::Scalar color2 = MediapipeColorToOpenCVColor(line.color2());
+  cv_line2(mat_image_, start, end, color1, color2, thickness);
 }
 
 void AnnotationRenderer::DrawText(const RenderAnnotation& annotation) {
@@ -412,21 +541,44 @@ void AnnotationRenderer::DrawText(const RenderAnnotation& annotation) {
 
   const auto& text = annotation.text();
   if (text.normalized()) {
-    CHECK(NormalizedtoPixelCoordinates(text.left(), text.baseline(),
-                                       image_width_, image_height_, &left,
-                                       &baseline));
+    ABSL_CHECK(NormalizedtoPixelCoordinates(text.left(), text.baseline(),
+                                            image_width_, image_height_, &left,
+                                            &baseline));
     font_size = static_cast<int>(round(text.font_height() * image_height_));
   } else {
-    left = static_cast<int>(text.left());
-    baseline = static_cast<int>(text.baseline());
-    font_size = static_cast<int>(text.font_height());
+    left = static_cast<int>(text.left() * scale_factor_);
+    baseline = static_cast<int>(text.baseline() * scale_factor_);
+    font_size = static_cast<int>(text.font_height() * scale_factor_);
   }
+
   cv::Point origin(left, baseline);
   const cv::Scalar color = MediapipeColorToOpenCVColor(annotation.color());
-  const int thickness = annotation.thickness();
+  const int thickness =
+      ClampThickness(round(annotation.thickness() * scale_factor_));
   const int font_face = text.font_face();
 
   const double font_scale = ComputeFontScale(font_face, font_size, thickness);
+  int text_baseline = 0;
+  cv::Size text_size = cv::getTextSize(text.display_text(), font_face,
+                                       font_scale, thickness, &text_baseline);
+
+  if (text.center_horizontally()) {
+    origin.x -= text_size.width / 2;
+  }
+  if (text.center_vertically()) {
+    origin.y += text_size.height / 2;
+  }
+
+  if (text.outline_thickness() > 0.0) {
+    const int background_thickness = ClampThickness(
+        round((annotation.thickness() + 2.0 * text.outline_thickness()) *
+              scale_factor_));
+    const cv::Scalar outline_color =
+        MediapipeColorToOpenCVColor(text.outline_color());
+    cv::putText(mat_image_, text.display_text(), origin, font_face, font_scale,
+                outline_color, background_thickness, /*lineType=*/8,
+                /*bottomLeftOrigin=*/flip_text_vertically_);
+  }
   cv::putText(mat_image_, text.display_text(), origin, font_face, font_scale,
               color, thickness, /*lineType=*/8,
               /*bottomLeftOrigin=*/flip_text_vertically_);

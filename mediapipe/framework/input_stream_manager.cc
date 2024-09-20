@@ -14,10 +14,16 @@
 
 #include "mediapipe/framework/input_stream_manager.h"
 
+#include <string>
 #include <type_traits>
 #include <utility>
 
+#include "absl/log/absl_check.h"
+#include "absl/log/absl_log.h"
+#include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
+#include "absl/strings/str_join.h"
 #include "absl/synchronization/mutex.h"
 #include "mediapipe/framework/packet.h"
 #include "mediapipe/framework/port/logging.h"
@@ -27,13 +33,14 @@
 
 namespace mediapipe {
 
-::mediapipe::Status InputStreamManager::Initialize(
-    const std::string& name, const PacketType* packet_type, bool back_edge) {
+absl::Status InputStreamManager::Initialize(const std::string& name,
+                                            const PacketType* packet_type,
+                                            bool back_edge) {
   name_ = name;
   packet_type_ = packet_type;
   back_edge_ = back_edge;
   PrepareForRun();
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 const std::string& InputStreamManager::Name() const { return name_; }
@@ -69,29 +76,30 @@ Packet InputStreamManager::QueueHead() const {
   return queue_.front();
 }
 
-::mediapipe::Status InputStreamManager::SetHeader(const Packet& header) {
+absl::Status InputStreamManager::SetHeader(const Packet& header) {
+  absl::MutexLock stream_lock(&stream_mutex_);
   if (header.Timestamp() != Timestamp::Unset()) {
-    return ::mediapipe::InvalidArgumentErrorBuilder(MEDIAPIPE_LOC)
+    return mediapipe::InvalidArgumentErrorBuilder(MEDIAPIPE_LOC)
            << "Headers must not have a timestamp.  Stream: \"" << name_
            << "\".";
   }
   header_ = header;
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-::mediapipe::Status InputStreamManager::AddPackets(
-    const std::list<Packet>& container, bool* notify) {
+absl::Status InputStreamManager::AddPackets(const std::list<Packet>& container,
+                                            bool* notify) {
   return AddOrMovePacketsInternal<const std::list<Packet>&>(container, notify);
 }
 
-::mediapipe::Status InputStreamManager::MovePackets(
-    std::list<Packet>* container, bool* notify) {
+absl::Status InputStreamManager::MovePackets(std::list<Packet>* container,
+                                             bool* notify) {
   return AddOrMovePacketsInternal<std::list<Packet>&>(*container, notify);
 }
 
 template <typename Container>
-::mediapipe::Status InputStreamManager::AddOrMovePacketsInternal(
-    Container container, bool* notify) {
+absl::Status InputStreamManager::AddOrMovePacketsInternal(Container container,
+                                                          bool* notify) {
   *notify = false;
   bool queue_became_non_empty = false;
   bool queue_became_full = false;
@@ -99,7 +107,20 @@ template <typename Container>
     // Scope to prevent locking the stream when notification is called.
     absl::MutexLock stream_lock(&stream_mutex_);
     if (closed_) {
-      return ::mediapipe::OkStatus();
+      // There are some elaborate use cases where adding to an already closed
+      // stream may be fine (e.g. CalculatorGraph.DirectFormII test case).
+      // However, high chances packet dropping indicates issues in calculators
+      // or graph config.
+      ABSL_LOG(WARNING) << absl::StrFormat(
+          "Dropping %d packet(s) (%s) on attempt to add to a closed \"%s\" "
+          "stream.",
+          container.size(),
+          absl::StrJoin(container, ", ",
+                        [](std::string* out, const Packet& p) {
+                          return absl::StrAppend(out, p.DebugString());
+                        }),
+          name_);
+      return absl::OkStatus();
     }
     // Check if the queue was full before packets came in.
     bool was_queue_full =
@@ -107,7 +128,7 @@ template <typename Container>
     // Check if the queue becomes non-empty.
     queue_became_non_empty = queue_.empty() && !container.empty();
     for (auto& packet : container) {
-      ::mediapipe::Status result = packet_type_->Validate(packet);
+      absl::Status result = packet_type_->Validate(packet);
       if (!result.ok()) {
         return tool::AddStatusPrefix(
             absl::StrCat(
@@ -118,7 +139,7 @@ template <typename Container>
 
       const Timestamp timestamp = packet.Timestamp();
       if (!timestamp.IsAllowedInStream()) {
-        return ::mediapipe::InvalidArgumentErrorBuilder(MEDIAPIPE_LOC)
+        return mediapipe::InvalidArgumentErrorBuilder(MEDIAPIPE_LOC)
                << "In stream \"" << name_
                << "\", timestamp not specified or set to illegal value: "
                << timestamp.DebugString();
@@ -129,13 +150,13 @@ template <typename Container>
         // Timestamp::PreStream().NextAllowedInStream() is
         // Timestamp::OneOverPostStream().
         if (timestamp == Timestamp::PostStream() && num_packets_added_ > 0) {
-          return ::mediapipe::InvalidArgumentErrorBuilder(MEDIAPIPE_LOC)
+          return mediapipe::InvalidArgumentErrorBuilder(MEDIAPIPE_LOC)
                  << "In stream \"" << name_
                  << "\", a packet at Timestamp::PostStream() must be the only "
                     "Packet in an InputStream.";
         }
         if (timestamp < next_timestamp_bound_) {
-          return ::mediapipe::InvalidArgumentErrorBuilder(MEDIAPIPE_LOC)
+          return mediapipe::InvalidArgumentErrorBuilder(MEDIAPIPE_LOC)
                  << "Packet timestamp mismatch on a calculator receiving from "
                     "stream \""
                  << name_ << "\". Current minimum expected timestamp is "
@@ -151,45 +172,46 @@ template <typename Container>
 
       // If the caller is MovePackets(), packet's underlying holder should be
       // transferred into queue_. Otherwise, queue_ keeps a copy of the packet.
+      ++num_packets_added_;
+      VLOG(3) << "Input stream:" << name_
+              << " has added packet at time: " << packet.Timestamp();
       if (std::is_const<
               typename std::remove_reference<Container>::type>::value) {
         queue_.emplace_back(packet);
       } else {
         queue_.emplace_back(std::move(packet));
       }
-      ++num_packets_added_;
-      VLOG(2) << "Input stream:" << name_
-              << " has added packet at time: " << packet.Timestamp();
     }
     queue_became_full = (!was_queue_full && max_queue_size_ != -1 &&
                          queue_.size() >= max_queue_size_);
-    VLOG_IF(2, queue_.size() > 1)
-        << "Queue size greater than 1: stream name: " << name_
-        << " queue_size: " << queue_.size();
-    VLOG(2) << "Input stream:" << name_
+    if (queue_.size() > 1) {
+      VLOG(3) << "Queue size greater than 1: stream name: " << name_
+              << " queue_size: " << queue_.size();
+    }
+    VLOG(3) << "Input stream:" << name_
             << " becomes non-empty status:" << queue_became_non_empty
             << " Size: " << queue_.size();
   }
   if (queue_became_full) {
-    VLOG(2) << "Queue became full: " << Name();
+    VLOG(3) << "Queue became full: " << Name();
     becomes_full_callback_(this, &last_reported_stream_full_);
   }
   *notify = queue_became_non_empty;
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-::mediapipe::Status InputStreamManager::SetNextTimestampBound(
-    const Timestamp bound, bool* notify) {
+absl::Status InputStreamManager::SetNextTimestampBound(const Timestamp bound,
+                                                       bool* notify) {
   *notify = false;
   {
     // Scope to prevent locking the stream when notification is called.
     absl::MutexLock stream_lock(&stream_mutex_);
     if (closed_) {
-      return ::mediapipe::OkStatus();
+      return absl::OkStatus();
     }
 
     if (enable_timestamps_ && bound < next_timestamp_bound_) {
-      return ::mediapipe::UnknownErrorBuilder(MEDIAPIPE_LOC)
+      return mediapipe::UnknownErrorBuilder(MEDIAPIPE_LOC)
              << "SetNextTimestampBound must be called with a timestamp greater "
                 "than or equal to the current bound. In stream \""
              << name_ << "\". Current minimum expected timestamp is "
@@ -202,6 +224,8 @@ template <typename Container>
     // untimed scheduling policies.
     if (bound > next_timestamp_bound_) {
       next_timestamp_bound_ = bound;
+      VLOG(3) << "Next timestamp bound for input " << name_ << " is "
+              << next_timestamp_bound_;
       if (queue_.empty()) {
         // If the queue was not empty then a change to the next_timestamp_bound_
         // is not detectable by the consumer.
@@ -209,7 +233,7 @@ template <typename Container>
       }
     }
   }
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 void InputStreamManager::DisableTimestamps() { enable_timestamps_ = false; }
@@ -229,13 +253,18 @@ Timestamp InputStreamManager::MinTimestampOrBound(bool* is_empty) const {
   if (is_empty) {
     *is_empty = queue_.empty();
   }
+  return MinTimestampOrBoundHelper();
+}
+
+Timestamp InputStreamManager::MinTimestampOrBoundHelper() const
+    ABSL_EXCLUSIVE_LOCKS_REQUIRED(stream_mutex_) {
   return queue_.empty() ? next_timestamp_bound_ : queue_.front().Timestamp();
 }
 
 Packet InputStreamManager::PopPacketAtTimestamp(Timestamp timestamp,
                                                 int* num_packets_dropped,
                                                 bool* stream_is_done) {
-  CHECK(enable_timestamps_);
+  ABSL_CHECK(enable_timestamps_);
   *num_packets_dropped = -1;
   *stream_is_done = false;
   bool queue_became_non_full = false;
@@ -243,7 +272,7 @@ Packet InputStreamManager::PopPacketAtTimestamp(Timestamp timestamp,
   {
     absl::MutexLock stream_lock(&stream_mutex_);
     // Make sure timestamp didn't decrease from last time.
-    CHECK_LE(last_select_timestamp_, timestamp);
+    ABSL_CHECK_LE(last_select_timestamp_, timestamp);
     last_select_timestamp_ = timestamp;
 
     // Make sure AddPacket and SetNextTimestampBound are not called with
@@ -252,7 +281,7 @@ Packet InputStreamManager::PopPacketAtTimestamp(Timestamp timestamp,
       next_timestamp_bound_ = timestamp.NextAllowedInStream();
     }
 
-    VLOG(2) << "Input stream " << name_
+    VLOG(3) << "Input stream " << name_
             << " selecting at timestamp:" << timestamp.Value()
             << " next timestamp bound: " << next_timestamp_bound_;
 
@@ -271,31 +300,33 @@ Packet InputStreamManager::PopPacketAtTimestamp(Timestamp timestamp,
     }
     // Clear value_ if it doesn't have exactly the right timestamp.
     if (current_timestamp != timestamp) {
-      packet = Packet();
+      // The timestamp bound reported when no packet is sent.
+      Timestamp bound = MinTimestampOrBoundHelper();
+      packet = Packet().At(bound.PreviousAllowedInStream());
       ++(*num_packets_dropped);
     }
 
-    VLOG(2) << "Input stream removed packets:" << name_
+    VLOG(3) << "Input stream removed packets:" << name_
             << " Size:" << queue_.size();
     queue_became_non_full = (was_queue_full && queue_.size() < max_queue_size_);
     *stream_is_done = IsDone();
   }
   if (queue_became_non_full) {
-    VLOG(2) << "Queue became non-full: " << Name();
+    VLOG(3) << "Queue became non-full: " << Name();
     becomes_not_full_callback_(this, &last_reported_stream_full_);
   }
   return packet;
 }
 
 Packet InputStreamManager::PopQueueHead(bool* stream_is_done) {
-  CHECK(!enable_timestamps_);
+  ABSL_CHECK(!enable_timestamps_);
   *stream_is_done = false;
   bool queue_became_non_full = false;
   Packet packet;
   {
     absl::MutexLock stream_lock(&stream_mutex_);
 
-    VLOG(2) << "Input stream " << name_ << " selecting at queue head";
+    VLOG(3) << "Input stream " << name_ << " selecting at queue head";
 
     // Check if queue is full.
     bool was_queue_full =
@@ -308,16 +339,21 @@ Packet InputStreamManager::PopQueueHead(bool* stream_is_done) {
       packet = Packet();
     }
 
-    VLOG(2) << "Input stream removed a packet:" << name_
+    VLOG(3) << "Input stream removed a packet:" << name_
             << " Size:" << queue_.size();
     queue_became_non_full = (was_queue_full && queue_.size() < max_queue_size_);
     *stream_is_done = IsDone();
   }
   if (queue_became_non_full) {
-    VLOG(2) << "Queue became non-full: " << Name();
+    VLOG(3) << "Queue became non-full: " << Name();
     becomes_not_full_callback_(this, &last_reported_stream_full_);
   }
   return packet;
+}
+
+int InputStreamManager::NumPacketsAdded() const {
+  absl::MutexLock lock(&stream_mutex_);
+  return num_packets_added_;
 }
 
 int InputStreamManager::QueueSize() const {
@@ -342,10 +378,10 @@ void InputStreamManager::SetMaxQueueSize(int max_queue_size) {
 
   // QueueSizeCallback is called with no mutexes held.
   if (!was_full && is_full) {
-    VLOG(2) << "Queue became full: " << Name();
+    VLOG(3) << "Queue became full: " << Name();
     becomes_full_callback_(this, &last_reported_stream_full_);
   } else if (was_full && !is_full) {
-    VLOG(2) << "Queue became non-full: " << Name();
+    VLOG(3) << "Queue became non-full: " << Name();
     becomes_not_full_callback_(this, &last_reported_stream_full_);
   }
 }
@@ -375,12 +411,12 @@ void InputStreamManager::ErasePacketsEarlierThan(Timestamp timestamp) {
       queue_.pop_front();
     }
 
-    VLOG(2) << "Input stream removed packets:" << name_
+    VLOG(3) << "Input stream removed packets:" << name_
             << " Size:" << queue_.size();
     queue_became_non_full = (was_queue_full && queue_.size() < max_queue_size_);
   }
   if (queue_became_non_full) {
-    VLOG(2) << "Queue became non-full: " << Name();
+    VLOG(3) << "Queue became non-full: " << Name();
     becomes_not_full_callback_(this, &last_reported_stream_full_);
   }
 }

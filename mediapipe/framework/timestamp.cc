@@ -16,6 +16,8 @@
 
 #include <string>
 
+#include "absl/log/absl_check.h"
+#include "absl/log/absl_log.h"
 #include "absl/strings/str_cat.h"
 
 namespace mediapipe {
@@ -26,7 +28,7 @@ constexpr double Timestamp::kTimestampUnitsPerSecond;
 // - The safe int type will check for overflow/underflow and other errors.
 // - The CHECK in the constructor will disallow special values.
 TimestampDiff Timestamp::operator-(const Timestamp other) const {
-  CHECK(IsRangeValue() && other.IsRangeValue())
+  ABSL_CHECK(IsRangeValue() && other.IsRangeValue())
       << "This timestamp is " << DebugString() << " and other was "
       << other.DebugString();
   TimestampBaseType tmp_base = timestamp_ - other.timestamp_;
@@ -43,7 +45,7 @@ TimestampDiff TimestampDiff::operator-(const TimestampDiff other) const {
 
 // Clamp the addition to the range [Timestamp::Min(), Timestamp::Max()].
 Timestamp Timestamp::operator+(const TimestampDiff offset) const {
-  CHECK(IsRangeValue()) << "Timestamp is: " << DebugString();
+  ABSL_CHECK(IsRangeValue()) << "Timestamp is: " << DebugString();
   TimestampBaseType offset_base(offset.Value());
   if (offset_base >= TimestampBaseType(0)) {
     if (timestamp_.value() >= Timestamp::Max().Value() - offset_base.value()) {
@@ -112,7 +114,7 @@ std::string Timestamp::DebugString() const {
     } else if (*this == Timestamp::Done()) {
       return "Timestamp::Done()";
     } else {
-      LOG(FATAL) << "Unknown special type.";
+      ABSL_LOG(FATAL) << "Unknown special type.";
     }
   }
   return absl::StrCat(timestamp_.value());
@@ -122,14 +124,30 @@ std::string TimestampDiff::DebugString() const {
 }
 
 Timestamp Timestamp::NextAllowedInStream() const {
-  CHECK(IsAllowedInStream()) << "Timestamp is: " << DebugString();
-  if (IsRangeValue() && *this != Max()) {
-    return *this + 1;
-  } else {
-    // Returning this value effectively means no futher timestamps may
-    // occur (however, the stream is not yet closed).
+  if (*this >= Max() || *this == PreStream()) {
+    // Indicates that no further timestamps may occur.
     return OneOverPostStream();
+  } else if (*this < Min()) {
+    return Min();
   }
+  return *this + 1;
+}
+
+bool Timestamp::HasNextAllowedInStream() const {
+  if (*this >= Max() || *this == PreStream()) {
+    return false;
+  }
+  return true;
+}
+
+Timestamp Timestamp::PreviousAllowedInStream() const {
+  if (*this <= Min() || *this == PostStream()) {
+    // Indicates that no previous timestamps may occur.
+    return Unstarted();
+  } else if (*this > Max()) {
+    return Max();
+  }
+  return *this - 1;
 }
 
 std::ostream& operator<<(std::ostream& os, Timestamp arg) {

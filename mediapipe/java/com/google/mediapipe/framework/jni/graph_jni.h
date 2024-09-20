@@ -42,6 +42,19 @@ JNIEXPORT void JNICALL GRAPH_METHOD(nativeLoadBinaryGraph)(JNIEnv* env,
 JNIEXPORT void JNICALL GRAPH_METHOD(nativeLoadBinaryGraphBytes)(
     JNIEnv* env, jobject thiz, jlong context, jbyteArray data);
 
+JNIEXPORT void JNICALL GRAPH_METHOD(nativeLoadBinaryGraphTemplate)(
+    JNIEnv* env, jobject thiz, jlong context, jbyteArray data);
+
+JNIEXPORT void JNICALL GRAPH_METHOD(nativeSetGraphType)(JNIEnv* env,
+                                                        jobject thiz,
+                                                        jlong context,
+                                                        jstring graph_type);
+
+JNIEXPORT void JNICALL GRAPH_METHOD(nativeSetGraphOptions)(JNIEnv* env,
+                                                           jobject thiz,
+                                                           jlong context,
+                                                           jbyteArray data);
+
 JNIEXPORT jbyteArray JNICALL GRAPH_METHOD(nativeGetCalculatorGraphConfig)(
     JNIEnv* env, jobject thiz, jlong context);
 
@@ -49,9 +62,9 @@ JNIEXPORT void JNICALL GRAPH_METHOD(nativeAddPacketCallback)(
     JNIEnv* env, jobject thiz, jlong context, jstring stream_name,
     jobject callback);
 
-JNIEXPORT void JNICALL GRAPH_METHOD(nativeAddPacketWithHeaderCallback)(
-    JNIEnv* env, jobject thiz, jlong context, jstring stream_name,
-    jobject callback);
+JNIEXPORT void JNICALL GRAPH_METHOD(nativeAddMultiStreamCallback)(
+    JNIEnv* env, jobject thiz, jlong context, jobject stream_names,
+    jobject callback, jboolean observe_timestamp_bounds);
 
 JNIEXPORT jlong JNICALL GRAPH_METHOD(nativeAddSurfaceOutput)(
     JNIEnv* env, jobject thiz, jlong context, jstring stream_name);

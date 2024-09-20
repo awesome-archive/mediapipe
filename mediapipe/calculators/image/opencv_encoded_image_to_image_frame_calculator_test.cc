@@ -30,21 +30,21 @@ namespace {
 
 TEST(OpenCvEncodedImageToImageFrameCalculatorTest, TestRgbJpeg) {
   std::string contents;
-  MEDIAPIPE_ASSERT_OK(file::GetContents(
+  MP_ASSERT_OK(file::GetContents(
       file::JoinPath("./", "/mediapipe/calculators/image/testdata/dino.jpg"),
       &contents));
   Packet input_packet = MakePacket<std::string>(contents);
 
   CalculatorGraphConfig::Node node_config =
-      ParseTextProtoOrDie<CalculatorGraphConfig::Node>(R"(
+      ParseTextProtoOrDie<CalculatorGraphConfig::Node>(R"pb(
         calculator: "OpenCvEncodedImageToImageFrameCalculator"
         input_stream: "encoded_image"
         output_stream: "image_frame"
-      )");
+      )pb");
   CalculatorRunner runner(node_config);
   runner.MutableInputs()->Index(0).packets.push_back(
       input_packet.At(Timestamp(0)));
-  MEDIAPIPE_ASSERT_OK(runner.Run());
+  MP_ASSERT_OK(runner.Run());
   const auto& outputs = runner.Outputs();
   ASSERT_EQ(1, outputs.NumEntries());
   const std::vector<Packet>& packets = outputs.Index(0).packets;
@@ -79,15 +79,15 @@ TEST(OpenCvEncodedImageToImageFrameCalculatorTest, TestGrayscaleJpeg) {
       reinterpret_cast<const char*>(&encode_buffer[0]), encode_buffer.size())));
 
   CalculatorGraphConfig::Node node_config =
-      ParseTextProtoOrDie<CalculatorGraphConfig::Node>(R"(
+      ParseTextProtoOrDie<CalculatorGraphConfig::Node>(R"pb(
         calculator: "OpenCvEncodedImageToImageFrameCalculator"
         input_stream: "encoded_image"
         output_stream: "image_frame"
-      )");
+      )pb");
   CalculatorRunner runner(node_config);
   runner.MutableInputs()->Index(0).packets.push_back(
       input_packet.At(Timestamp(0)));
-  MEDIAPIPE_ASSERT_OK(runner.Run());
+  MP_ASSERT_OK(runner.Run());
   const auto& outputs = runner.Outputs();
   ASSERT_EQ(1, outputs.NumEntries());
   const std::vector<Packet>& packets = outputs.Index(0).packets;

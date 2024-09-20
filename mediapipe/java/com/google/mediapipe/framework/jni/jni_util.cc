@@ -16,13 +16,14 @@
 
 #include <pthread.h>
 
+#include "absl/log/absl_log.h"
 #include "absl/synchronization/mutex.h"
-#include "mediapipe/framework/port/logging.h"
+#include "mediapipe/java/com/google/mediapipe/framework/jni/class_registry.h"
 
 namespace {
 
 ABSL_CONST_INIT absl::Mutex g_jvm_mutex(absl::kConstInit);
-JavaVM* g_jvm GUARDED_BY(g_jvm_mutex);
+JavaVM* g_jvm ABSL_GUARDED_BY(g_jvm_mutex);
 
 class JvmThread {
  public:
@@ -37,7 +38,7 @@ class JvmThread {
       case JNI_OK:
         break;
       case JNI_EDETACHED:
-        LOG(INFO) << "GetEnv: not attached";
+        ABSL_LOG(INFO) << "GetEnv: not attached";
         if (jvm_->AttachCurrentThread(
 #ifdef __ANDROID__
                 &jni_env_,
@@ -45,16 +46,16 @@ class JvmThread {
                 reinterpret_cast<void**>(&jni_env_),
 #endif  // __ANDROID__
                 nullptr) != 0) {
-          LOG(ERROR) << "Failed to attach to java thread.";
+          ABSL_LOG(ERROR) << "Failed to attach to java thread.";
           break;
         }
         attached_ = true;
         break;
       case JNI_EVERSION:
-        LOG(ERROR) << "GetEnv: jni version not supported.";
+        ABSL_LOG(ERROR) << "GetEnv: jni version not supported.";
         break;
       default:
-        LOG(ERROR) << "GetEnv: unknown status.";
+        ABSL_LOG(ERROR) << "GetEnv: unknown status.";
         break;
     }
   }
@@ -82,7 +83,7 @@ static pthread_once_t key_once = PTHREAD_ONCE_INIT;
 static void ThreadExitCallback(void* key_value) {
   JvmThread* jvm_thread = reinterpret_cast<JvmThread*>(key_value);
   // Detach the thread when thread exits.
-  LOG(INFO) << "Exiting thread. Detach thread.";
+  ABSL_LOG(INFO) << "Exiting thread. Detach thread.";
   delete jvm_thread;
 }
 
@@ -110,6 +111,69 @@ std::string JStringToStdString(JNIEnv* env, jstring jstr) {
   return str;
 }
 
+// Converts a `java.util.List<String>` to a `std::vector<std::string>`.
+std::vector<std::string> JavaListToStdStringVector(JNIEnv* env, jobject from) {
+  jclass cls = env->FindClass("java/util/List");
+  int size = env->CallIntMethod(from, env->GetMethodID(cls, "size", "()I"));
+  std::vector<std::string> result;
+  result.reserve(size);
+  for (int i = 0; i < size; i++) {
+    jobject element = env->CallObjectMethod(
+        from, env->GetMethodID(cls, "get", "(I)Ljava/lang/Object;"), i);
+    result.push_back(JStringToStdString(env, static_cast<jstring>(element)));
+    env->DeleteLocalRef(element);
+  }
+  env->DeleteLocalRef(cls);
+  return result;
+}
+
+jthrowable CreateMediaPipeException(JNIEnv* env, absl::Status status) {
+  auto& class_registry = mediapipe::android::ClassRegistry::GetInstance();
+  std::string mpe_class_name = class_registry.GetClassName(
+      mediapipe::android::ClassRegistry::kMediaPipeExceptionClassName);
+  std::string mpe_constructor_name = class_registry.GetMethodName(
+      mediapipe::android::ClassRegistry::kMediaPipeExceptionClassName,
+      "<init>");
+
+  jclass status_cls = env->FindClass(mpe_class_name.c_str());
+  jmethodID status_ctr =
+      env->GetMethodID(status_cls, mpe_constructor_name.c_str(), "(I[B)V");
+  int length = status.message().length();
+  jbyteArray message_bytes = env->NewByteArray(length);
+  env->SetByteArrayRegion(message_bytes, 0, length,
+                          reinterpret_cast<jbyte*>(const_cast<char*>(
+                              std::string(status.message()).c_str())));
+  jthrowable result = reinterpret_cast<jthrowable>(
+      env->NewObject(status_cls, status_ctr, status.code(), message_bytes));
+  env->DeleteLocalRef(status_cls);
+  return result;
+}
+
+bool ThrowIfError(JNIEnv* env, absl::Status status) {
+  if (!status.ok()) {
+    env->Throw(mediapipe::android::CreateMediaPipeException(env, status));
+    return true;
+  }
+  return false;
+}
+
+SerializedMessageIds::SerializedMessageIds(JNIEnv* env, jobject data) {
+  auto& class_registry = mediapipe::android::ClassRegistry::GetInstance();
+  std::string serialized_message(
+      mediapipe::android::ClassRegistry::kProtoUtilSerializedMessageClassName);
+  std::string serialized_message_obfuscated =
+      class_registry.GetClassName(serialized_message);
+  std::string type_name_obfuscated =
+      class_registry.GetFieldName(serialized_message, "typeName");
+  std::string value_obfuscated =
+      class_registry.GetFieldName(serialized_message, "value");
+  jclass j_class = env->FindClass(serialized_message_obfuscated.c_str());
+  type_name_id = env->GetFieldID(j_class, type_name_obfuscated.c_str(),
+                                 "Ljava/lang/String;");
+  value_id = env->GetFieldID(j_class, value_obfuscated.c_str(), "[B");
+  env->DeleteLocalRef(j_class);
+}
+
 }  // namespace android
 
 namespace java {
@@ -123,7 +187,7 @@ bool SetJavaVM(JNIEnv* env) {
   absl::MutexLock lock(&g_jvm_mutex);
   if (!g_jvm) {
     if (env->GetJavaVM(&g_jvm) != JNI_OK) {
-      LOG(ERROR) << "Can not get the Java VM instance!";
+      ABSL_LOG(ERROR) << "Can not get the Java VM instance!";
       g_jvm = nullptr;
       return false;
     }

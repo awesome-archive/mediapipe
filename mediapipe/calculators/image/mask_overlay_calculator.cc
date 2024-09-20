@@ -52,14 +52,14 @@ class MaskOverlayCalculator : public CalculatorBase {
   MaskOverlayCalculator() {}
   ~MaskOverlayCalculator();
 
-  static ::mediapipe::Status GetContract(CalculatorContract* cc);
+  static absl::Status GetContract(CalculatorContract* cc);
 
-  ::mediapipe::Status Open(CalculatorContext* cc) override;
-  ::mediapipe::Status Process(CalculatorContext* cc) override;
+  absl::Status Open(CalculatorContext* cc) override;
+  absl::Status Process(CalculatorContext* cc) override;
 
-  ::mediapipe::Status GlSetup(
+  absl::Status GlSetup(
       const MaskOverlayCalculatorOptions::MaskChannel mask_channel);
-  ::mediapipe::Status GlRender(const float mask_const);
+  absl::Status GlRender(const float mask_const);
 
  private:
   GlCalculatorHelper helper_;
@@ -73,8 +73,8 @@ class MaskOverlayCalculator : public CalculatorBase {
 REGISTER_CALCULATOR(MaskOverlayCalculator);
 
 // static
-::mediapipe::Status MaskOverlayCalculator::GetContract(CalculatorContract* cc) {
-  RETURN_IF_ERROR(GlCalculatorHelper::UpdateContract(cc));
+absl::Status MaskOverlayCalculator::GetContract(CalculatorContract* cc) {
+  MP_RETURN_IF_ERROR(GlCalculatorHelper::UpdateContract(cc));
   cc->Inputs().Get("VIDEO", 0).Set<GpuBuffer>();
   cc->Inputs().Get("VIDEO", 1).Set<GpuBuffer>();
   if (cc->Inputs().HasTag("MASK"))
@@ -82,14 +82,13 @@ REGISTER_CALCULATOR(MaskOverlayCalculator);
   else if (cc->Inputs().HasTag("CONST_MASK"))
     cc->Inputs().Tag("CONST_MASK").Set<float>();
   else
-    return ::mediapipe::Status(
-        ::mediapipe::StatusCode::kNotFound,
-        "At least one mask input stream must be present.");
+    return absl::Status(absl::StatusCode::kNotFound,
+                        "At least one mask input stream must be present.");
   cc->Outputs().Tag("OUTPUT").Set<GpuBuffer>();
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-::mediapipe::Status MaskOverlayCalculator::Open(CalculatorContext* cc) {
+absl::Status MaskOverlayCalculator::Open(CalculatorContext* cc) {
   cc->SetOffset(TimestampDiff(0));
   if (cc->Inputs().HasTag("MASK")) {
     use_mask_tex_ = true;
@@ -97,13 +96,13 @@ REGISTER_CALCULATOR(MaskOverlayCalculator);
   return helper_.Open(cc);
 }
 
-::mediapipe::Status MaskOverlayCalculator::Process(CalculatorContext* cc) {
-  return helper_.RunInGlContext([this, &cc]() -> ::mediapipe::Status {
+absl::Status MaskOverlayCalculator::Process(CalculatorContext* cc) {
+  return helper_.RunInGlContext([this, &cc]() -> absl::Status {
     if (!initialized_) {
       const auto& options = cc->Options<MaskOverlayCalculatorOptions>();
       const auto mask_channel = options.mask_channel();
 
-      RETURN_IF_ERROR(GlSetup(mask_channel));
+      MP_RETURN_IF_ERROR(GlSetup(mask_channel));
       initialized_ = true;
     }
 
@@ -116,7 +115,7 @@ REGISTER_CALCULATOR(MaskOverlayCalculator);
 
     if (mask_packet.IsEmpty()) {
       cc->Outputs().Tag("OUTPUT").AddPacket(input1_packet);
-      return ::mediapipe::OkStatus();
+      return absl::OkStatus();
     }
 
     const auto& input0_buffer = cc->Inputs().Get("VIDEO", 0).Get<GpuBuffer>();
@@ -147,7 +146,7 @@ REGISTER_CALCULATOR(MaskOverlayCalculator);
       glActiveTexture(GL_TEXTURE3);
       glBindTexture(mask_tex.target(), mask_tex.name());
 
-      RETURN_IF_ERROR(GlRender(mask_const));
+      MP_RETURN_IF_ERROR(GlRender(mask_const));
 
       glActiveTexture(GL_TEXTURE3);
       glBindTexture(mask_tex.target(), 0);
@@ -155,7 +154,7 @@ REGISTER_CALCULATOR(MaskOverlayCalculator);
     } else {
       const float mask_const = mask_packet.Get<float>();
 
-      RETURN_IF_ERROR(GlRender(mask_const));
+      MP_RETURN_IF_ERROR(GlRender(mask_const));
     }
 
     glActiveTexture(GL_TEXTURE2);
@@ -173,11 +172,11 @@ REGISTER_CALCULATOR(MaskOverlayCalculator);
     dst.Release();
 
     cc->Outputs().Tag("OUTPUT").Add(output.release(), cc->InputTimestamp());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   });
 }
 
-::mediapipe::Status MaskOverlayCalculator::GlSetup(
+absl::Status MaskOverlayCalculator::GlSetup(
     const MaskOverlayCalculatorOptions::MaskChannel mask_channel) {
   // Load vertex and fragment shaders
   const GLint attr_location[NUM_ATTRIBUTES] = {
@@ -248,10 +247,10 @@ REGISTER_CALCULATOR(MaskOverlayCalculator);
   unif_frame1_ = glGetUniformLocation(program_, "frame1");
   unif_frame2_ = glGetUniformLocation(program_, "frame2");
   unif_mask_ = glGetUniformLocation(program_, "mask");
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-::mediapipe::Status MaskOverlayCalculator::GlRender(const float mask_const) {
+absl::Status MaskOverlayCalculator::GlRender(const float mask_const) {
   glUseProgram(program_);
   glVertexAttribPointer(ATTRIB_VERTEX, 2, GL_FLOAT, 0, 0, kBasicSquareVertices);
   glEnableVertexAttribArray(ATTRIB_VERTEX);
@@ -267,7 +266,7 @@ REGISTER_CALCULATOR(MaskOverlayCalculator);
     glUniform1f(unif_mask_, mask_const);
 
   glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 MaskOverlayCalculator::~MaskOverlayCalculator() {

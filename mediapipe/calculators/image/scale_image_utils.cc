@@ -18,6 +18,7 @@
 
 #include <string>
 
+#include "absl/log/absl_check.h"
 #include "absl/strings/str_split.h"
 #include "mediapipe/framework/port/logging.h"
 #include "mediapipe/framework/port/ret_check.h"
@@ -35,15 +36,15 @@ double ParseRational(const std::string& rational) {
 }
 }  // namespace
 
-::mediapipe::Status FindCropDimensions(int input_width, int input_height,    //
-                                       const std::string& min_aspect_ratio,  //
-                                       const std::string& max_aspect_ratio,  //
-                                       int* crop_width, int* crop_height,    //
-                                       int* col_start, int* row_start) {
-  CHECK(crop_width);
-  CHECK(crop_height);
-  CHECK(col_start);
-  CHECK(row_start);
+absl::Status FindCropDimensions(int input_width, int input_height,    //
+                                const std::string& min_aspect_ratio,  //
+                                const std::string& max_aspect_ratio,  //
+                                int* crop_width, int* crop_height,    //
+                                int* col_start, int* row_start) {
+  ABSL_CHECK(crop_width);
+  ABSL_CHECK(crop_height);
+  ABSL_CHECK(col_start);
+  ABSL_CHECK(row_start);
 
   double min_aspect_ratio_q = 0.0;
   double max_aspect_ratio_q = 0.0;
@@ -83,21 +84,39 @@ double ParseRational(const std::string& rational) {
     }
   }
 
-  CHECK_LE(*crop_width, input_width);
-  CHECK_LE(*crop_height, input_height);
-  return ::mediapipe::OkStatus();
+  ABSL_CHECK_LE(*crop_width, input_width);
+  ABSL_CHECK_LE(*crop_height, input_height);
+  return absl::OkStatus();
 }
 
-::mediapipe::Status FindOutputDimensions(int input_width,                //
-                                         int input_height,               //
-                                         int target_width,               //
-                                         int target_height,              //
-                                         bool preserve_aspect_ratio,     //
-                                         bool scale_to_multiple_of_two,  //
-                                         int* output_width,
-                                         int* output_height) {
-  CHECK(output_width);
-  CHECK(output_height);
+absl::Status FindOutputDimensions(int input_width,             //
+                                  int input_height,            //
+                                  int target_width,            //
+                                  int target_height,           //
+                                  int target_max_area,         //
+                                  bool preserve_aspect_ratio,  //
+                                  int scale_to_multiple_of,    //
+                                  int* output_width, int* output_height) {
+  ABSL_CHECK(output_width);
+  ABSL_CHECK(output_height);
+
+  if (target_max_area > 0 && input_width * input_height > target_max_area) {
+    preserve_aspect_ratio = true;
+    target_height = static_cast<int>(sqrt(static_cast<double>(target_max_area) /
+                                          (static_cast<double>(input_width) /
+                                           static_cast<double>(input_height))));
+    target_width = -1;  // Resize width to preserve aspect ratio.
+  }
+
+  if (preserve_aspect_ratio) {
+    RET_CHECK(scale_to_multiple_of == 2)
+        << "FindOutputDimensions always outputs width and height that are "
+           "divisible by 2 when preserving aspect ratio. If you'd like to "
+           "set scale_to_multiple_of to something other than 2, please "
+           "set preserve_aspect_ratio to false.";
+  }
+
+  if (scale_to_multiple_of < 1) scale_to_multiple_of = 1;
 
   if (!preserve_aspect_ratio || (target_width <= 0 && target_height <= 0)) {
     if (target_width <= 0) {
@@ -106,14 +125,14 @@ double ParseRational(const std::string& rational) {
     if (target_height <= 0) {
       target_height = input_height;
     }
-    if (scale_to_multiple_of_two) {
-      *output_width = (target_width / 2) * 2;
-      *output_height = (target_height / 2) * 2;
-    } else {
-      *output_width = target_width;
-      *output_height = target_height;
-    }
-    return ::mediapipe::OkStatus();
+
+    target_width -= target_width % scale_to_multiple_of;
+    target_height -= target_height % scale_to_multiple_of;
+
+    *output_width = target_width;
+    *output_height = target_height;
+
+    return absl::OkStatus();
   }
 
   if (target_width > 0) {
@@ -124,13 +143,16 @@ double ParseRational(const std::string& rational) {
                                       static_cast<double>(input_height));
     try_width = (try_width / 2) * 2;
     try_height = (try_height / 2) * 2;
+    // The output width/height should be greater than 0.
+    try_width = std::max(try_width, 1);
+    try_height = std::max(try_height, 1);
 
     if (target_height <= 0 || try_height <= target_height) {
       // The resulting height based on the target width and aspect ratio
       // was within the image, so use these dimensions.
       *output_width = try_width;
       *output_height = try_height;
-      return ::mediapipe::OkStatus();
+      return absl::OkStatus();
     }
   }
 
@@ -142,17 +164,32 @@ double ParseRational(const std::string& rational) {
                                      static_cast<double>(input_width));
     try_width = (try_width / 2) * 2;
     try_height = (try_height / 2) * 2;
+    // The output width/height should be greater than 0.
+    try_width = std::max(try_width, 1);
+    try_height = std::max(try_height, 1);
 
     if (target_width <= 0 || try_width <= target_width) {
       // The resulting width based on the target width and aspect ratio
       // was within the image, so use these dimensions.
       *output_width = try_width;
       *output_height = try_height;
-      return ::mediapipe::OkStatus();
+      return absl::OkStatus();
     }
   }
   RET_CHECK_FAIL()
       << "Unable to set output dimensions based on target dimensions.";
+}
+
+absl::Status FindOutputDimensions(int input_width,             //
+                                  int input_height,            //
+                                  int target_width,            //
+                                  int target_height,           //
+                                  bool preserve_aspect_ratio,  //
+                                  int scale_to_multiple_of,    //
+                                  int* output_width, int* output_height) {
+  return FindOutputDimensions(
+      input_width, input_height, target_width, target_height, -1,
+      preserve_aspect_ratio, scale_to_multiple_of, output_width, output_height);
 }
 
 }  // namespace scale_image

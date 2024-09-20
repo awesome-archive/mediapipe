@@ -12,28 +12,8 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 //
-//
-// Get a WImageView of the ImageFrame
-//   WImageView_b wimage_view =
-//       ::mediapipe::formats::WImageView<WImageView_b>(&const_frame);
-// The mutable version.
-//   WImageView_b wimage_view =
-//       ::mediapipe::formats::MutableWImageView<WImageView_b>(&frame);
-//
-// Get an IplImage view of the ImageFrame (this is efficient):
-//   ::mediapipe::formats::IplView(&frame);
-//
 // Get a cv::Mat view of the ImageFrame (this is efficient):
 //   ::mediapipe::formats::MatView(&frame);
-//
-// Make a constant colored ImageFrame:
-//   const uint8 kColor[] = {kRed, kGreen, kBlue, kAlpha};
-//   ImageFrame frame(ImageFormat::SRGB, kWidth, kHeight);
-//   ::mediapipe::formats::MutableWImageView<WImageView_b>(&frame).Set(kColor);
-//
-// Copying image data from a WImage:
-//   ::mediapipe::formats::MutableWImageView<WImageView1_b>(&gray8_image_frame)
-//       .CopyFrom(grayscale_wimage);
 //
 // Copying data from raw data (stored contiguously):
 //   frame.CopyPixelData(format, width, height, raw_data_ptr,
@@ -51,40 +31,21 @@
 //   cv::Mat destination = ::mediapipe::formats::MatView(&small_image);
 //   cv::resize(::mediapipe::formats::MatView(&large_image), destination,
 //              destination.size(), 0, 0, cv::INTER_LINEAR);
-//
-// Copy an ImageFrame into a RawImage:
-//   RawImage image;
-//   frame.CopyToResizeableImage(&image);
-//
-// Encoding a PNG image:
-//   WImageIO::EncodePNG(frame.Image<WImage_b>(), &image_string);
-//
-// Encoding a JPEG image:
-//   WImageIO::EncodeJPEG(frame.Image<WImage_b>(), 75 /* quality */,
-//                        &image_string);
-//
-// Decoding a (RGB) JPEG/PNG/WebP image:
-//   auto wimage = gtl::MakeUnique<WImageBuffer3_b>();
-//   auto* wimage_ptr = wimage.get();
-//   WImageIO::DecodeImage(image_string, wimage.get());
-//   auto frame = gtl::MakeUnique<ImageFrame>(
-//       /*format=*/ImageFormat::SRGB, /*width=*/wimage->Width(),
-//       /*height=*/wimage->Height(),
-//       /*width_step=*/wimage->WidthStep(),
-//       /*pixel_data=*/wimage->ImageData(),
-//       /*deleter=*/[wimage_ptr](uint8*) { delete wimage_ptr; });
-//   wimage.release();  // wimage is owned by frame now.
 
 #ifndef MEDIAPIPE_FRAMEWORK_FORMATS_IMAGE_FRAME_H_
 #define MEDIAPIPE_FRAMEWORK_FORMATS_IMAGE_FRAME_H_
 
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <string>
 
+#include "absl/base/attributes.h"
 #include "mediapipe/framework/formats/image_format.pb.h"
 #include "mediapipe/framework/port.h"
-#include "mediapipe/framework/port/integral_types.h"
+#include "mediapipe/framework/tool/type_util.h"
+
+#define IMAGE_FRAME_RAW_IMAGE MEDIAPIPE_HAS_RTTI
 
 namespace mediapipe {
 
@@ -103,7 +64,7 @@ namespace mediapipe {
 // stored with row padding for alignment purposes.
 class ImageFrame {
  public:
-  typedef std::function<void(uint8*)> Deleter;
+  typedef std::function<void(uint8_t*)> Deleter;
 
   // This class offers a few standard delete functions and retains
   // compatibility with the previous API.
@@ -118,19 +79,19 @@ class ImageFrame {
   // Use a default alignment boundary of 16 because Intel SSE2 instructions may
   // incur performance penalty when accessing data not aligned on a 16-byte
   // boundary. FFmpeg requires at least this level of alignment.
-  static const uint32 kDefaultAlignmentBoundary = 16;
+  static const uint32_t kDefaultAlignmentBoundary = 16;
 
   // If the pixel data of an ImageFrame will be passed to an OpenGL function
   // such as glTexImage2D() or glReadPixels(), use a four-byte alignment
   // boundary because that is the initial value of the OpenGL GL_PACK_ALIGNMENT
   // and GL_UNPACK_ALIGNMENT parameters.
-  static const uint32 kGlDefaultAlignmentBoundary = 4;
+  static const uint32_t kGlDefaultAlignmentBoundary = 4;
 
-  // Returns number of channels for an ImageFormat.
+  // Returns number of channels for the given image format.
   static int NumberOfChannelsForFormat(ImageFormat::Format format);
-  // Returns the channel size for an ImageFormat.
+  // Returns the size of each channel in bytes for the given image format.
   static int ChannelSizeForFormat(ImageFormat::Format format);
-  // Returns depth of each channel in bytes for an ImageFormat.
+  ABSL_DEPRECATED("Use ChannelSizeForFormat() instead")
   static int ByteDepthForFormat(ImageFormat::Format format);
 
   ImageFrame(const ImageFrame&) = delete;
@@ -144,7 +105,7 @@ class ImageFrame {
   // must be a power of 2 (the number 1 is valid, and means the data will
   // be stored contiguously).
   ImageFrame(ImageFormat::Format format, int width, int height,
-             uint32 alignment_boundary);
+             uint32_t alignment_boundary);
   // Same as above, but use kDefaultAlignmentBoundary for alignment_boundary.
   ImageFrame(ImageFormat::Format format, int width, int height);
 
@@ -155,8 +116,8 @@ class ImageFrame {
   // width*num_channels*depth.  Both width_step and depth are in units
   // of bytes.
   ImageFrame(ImageFormat::Format format, int width, int height, int width_step,
-             uint8* pixel_data,
-             Deleter deleter = std::default_delete<uint8[]>());
+             uint8_t* pixel_data,
+             Deleter deleter = std::default_delete<uint8_t[]>());
 
   ImageFrame(ImageFrame&& move_from);
   ImageFrame& operator=(ImageFrame&& move_from);
@@ -182,7 +143,7 @@ class ImageFrame {
   // alignment_boundary.  If IsAligned(16) is true then so are
   // IsAligned(8), IsAligned(4), IsAligned(2), and IsAligned(1).
   // alignment_boundary must be 1 or a power of 2.
-  bool IsAligned(uint32 alignment_boundary) const;
+  bool IsAligned(uint32_t alignment_boundary) const;
 
   // Returns the image / video format.
   ImageFormat::Format Format() const { return format_; }
@@ -190,78 +151,78 @@ class ImageFrame {
   int Width() const { return width_; }
   // Returns the height of the image in pixels.
   int Height() const { return height_; }
-  // Returns the channel size.
-  int ChannelSize() const;
   // Returns the number of channels.
   int NumberOfChannels() const;
-  // Returns the depth of each image channel in bytes.
+  // Returns the size of each channel in bytes.
+  int ChannelSize() const;
+  ABSL_DEPRECATED("Use ChannelSize() instead")
   int ByteDepth() const;
 
   // Returns the byte offset between a pixel value and the same pixel
   // and channel in the next row.  Notice, that for alignment reasons,
   // there may be unused padding bytes at the end of each row
-  // (WidthStep() - Width()*NumberOfChannels*ByteDepth() will give the
+  // (WidthStep() - Width()*NumberOfChannels*ChannelSize() will give the
   // number of unused bytes).
   int WidthStep() const { return width_step_; }
 
   // Reset the current image frame and copy the data from image_frame into
   // this image frame.  The alignment_boundary must be given (and won't
   // necessarily match the alignment_boundary of the input image_frame).
-  void CopyFrom(const ImageFrame& image_frame, uint32 alignment_boundary);
+  void CopyFrom(const ImageFrame& image_frame, uint32_t alignment_boundary);
 
   // Get a mutable pointer to the underlying image data.  The ImageFrame
   // retains ownership.
-  uint8* MutablePixelData() { return pixel_data_.get(); }
+  uint8_t* MutablePixelData() { return pixel_data_.get(); }
   // Get a const pointer to the underlying image data.
-  const uint8* PixelData() const { return pixel_data_.get(); }
+  const uint8_t* PixelData() const { return pixel_data_.get(); }
 
   // Returns the total size of the pixel data.
   int PixelDataSize() const { return Height() * WidthStep(); }
   // Returns the total size the pixel data would take if it was stored
   // contiguously (which may not be the case).
   int PixelDataSizeStoredContiguously() const {
-    return Width() * Height() * ByteDepth() * NumberOfChannels();
+    return Width() * Height() * ChannelSize() * NumberOfChannels();
   }
 
   // Initializes ImageFrame from pixel data without copying.
   // ImageFrame takes ownership of pixel_data.  See the Constructor
   // with the same arguments for details.
   void AdoptPixelData(ImageFormat::Format format, int width, int height,
-                      int width_step, uint8* pixel_data,
-                      Deleter deleter = std::default_delete<uint8[]>());
+                      int width_step, uint8_t* pixel_data,
+                      Deleter deleter = std::default_delete<uint8_t[]>());
 
   // Resets the ImageFrame and makes it a copy of the provided pixel
   // data, which is assumed to be stored contiguously.  The ImageFrame
   // will use the given alignment_boundary.
   void CopyPixelData(ImageFormat::Format format, int width, int height,
-                     const uint8* pixel_data, uint32 alignment_boundary);
+                     const uint8_t* pixel_data, uint32_t alignment_boundary);
 
   // Resets the ImageFrame and makes it a copy of the provided pixel
   // data, with given width_step.  The ImageFrame
   // will use the given alignment_boundary.
   void CopyPixelData(ImageFormat::Format format, int width, int height,
-                     int width_step, const uint8* pixel_data,
-                     uint32 alignment_boundary);
+                     int width_step, const uint8_t* pixel_data,
+                     uint32_t alignment_boundary);
 
   // Allocates a frame of the specified format, width, height, and alignment,
   // without clearing any current pixel data. See the constructor with the same
   // argument list.
   void Reset(ImageFormat::Format format, int width, int height,
-             uint32 alignment_boundary);
+             uint32_t alignment_boundary);
 
   // Relinquishes ownership of the pixel data.  Notice that the unique_ptr
   // uses a non-standard deleter.
-  std::unique_ptr<uint8[], Deleter> Release();
+  std::unique_ptr<uint8_t[], Deleter> Release();
 
   // Copy the 8-bit ImageFrame into a contiguous, pre-allocated buffer. Note
   // that ImageFrame does not necessarily store its data contiguously (i.e. do
   // not use copy_n to move image data).
-  void CopyToBuffer(uint8* buffer, int buffer_size) const;
+  void CopyToBuffer(uint8_t* buffer, int buffer_size) const;
 
   // A version of CopyToBuffer for 16-bit pixel data. Note that buffer_size
   // stores the number of 16-bit elements in the buffer, not the number of
   // bytes.
-  void CopyToBuffer(uint16* buffer, int buffer_size) const;
+  void CopyToBuffer(uint16_t* buffer, int buffer_size) const;
 
   // A version of CopyToBuffer for float pixel data. Note that buffer_size
   // stores the number of float elements in the buffer, not the number of
@@ -273,12 +234,12 @@ class ImageFrame {
 
  private:
   // Returns true if alignment_number is 1 or a power of 2.
-  static bool IsValidAlignmentNumber(uint32 alignment_boundary);
+  static bool IsValidAlignmentNumber(uint32_t alignment_boundary);
 
   // The internal implementation of copying data from the provided pixel data.
   // If width_step is 0, then calculates width_step assuming no padding.
   void InternalCopyFrom(int width, int height, int width_step, int channel_size,
-                        const uint8* pixel_data);
+                        const uint8_t* pixel_data);
 
   // The internal implementation of copying data to the provided buffer.
   // If width_step is 0, then calculates width_step assuming no padding.
@@ -289,7 +250,7 @@ class ImageFrame {
   int height_;
   int width_step_;
 
-  std::unique_ptr<uint8[], Deleter> pixel_data_;
+  std::unique_ptr<uint8_t[], Deleter> pixel_data_;
 };
 
 }  // namespace mediapipe

@@ -14,6 +14,7 @@
 
 #include "mediapipe/framework/tool/tag_map.h"
 
+#include "absl/log/absl_log.h"
 #include "absl/strings/str_join.h"
 #include "mediapipe/framework/port/gmock.h"
 #include "mediapipe/framework/port/gtest.h"
@@ -26,37 +27,35 @@ namespace {
 
 TEST(TagMapTest, Create) {
   // Create using tags.
-  MEDIAPIPE_EXPECT_OK(tool::CreateTagMapFromTags({}));
-  MEDIAPIPE_EXPECT_OK(tool::CreateTagMapFromTags({"BLAH"}));
-  MEDIAPIPE_EXPECT_OK(tool::CreateTagMapFromTags({"BLAH1", "BLAH2"}));
+  MP_EXPECT_OK(tool::CreateTagMapFromTags({}));
+  MP_EXPECT_OK(tool::CreateTagMapFromTags({"BLAH"}));
+  MP_EXPECT_OK(tool::CreateTagMapFromTags({"BLAH1", "BLAH2"}));
   // Tags must be uppercase.
   EXPECT_FALSE(tool::CreateTagMapFromTags({"blah1", "BLAH2"}).ok());
 
   // Create with TAG:<index>:names.
-  MEDIAPIPE_EXPECT_OK(tool::CreateTagMap({}));
-  MEDIAPIPE_EXPECT_OK(tool::CreateTagMap({"blah"}));
-  MEDIAPIPE_EXPECT_OK(tool::CreateTagMap({"blah1", "blah2"}));
-  MEDIAPIPE_EXPECT_OK(tool::CreateTagMap({"BLAH:blah"}));
-  MEDIAPIPE_EXPECT_OK(tool::CreateTagMap({"BLAH1:blah1", "BLAH2:blah2"}));
-  MEDIAPIPE_EXPECT_OK(tool::CreateTagMap({"BLAH:0:blah1", "BLAH:1:blah2"}));
-  MEDIAPIPE_EXPECT_OK(tool::CreateTagMap({"BLAH:blah1", "BLAH:1:blah2"}));
-  MEDIAPIPE_EXPECT_OK(tool::CreateTagMap(
+  MP_EXPECT_OK(tool::CreateTagMap({}));
+  MP_EXPECT_OK(tool::CreateTagMap({"blah"}));
+  MP_EXPECT_OK(tool::CreateTagMap({"blah1", "blah2"}));
+  MP_EXPECT_OK(tool::CreateTagMap({"BLAH:blah"}));
+  MP_EXPECT_OK(tool::CreateTagMap({"BLAH1:blah1", "BLAH2:blah2"}));
+  MP_EXPECT_OK(tool::CreateTagMap({"BLAH:0:blah1", "BLAH:1:blah2"}));
+  MP_EXPECT_OK(tool::CreateTagMap({"BLAH:blah1", "BLAH:1:blah2"}));
+  MP_EXPECT_OK(tool::CreateTagMap(
       {"A:2:a2", "B:1:b1", "C:c0", "A:0:a0", "B:b0", "A:1:a1"}));
-  MEDIAPIPE_EXPECT_OK(
-      tool::CreateTagMap({"w", "A:2:a2", "x", "B:1:b1", "C:c0", "y", "A:0:a0",
-                          "B:b0", "z", "A:1:a1"}));
-  MEDIAPIPE_EXPECT_OK(
-      tool::CreateTagMap({"A:2:a2", "w", "x", "B:1:b1", "C:c0", "y", "A:0:a0",
-                          "B:b0", "z", "A:1:a1"}));
+  MP_EXPECT_OK(tool::CreateTagMap({"w", "A:2:a2", "x", "B:1:b1", "C:c0", "y",
+                                   "A:0:a0", "B:b0", "z", "A:1:a1"}));
+  MP_EXPECT_OK(tool::CreateTagMap({"A:2:a2", "w", "x", "B:1:b1", "C:c0", "y",
+                                   "A:0:a0", "B:b0", "z", "A:1:a1"}));
 
   // Reuse name.
-  MEDIAPIPE_EXPECT_OK(tool::CreateTagMap({"a", "A:a"}));
+  MP_EXPECT_OK(tool::CreateTagMap({"a", "A:a"}));
   // Reuse name.
-  MEDIAPIPE_EXPECT_OK(tool::CreateTagMap({"a", "a"}));
+  MP_EXPECT_OK(tool::CreateTagMap({"a", "a"}));
   // Reuse name.
-  MEDIAPIPE_EXPECT_OK(tool::CreateTagMap({"C:c", "a", "a"}));
+  MP_EXPECT_OK(tool::CreateTagMap({"C:c", "a", "a"}));
   // Reuse name.
-  MEDIAPIPE_EXPECT_OK(tool::CreateTagMap({"A:a", "B:a"}));
+  MP_EXPECT_OK(tool::CreateTagMap({"A:a", "B:a"}));
 
   // Reuse same tag.
   EXPECT_FALSE(tool::CreateTagMap({"BLAH:blah1", "BLAH:blah2"}).ok());
@@ -71,20 +70,20 @@ TEST(TagMapTest, Create) {
       tool::CreateTagMap({"blah0", "BLAH:1:blah1", "BLAH:2:blah2"}).ok());
 
   // Create using an index.
-  MEDIAPIPE_EXPECT_OK(tool::CreateTagMap(0));
-  MEDIAPIPE_EXPECT_OK(tool::CreateTagMap(3));
+  MP_EXPECT_OK(tool::CreateTagMap(0));
+  MP_EXPECT_OK(tool::CreateTagMap(3));
   // Negative number of entries.
   EXPECT_FALSE(tool::CreateTagMap(-1).ok());
 
   // Create using a TagAndNameInfo.
   tool::TagAndNameInfo info;
   info.names = {"blah1", "blah2"};
-  MEDIAPIPE_EXPECT_OK(tool::TagMap::Create(info));
+  MP_EXPECT_OK(tool::TagMap::Create(info));
   info.tags = {"BLAH1", "BLAH2", "BLAH3"};
   // Number of tags and names do not match.
   EXPECT_FALSE(tool::TagMap::Create(info).ok());
   info.names.push_back("blah3");
-  MEDIAPIPE_EXPECT_OK(tool::TagMap::Create(info));
+  MP_EXPECT_OK(tool::TagMap::Create(info));
 }
 
 void TestSuccessTagMap(const std::vector<std::string>& tag_index_names,
@@ -93,9 +92,9 @@ void TestSuccessTagMap(const std::vector<std::string>& tag_index_names,
                        const std::vector<std::string>& names) {
   std::shared_ptr<tool::TagMap> tag_map;
   if (create_from_tags) {
-    tag_map = tool::CreateTagMapFromTags(tag_index_names).ValueOrDie();
+    tag_map = tool::CreateTagMapFromTags(tag_index_names).value();
   } else {
-    tag_map = tool::CreateTagMap(tag_index_names).ValueOrDie();
+    tag_map = tool::CreateTagMap(tag_index_names).value();
   }
 
   EXPECT_EQ(num_entries, tag_map->NumEntries())
@@ -103,7 +102,7 @@ void TestSuccessTagMap(const std::vector<std::string>& tag_index_names,
   EXPECT_EQ(tags.size(), tag_map->Mapping().size())
       << "Parameters: in " << tag_map->DebugString();
   for (int i = 0; i < tags.size(); ++i) {
-    EXPECT_TRUE(::mediapipe::ContainsKey(tag_map->Mapping(), tags[i]))
+    EXPECT_TRUE(tag_map->Mapping().contains(tags[i]))
         << "Parameters: Trying to find \"" << tags[i] << "\" in\n"
         << tag_map->DebugString();
   }
@@ -296,12 +295,12 @@ TEST(TagMapTest, SameAs) {
     if (std::get<1>(parameters)) {
       auto statusor_tag_map =
           tool::CreateTagMapFromTags(std::get<2>(parameters));
-      MEDIAPIPE_ASSERT_OK(statusor_tag_map);
-      tag_maps.push_back(std::move(statusor_tag_map.ValueOrDie()));
+      MP_ASSERT_OK(statusor_tag_map);
+      tag_maps.push_back(std::move(statusor_tag_map.value()));
     } else {
       auto statusor_tag_map = tool::CreateTagMap(std::get<2>(parameters));
-      MEDIAPIPE_ASSERT_OK(statusor_tag_map);
-      tag_maps.push_back(std::move(statusor_tag_map.ValueOrDie()));
+      MP_ASSERT_OK(statusor_tag_map);
+      tag_maps.push_back(std::move(statusor_tag_map.value()));
     }
   }
 
@@ -320,19 +319,19 @@ TEST(TagMapTest, SameAs) {
   }
 }
 
-// A helper function to test that a TagMap's debug std::string and short
-// debug std::string each satisfy a matcher.
+// A helper function to test that a TagMap's debug string and short
+// debug string each satisfy a matcher.
 template <typename Matcher>
-void TestDebugString(const ::mediapipe::StatusOr<std::shared_ptr<tool::TagMap>>&
-                         statusor_tag_map,
-                     const std::vector<std::string>& canonical_entries,
-                     Matcher short_string_matcher) {
-  MEDIAPIPE_ASSERT_OK(statusor_tag_map);
-  tool::TagMap& tag_map = *statusor_tag_map.ValueOrDie();
+void TestDebugString(
+    const absl::StatusOr<std::shared_ptr<tool::TagMap>>& statusor_tag_map,
+    const std::vector<std::string>& canonical_entries,
+    Matcher short_string_matcher) {
+  MP_ASSERT_OK(statusor_tag_map);
+  tool::TagMap& tag_map = *statusor_tag_map.value();
   std::string debug_string = tag_map.DebugString();
   std::string short_string = tag_map.ShortDebugString();
-  LOG(INFO) << "ShortDebugString:\n" << short_string << "\n";
-  LOG(INFO) << "DebugString:\n" << debug_string << "\n\n";
+  ABSL_LOG(INFO) << "ShortDebugString:\n" << short_string << "\n";
+  ABSL_LOG(INFO) << "DebugString:\n" << debug_string << "\n\n";
 
   std::vector<std::string> actual_entries;
   for (const auto& field : tag_map.CanonicalEntries()) {

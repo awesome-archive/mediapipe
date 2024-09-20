@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "absl/log/absl_log.h"
 #include "absl/strings/str_cat.h"
 #include "absl/time/time.h"
 #include "mediapipe/calculators/util/latency.pb.h"
@@ -20,7 +21,6 @@
 #include "mediapipe/framework/calculator_options.pb.h"
 #include "mediapipe/framework/deps/clock.h"
 #include "mediapipe/framework/deps/monotonic_clock.h"
-#include "mediapipe/framework/port/logging.h"
 #include "mediapipe/framework/port/ret_check.h"
 #include "mediapipe/framework/port/status.h"
 #include "mediapipe/framework/timestamp.h"
@@ -101,10 +101,10 @@ class PacketLatencyCalculator : public CalculatorBase {
  public:
   PacketLatencyCalculator() {}
 
-  static ::mediapipe::Status GetContract(CalculatorContract* cc);
+  static absl::Status GetContract(CalculatorContract* cc);
 
-  ::mediapipe::Status Open(CalculatorContext* cc) override;
-  ::mediapipe::Status Process(CalculatorContext* cc) override;
+  absl::Status Open(CalculatorContext* cc) override;
+  absl::Status Process(CalculatorContext* cc) override;
 
  private:
   // Resets the histogram and running average variables by initializing them to
@@ -118,35 +118,34 @@ class PacketLatencyCalculator : public CalculatorBase {
   std::shared_ptr<::mediapipe::Clock> clock_;
 
   // Clock time when the first reference packet was received.
-  int64 first_process_time_usec_ = -1;
+  int64_t first_process_time_usec_ = -1;
 
   // Timestamp of the first reference packet received.
-  int64 first_reference_timestamp_usec_ = -1;
+  int64_t first_reference_timestamp_usec_ = -1;
 
   // Number of packet streams.
-  int64 num_packet_streams_ = -1;
+  int64_t num_packet_streams_ = -1;
 
   // Latency output for each packet stream.
   std::vector<PacketLatency> packet_latencies_;
 
   // Running sum and count of latencies for each packet stream. This is required
   // to compute the average latency.
-  std::vector<int64> sum_latencies_usec_;
-  std::vector<int64> num_latencies_;
+  std::vector<int64_t> sum_latencies_usec_;
+  std::vector<int64_t> num_latencies_;
 
   // Clock time when last reset was done for histogram and running average.
-  int64 last_reset_time_usec_ = -1;
+  int64_t last_reset_time_usec_ = -1;
 };
 REGISTER_CALCULATOR(PacketLatencyCalculator);
 
-::mediapipe::Status PacketLatencyCalculator::GetContract(
-    CalculatorContract* cc) {
+absl::Status PacketLatencyCalculator::GetContract(CalculatorContract* cc) {
   RET_CHECK_GT(cc->Inputs().NumEntries(), 1);
 
   // Input and output streams.
-  int64 num_packet_streams = cc->Inputs().NumEntries() - 1;
+  int64_t num_packet_streams = cc->Inputs().NumEntries() - 1;
   RET_CHECK_EQ(cc->Outputs().NumEntries(), num_packet_streams);
-  for (int64 i = 0; i < num_packet_streams; ++i) {
+  for (int64_t i = 0; i < num_packet_streams; ++i) {
     cc->Inputs().Index(i).SetAny();
     cc->Outputs().Index(i).Set<PacketLatency>();
   }
@@ -161,13 +160,13 @@ REGISTER_CALCULATOR(PacketLatencyCalculator);
         .Set<std::shared_ptr<::mediapipe::Clock>>();
   }
 
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 void PacketLatencyCalculator::ResetStatistics() {
   // Initialize histogram with zero counts and set running average to zero.
-  for (int64 i = 0; i < num_packet_streams_; ++i) {
-    for (int64 interval_index = 0; interval_index < options_.num_intervals();
+  for (int64_t i = 0; i < num_packet_streams_; ++i) {
+    for (int64_t interval_index = 0; interval_index < options_.num_intervals();
          ++interval_index) {
       packet_latencies_[i].set_counts(interval_index, 0);
     }
@@ -178,7 +177,7 @@ void PacketLatencyCalculator::ResetStatistics() {
   }
 }
 
-::mediapipe::Status PacketLatencyCalculator::Open(CalculatorContext* cc) {
+absl::Status PacketLatencyCalculator::Open(CalculatorContext* cc) {
   options_ = cc->Options<PacketLatencyCalculatorOptions>();
   num_packet_streams_ = cc->Inputs().NumEntries() - 1;
 
@@ -197,7 +196,7 @@ void PacketLatencyCalculator::ResetStatistics() {
   packet_latencies_.resize(num_packet_streams_);
   sum_latencies_usec_.resize(num_packet_streams_);
   num_latencies_.resize(num_packet_streams_);
-  for (int64 i = 0; i < num_packet_streams_; ++i) {
+  for (int64_t i = 0; i < num_packet_streams_; ++i) {
     // Initialize latency histograms with zero counts.
     packet_latencies_[i].set_num_intervals(options_.num_intervals());
     packet_latencies_[i].set_interval_size_usec(options_.interval_size_usec());
@@ -209,7 +208,7 @@ void PacketLatencyCalculator::ResetStatistics() {
     if (labels_provided) {
       packet_latencies_[i].set_label(options_.packet_labels(i));
     } else {
-      int64 input_stream_index = cc->Inputs().TagMap()->GetId("", i).value();
+      int64_t input_stream_index = cc->Inputs().TagMap()->GetId("", i).value();
       packet_latencies_[i].set_label(
           cc->Inputs().TagMap()->Names()[input_stream_index]);
     }
@@ -218,17 +217,17 @@ void PacketLatencyCalculator::ResetStatistics() {
   // Initialize the clock.
   if (cc->InputSidePackets().HasTag(kClockTag)) {
     clock_ = cc->InputSidePackets()
-                 .Tag("CLOCK")
+                 .Tag(kClockTag)
                  .Get<std::shared_ptr<::mediapipe::Clock>>();
   } else {
     clock_ = std::shared_ptr<::mediapipe::Clock>(
         ::mediapipe::MonotonicClock::CreateSynchronizedMonotonicClock());
   }
 
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-::mediapipe::Status PacketLatencyCalculator::Process(CalculatorContext* cc) {
+absl::Status PacketLatencyCalculator::Process(CalculatorContext* cc) {
   // Record first process timestamp if this is the first call.
   if (first_process_time_usec_ < 0 &&
       !cc->Inputs().Tag(kReferenceSignalTag).IsEmpty()) {
@@ -238,12 +237,12 @@ void PacketLatencyCalculator::ResetStatistics() {
   }
 
   if (first_process_time_usec_ < 0) {
-    LOG(WARNING) << "No reference packet received.";
-    return ::mediapipe::OkStatus();
+    ABSL_LOG(WARNING) << "No reference packet received.";
+    return absl::OkStatus();
   }
 
   if (options_.reset_duration_usec() > 0) {
-    const int64 time_now_usec = absl::ToUnixMicros(clock_->TimeNow());
+    const int64_t time_now_usec = absl::ToUnixMicros(clock_->TimeNow());
     if (time_now_usec - last_reset_time_usec_ >=
         options_.reset_duration_usec()) {
       ResetStatistics();
@@ -252,16 +251,16 @@ void PacketLatencyCalculator::ResetStatistics() {
   }
 
   // Update latency info if there is any incoming packet.
-  for (int64 i = 0; i < num_packet_streams_; ++i) {
+  for (int64_t i = 0; i < num_packet_streams_; ++i) {
     if (!cc->Inputs().Index(i).IsEmpty()) {
       const auto& packet_timestamp_usec = cc->InputTimestamp().Value();
 
       // Update latency statistics for this stream.
-      int64 current_clock_time_usec = absl::ToUnixMicros(clock_->TimeNow());
-      int64 current_calibrated_timestamp_usec =
+      int64_t current_clock_time_usec = absl::ToUnixMicros(clock_->TimeNow());
+      int64_t current_calibrated_timestamp_usec =
           (current_clock_time_usec - first_process_time_usec_) +
           first_reference_timestamp_usec_;
-      int64 packet_latency_usec =
+      int64_t packet_latency_usec =
           current_calibrated_timestamp_usec - packet_timestamp_usec;
 
       // Invalid timestamps in input signals could result in negative latencies.
@@ -271,7 +270,7 @@ void PacketLatencyCalculator::ResetStatistics() {
 
       // Update the latency, running average and histogram for this stream.
       packet_latencies_[i].set_current_latency_usec(packet_latency_usec);
-      int64 interval_index =
+      int64_t interval_index =
           packet_latency_usec / packet_latencies_[i].interval_size_usec();
       if (interval_index >= packet_latencies_[i].num_intervals()) {
         interval_index = packet_latencies_[i].num_intervals() - 1;
@@ -293,7 +292,7 @@ void PacketLatencyCalculator::ResetStatistics() {
     }
   }
 
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace mediapipe

@@ -35,7 +35,7 @@ namespace {
 // MuxInputStreamHandler should fail when running this test.
 TEST(MuxInputStreamHandlerTest, AtomicAccessToControlAndDataStreams) {
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         input_stream: "input"
         node {
           calculator: "RoundRobinDemuxCalculator"
@@ -82,16 +82,16 @@ TEST(MuxInputStreamHandlerTest, AtomicAccessToControlAndDataStreams) {
           input_stream: "SELECT:select"
           output_stream: "OUTPUT:output"
           # MuxInputStreamHandler set in GetContract().
-        })");
+        })pb");
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.StartRun({}));
   for (int i = 0; i < 2000; ++i) {
-    MEDIAPIPE_ASSERT_OK(graph.AddPacketToInputStream(
+    MP_ASSERT_OK(graph.AddPacketToInputStream(
         "input", Adopt(new int(i)).At(Timestamp(i))));
   }
-  MEDIAPIPE_ASSERT_OK(graph.CloseAllInputStreams());
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
+  MP_ASSERT_OK(graph.CloseAllInputStreams());
+  MP_ASSERT_OK(graph.WaitUntilDone());
 }
 
 // Copied from pass_through_calculator.cc, and modified to specify
@@ -108,9 +108,9 @@ TEST(MuxInputStreamHandlerTest, AtomicAccessToControlAndDataStreams) {
 // ignored.
 class FixedPassThroughCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     if (!cc->Inputs().TagMap()->SameAs(*cc->Outputs().TagMap())) {
-      return ::mediapipe::InvalidArgumentError(
+      return absl::InvalidArgumentError(
           "Input and output streams to PassThroughCalculator must use "
           "matching tags and indexes.");
     }
@@ -126,7 +126,7 @@ class FixedPassThroughCalculator : public CalculatorBase {
     if (cc->OutputSidePackets().NumEntries() != 0) {
       if (!cc->InputSidePackets().TagMap()->SameAs(
               *cc->OutputSidePackets().TagMap())) {
-        return ::mediapipe::InvalidArgumentError(
+        return absl::InvalidArgumentError(
             "Input and output side packets to PassThroughCalculator must use "
             "matching tags and indexes.");
       }
@@ -148,10 +148,10 @@ class FixedPassThroughCalculator : public CalculatorBase {
         ->set_target_queue_size(2);
     cc->SetInputStreamHandlerOptions(options);
 
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
+  absl::Status Open(CalculatorContext* cc) final {
     for (CollectionItemId id = cc->Inputs().BeginId();
          id < cc->Inputs().EndId(); ++id) {
       if (!cc->Inputs().Get(id).Header().IsEmpty()) {
@@ -165,10 +165,10 @@ class FixedPassThroughCalculator : public CalculatorBase {
       }
     }
     cc->SetOffset(TimestampDiff(0));
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     cc->GetCounter("PassThrough")->Increment();
     if (cc->Inputs().NumEntries() == 0) {
       return tool::StatusStop();
@@ -182,7 +182,7 @@ class FixedPassThroughCalculator : public CalculatorBase {
         cc->Outputs().Get(id).AddPacket(cc->Inputs().Get(id).Value());
       }
     }
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 };
 REGISTER_CALCULATOR(FixedPassThroughCalculator);
@@ -194,8 +194,8 @@ REGISTER_CALCULATOR(FixedPassThroughCalculator);
 TEST(FixedSizeInputStreamHandlerTest, ParallelWriteAndRead) {
 #define NUM_STREAMS 4
   CalculatorGraphConfig graph_config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(
-          R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(
+          R"pb(
             input_stream: "in_0"
             input_stream: "in_1"
             input_stream: "in_2"
@@ -211,18 +211,18 @@ TEST(FixedSizeInputStreamHandlerTest, ParallelWriteAndRead) {
               output_stream: "out_2"
               output_stream: "out_3"
               # FixedSizeInputStreamHandler set in GetContract()
-            })");
+            })pb");
   std::vector<Packet> output_packets[NUM_STREAMS];
   for (int i = 0; i < NUM_STREAMS; ++i) {
     tool::AddVectorSink(absl::StrCat("out_", i), &graph_config,
                         &output_packets[i]);
   }
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(graph_config, {}));
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
+  MP_ASSERT_OK(graph.Initialize(graph_config, {}));
+  MP_ASSERT_OK(graph.StartRun({}));
 
   {
-    ::mediapipe::ThreadPool pool(NUM_STREAMS);
+    mediapipe::ThreadPool pool(NUM_STREAMS);
     pool.StartWorkers();
 
     // Start writers.
@@ -231,15 +231,15 @@ TEST(FixedSizeInputStreamHandlerTest, ParallelWriteAndRead) {
         std::string stream_name = absl::StrCat("in_", w);
         for (int i = 0; i < 50; ++i) {
           Packet p = MakePacket<int>(i).At(Timestamp(i));
-          MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(stream_name, p));
+          MP_EXPECT_OK(graph.AddPacketToInputStream(stream_name, p));
           absl::SleepFor(absl::Microseconds(100));
         }
       });
     }
   }
 
-  MEDIAPIPE_ASSERT_OK(graph.CloseAllInputStreams());
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
+  MP_ASSERT_OK(graph.CloseAllInputStreams());
+  MP_ASSERT_OK(graph.WaitUntilDone());
   for (int i = 0; i < NUM_STREAMS; ++i) {
     EXPECT_EQ(output_packets[i].size(), output_packets[0].size());
     for (int j = 0; j < output_packets[i].size(); j++) {

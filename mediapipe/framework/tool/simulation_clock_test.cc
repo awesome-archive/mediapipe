@@ -43,10 +43,10 @@ namespace {
 class SimulationClockTest : public ::testing::Test {
  protected:
   void SetUpInFlightGraph() {
-    graph_config_ = ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+    graph_config_ = ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
       input_stream: "input_packets_0"
       node {
-        calculator: 'RealTimeFlowLimiterCalculator'
+        calculator: 'FlowLimiterCalculator'
         input_stream_handler {
           input_stream_handler: 'ImmediateInputStreamHandler'
         }
@@ -84,7 +84,7 @@ class SimulationClockTest : public ::testing::Test {
         output_stream: 'output_packets_0'
         output_stream: 'finish_indicator'
       }
-    )");
+    )pb");
   }
 
   // Initialize the test clock as a SimulationClock.
@@ -92,24 +92,24 @@ class SimulationClockTest : public ::testing::Test {
     auto executor = std::make_shared<SimulationClockExecutor>(4);
     simulation_clock_ = executor->GetClock();
     clock_ = simulation_clock_.get();
-    MEDIAPIPE_ASSERT_OK(graph_.SetExecutor("", executor));
+    MP_ASSERT_OK(graph_.SetExecutor("", executor));
   }
 
   // Initialize the test clock as a RealClock.
-  void SetupRealClock() { clock_ = ::mediapipe::Clock::RealClock(); }
+  void SetupRealClock() { clock_ = mediapipe::Clock::RealClock(); }
 
   // Return the values of the timestamps of a vector of Packets.
-  static std::vector<int64> TimestampValues(
+  static std::vector<int64_t> TimestampValues(
       const std::vector<Packet>& packets) {
-    std::vector<int64> result;
+    std::vector<int64_t> result;
     for (const Packet& p : packets) {
       result.push_back(p.Timestamp().Value());
     }
     return result;
   }
 
-  static std::vector<int64> TimeValues(const std::vector<absl::Time>& times) {
-    std::vector<int64> result;
+  static std::vector<int64_t> TimeValues(const std::vector<absl::Time>& times) {
+    std::vector<int64_t> result;
     for (const absl::Time& t : times) {
       result.push_back(absl::ToUnixMicros(t));
     }
@@ -119,7 +119,7 @@ class SimulationClockTest : public ::testing::Test {
   std::shared_ptr<SimulationClock> simulation_clock_;
   CalculatorGraphConfig graph_config_;
   CalculatorGraph graph_;
-  ::mediapipe::Clock* clock_;
+  mediapipe::Clock* clock_;
 };
 
 // Just directly calls SimulationClock::Sleep on several threads.
@@ -177,19 +177,19 @@ TEST_F(SimulationClockTest, DuplicateWakeTimes) {
 }
 
 // A Calculator::Process callback function.
-typedef std::function<::mediapipe::Status(const InputStreamShardSet&,
-                                          OutputStreamShardSet*)>
+typedef std::function<absl::Status(const InputStreamShardSet&,
+                                   OutputStreamShardSet*)>
     ProcessFunction;
 
 // A testing callback function that passes through all packets.
-::mediapipe::Status PassThrough(const InputStreamShardSet& inputs,
-                                OutputStreamShardSet* outputs) {
+absl::Status PassThrough(const InputStreamShardSet& inputs,
+                         OutputStreamShardSet* outputs) {
   for (int i = 0; i < inputs.NumEntries(); ++i) {
     if (!inputs.Index(i).Value().IsEmpty()) {
       outputs->Index(i).AddPacket(inputs.Index(i).Value());
     }
   }
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 // This test shows sim clock synchronizing a bunch of parallel tasks.
@@ -213,33 +213,87 @@ TEST_F(SimulationClockTest, InFlight) {
   SetUpInFlightGraph();
   std::vector<Packet> out_packets;
   tool::AddVectorSink("output_packets_0", &graph_config_, &out_packets);
-  MEDIAPIPE_ASSERT_OK(graph_.Initialize(
-      graph_config_, {
-                         {"max_in_flight", MakePacket<int>(2)},
-                         {"callback_0", Adopt(new auto(wait_0))},
-                         {"callback_1", Adopt(new auto(wait_1))},
-                     }));
-  MEDIAPIPE_ASSERT_OK(graph_.StartRun({}));
+  MP_ASSERT_OK(graph_.Initialize(graph_config_,
+                                 {
+                                     {"max_in_flight", MakePacket<int>(2)},
+                                     {"callback_0", Adopt(new auto(wait_0))},
+                                     {"callback_1", Adopt(new auto(wait_1))},
+                                 }));
+  MP_ASSERT_OK(graph_.StartRun({}));
   simulation_clock_->ThreadStart();
 
   // Add 10 input packets to the graph, one each 10 ms, starting after 11 ms
   // of clock time.  Timestamps lag clock times by 1 ms.
   clock_->Sleep(absl::Microseconds(11000));
-  for (uint64 ts = 10000; ts <= 100000; ts += 10000) {
-    MEDIAPIPE_EXPECT_OK(graph_.AddPacketToInputStream(
-        "input_packets_0", MakePacket<uint64>(ts).At(Timestamp(ts))));
+  for (uint64_t ts = 10000; ts <= 100000; ts += 10000) {
+    MP_EXPECT_OK(graph_.AddPacketToInputStream(
+        "input_packets_0", MakePacket<uint64_t>(ts).At(Timestamp(ts))));
     clock_->Sleep(absl::Microseconds(10000));
   }
 
   // Wait for 100 ms of clock time, then close the graph.
   clock_->Sleep(absl::Microseconds(100000));
   simulation_clock_->ThreadFinish();
-  MEDIAPIPE_ASSERT_OK(graph_.CloseAllInputStreams());
-  MEDIAPIPE_ASSERT_OK(graph_.WaitUntilDone());
+  MP_ASSERT_OK(graph_.CloseAllInputStreams());
+  MP_ASSERT_OK(graph_.WaitUntilDone());
 
   // Validate the graph run.
   EXPECT_THAT(TimestampValues(out_packets),
               ElementsAre(10000, 20000, 40000, 60000, 70000, 100000));
+}
+
+// Shows successful destruction of CalculatorGraph, SimulationClockExecutor,
+// and SimulationClock.  With tsan, this test reveals a race condition unless
+// the SimulationClock destructor calls ThreadFinish to waits for all threads.
+TEST_F(SimulationClockTest, DestroyClock) {
+  auto graph_config = ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
+    node {
+      calculator: "LambdaCalculator"
+      input_side_packet: 'callback_0'
+      output_stream: "input_1"
+    }
+    node {
+      calculator: "LambdaCalculator"
+      input_side_packet: 'callback_1'
+      input_stream: "input_1"
+      output_stream: "output_1"
+    }
+  )pb");
+
+  int input_count = 0;
+  ProcessFunction wait_0 = [&](const InputStreamShardSet& inputs,
+                               OutputStreamShardSet* outputs) {
+    clock_->Sleep(absl::Microseconds(20000));
+    if (++input_count < 4) {
+      outputs->Index(0).AddPacket(
+          MakePacket<uint64_t>(input_count).At(Timestamp(input_count)));
+      return absl::OkStatus();
+    } else {
+      return tool::StatusStop();
+    }
+  };
+  ProcessFunction wait_1 = [&](const InputStreamShardSet& inputs,
+                               OutputStreamShardSet* outputs) {
+    clock_->Sleep(absl::Microseconds(30000));
+    return PassThrough(inputs, outputs);
+  };
+
+  std::vector<Packet> out_packets;
+  absl::Status status;
+  {
+    CalculatorGraph graph;
+    auto executor = std::make_shared<SimulationClockExecutor>(4);
+    clock_ = executor->GetClock().get();
+    MP_ASSERT_OK(graph.SetExecutor("", executor));
+    tool::AddVectorSink("output_1", &graph_config, &out_packets);
+    MP_ASSERT_OK(graph.Initialize(graph_config,
+                                  {
+                                      {"callback_0", Adopt(new auto(wait_0))},
+                                      {"callback_1", Adopt(new auto(wait_1))},
+                                  }));
+    MP_EXPECT_OK(graph.Run());
+  }
+  EXPECT_EQ(out_packets.size(), 3);
 }
 
 }  // namespace

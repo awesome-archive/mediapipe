@@ -18,15 +18,15 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <cstdlib>
 #include <iosfwd>
 #include <iostream>  // NOLINT(readability/streams)
 #include <limits>
 #include <type_traits>
 
+#include "absl/log/absl_check.h"
 #include "absl/utility/utility.h"
-#include "mediapipe/framework/port/integral_types.h"
-#include "mediapipe/framework/port/logging.h"
 
 template <typename T>
 class Vector2;
@@ -78,13 +78,13 @@ class BasicVector {
   void Clear() { AsD() = D(); }
 
   T& operator[](int b) {
-    DCHECK_GE(b, 0);
-    DCHECK_LT(b, SIZE);
+    ABSL_DCHECK_GE(b, 0);
+    ABSL_DCHECK_LT(b, SIZE);
     return static_cast<D&>(*this).Data()[b];
   }
   T operator[](int b) const {
-    DCHECK_GE(b, 0);
-    DCHECK_LT(b, SIZE);
+    ABSL_DCHECK_GE(b, 0);
+    ABSL_DCHECK_LT(b, SIZE);
     return static_cast<const D&>(*this).Data()[b];
   }
 
@@ -241,7 +241,7 @@ class BasicVector {
     return out << "]";
   }
 
-  // These are only public for technical reasons (see cl/121145822).
+  // These are only public for technical reasons.
   template <typename K>
   D MulScalarInternal(const K& k) const {
     return Generate([k](const T& x) { return k * x; }, AsD());
@@ -261,7 +261,9 @@ class BasicVector {
   static void Print(std::ostream& out, const U& v) {
     out << v;
   }
-  static void Print(std::ostream& out, uint8 v) { out << static_cast<int>(v); }
+  static void Print(std::ostream& out, uint8_t v) {
+    out << static_cast<int>(v);
+  }
 
   // Ignores its arguments so that side-effects of variadic unpacking can occur.
   static void Ignore(std::initializer_list<bool>) {}
@@ -313,9 +315,9 @@ VT2<T2> operator/(const K& k, const BasicVector<VT2, T2, N2>& a) {
 // ======================================================================
 template <typename T>
 class Vector2
-    : public ::mediapipe::deps::internal_vector::BasicVector<Vector2, T, 2> {
+    : public mediapipe::deps::internal_vector::BasicVector<Vector2, T, 2> {
  private:
-  using Base = ::mediapipe::deps::internal_vector::BasicVector<::Vector2, T, 2>;
+  using Base = mediapipe::deps::internal_vector::BasicVector<::Vector2, T, 2>;
   using VType = T;
 
  public:
@@ -383,9 +385,9 @@ class Vector2
 
 template <typename T>
 class Vector3
-    : public ::mediapipe::deps::internal_vector::BasicVector<Vector3, T, 3> {
+    : public mediapipe::deps::internal_vector::BasicVector<Vector3, T, 3> {
  private:
-  using Base = ::mediapipe::deps::internal_vector::BasicVector<::Vector3, T, 3>;
+  using Base = mediapipe::deps::internal_vector::BasicVector<::Vector3, T, 3>;
   using VType = T;
 
  public:
@@ -458,8 +460,9 @@ class Vector3
   // return the index of the largest component (fabs)
   int LargestAbsComponent() const {
     Vector3 temp = Abs();
-    return temp[0] > temp[1] ? temp[0] > temp[2] ? 0 : 2
-                             : temp[1] > temp[2] ? 1 : 2;
+    return temp[0] > temp[1]   ? temp[0] > temp[2] ? 0 : 2
+           : temp[1] > temp[2] ? 1
+                               : 2;
   }
 
   // return the index of the smallest, median ,largest component of the vector
@@ -478,9 +481,9 @@ class Vector3
 
 template <typename T>
 class Vector4
-    : public ::mediapipe::deps::internal_vector::BasicVector<Vector4, T, 4> {
+    : public mediapipe::deps::internal_vector::BasicVector<Vector4, T, 4> {
  private:
-  using Base = ::mediapipe::deps::internal_vector::BasicVector<::Vector4, T, 4>;
+  using Base = mediapipe::deps::internal_vector::BasicVector<::Vector4, T, 4>;
   using VType = T;
 
  public:
@@ -539,20 +542,20 @@ class Vector4
   VType c_[SIZE];
 };
 
-typedef Vector2<uint8> Vector2_b;
-typedef Vector2<int16> Vector2_s;
+typedef Vector2<uint8_t> Vector2_b;
+typedef Vector2<int16_t> Vector2_s;
 typedef Vector2<int> Vector2_i;
 typedef Vector2<float> Vector2_f;
 typedef Vector2<double> Vector2_d;
 
-typedef Vector3<uint8> Vector3_b;
-typedef Vector3<int16> Vector3_s;
+typedef Vector3<uint8_t> Vector3_b;
+typedef Vector3<int16_t> Vector3_s;
 typedef Vector3<int> Vector3_i;
 typedef Vector3<float> Vector3_f;
 typedef Vector3<double> Vector3_d;
 
-typedef Vector4<uint8> Vector4_b;
-typedef Vector4<int16> Vector4_s;
+typedef Vector4<uint8_t> Vector4_b;
+typedef Vector4<int16_t> Vector4_s;
 typedef Vector4<int> Vector4_i;
 typedef Vector4<float> Vector4_f;
 typedef Vector4<double> Vector4_d;

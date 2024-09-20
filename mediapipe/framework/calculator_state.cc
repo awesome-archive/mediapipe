@@ -16,10 +16,15 @@
 
 #include "mediapipe/framework/calculator_state.h"
 
+#include <memory>
 #include <string>
 
+#include "absl/log/absl_check.h"
 #include "absl/strings/str_cat.h"
+#include "mediapipe/framework/graph_service_manager.h"
 #include "mediapipe/framework/port/logging.h"
+#include "mediapipe/framework/resources.h"
+#include "mediapipe/framework/resources_service.h"
 
 namespace mediapipe {
 
@@ -27,56 +32,51 @@ CalculatorState::CalculatorState(
     const std::string& node_name, int node_id,
     const std::string& calculator_type,
     const CalculatorGraphConfig::Node& node_config,
-    std::shared_ptr<ProfilingContext> profiling_context)
+    std::shared_ptr<ProfilingContext> profiling_context,
+    const GraphServiceManager* graph_service_manager)
     : node_name_(node_name),
       node_id_(node_id),
       calculator_type_(calculator_type),
       node_config_(node_config),
       profiling_context_(profiling_context),
-      input_streams_(nullptr),
-      output_streams_(nullptr),
+      graph_service_manager_(graph_service_manager),
       counter_factory_(nullptr) {
+  if (graph_service_manager) {
+    resources_ = graph_service_manager->GetServiceObject(kResourcesService);
+  }
+  if (!resources_) {
+    resources_ = CreateDefaultResources();
+  }
   options_.Initialize(node_config);
   ResetBetweenRuns();
 }
 
 CalculatorState::~CalculatorState() {}
 
-void CalculatorState::SetInputStreamSet(InputStreamSet* input_stream_set) {
-  CHECK(input_stream_set);
-  input_streams_ = input_stream_set;
-}
-
-void CalculatorState::SetOutputStreamSet(OutputStreamSet* output_stream_set) {
-  CHECK(output_stream_set);
-  output_streams_ = output_stream_set;
-}
-
 void CalculatorState::ResetBetweenRuns() {
   input_side_packets_ = nullptr;
-  input_streams_ = nullptr;
-  output_streams_ = nullptr;
   counter_factory_ = nullptr;
 }
 
 void CalculatorState::SetInputSidePackets(const PacketSet* input_side_packets) {
-  CHECK(input_side_packets);
+  ABSL_CHECK(input_side_packets);
   input_side_packets_ = input_side_packets;
 }
 
 void CalculatorState::SetOutputSidePackets(
     OutputSidePacketSet* output_side_packets) {
-  CHECK(output_side_packets);
+  ABSL_CHECK(output_side_packets);
   output_side_packets_ = output_side_packets;
 }
 
 Counter* CalculatorState::GetCounter(const std::string& name) {
-  CHECK(counter_factory_);
+  ABSL_CHECK(counter_factory_);
   return counter_factory_->GetCounter(absl::StrCat(NodeName(), "-", name));
 }
 
-void CalculatorState::SetServicePacket(const std::string& key, Packet packet) {
-  service_packets_[key] = std::move(packet);
+CounterFactory* CalculatorState::GetCounterFactory() {
+  ABSL_CHECK(counter_factory_);
+  return counter_factory_;
 }
 
 }  // namespace mediapipe

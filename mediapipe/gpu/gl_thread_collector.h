@@ -17,12 +17,15 @@
 
 #include <cstdlib>
 
-#if defined(MEDIAPIPE_USING_SWIFTSHADER) && !defined(NDEBUG)
+#if defined(MEDIAPIPE_USING_LEGACY_SWIFTSHADER)
 #define MEDIAPIPE_NEEDS_GL_THREAD_COLLECTOR 1
 #endif
 
 #if MEDIAPIPE_NEEDS_GL_THREAD_COLLECTOR
+#include "absl/base/thread_annotations.h"
+#include "absl/log/absl_log.h"
 #include "absl/synchronization/mutex.h"
+#include "absl/time/time.h"
 #include "mediapipe/framework/deps/no_destructor.h"
 #endif  // MEDIAPIPE_NEEDS_GL_THREAD_COLLECTOR
 
@@ -57,11 +60,15 @@ class GlThreadCollector {
       return active_threads_ == 0;
     };
     absl::MutexLock l(&mutex_);
-    mutex_.Await(Condition(&done));
+    constexpr absl::Duration kTimeout = absl::Seconds(30);
+    if (!mutex_.AwaitWithTimeout(absl::Condition(&done), kTimeout)) {
+      ABSL_LOG(DFATAL) << "Failed to shut down GL threads. This means some "
+                          "system holds on to a reference to a GL context.";
+    }
   }
 
   absl::Mutex mutex_;
-  int active_threads_ GUARDED_BY(mutex_) = 0;
+  int active_threads_ ABSL_GUARDED_BY(mutex_) = 0;
   friend NoDestructor<GlThreadCollector>;
 };
 #else

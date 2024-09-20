@@ -17,9 +17,10 @@ package com.google.mediapipe.components;
 import android.Manifest;
 import android.app.Activity;
 import android.content.pm.PackageManager;
-import android.support.v4.app.ActivityCompat;
-import android.support.v4.content.ContextCompat;
+import android.os.Build;
 import android.util.Log;
+import androidx.core.app.ActivityCompat;
+import androidx.core.content.ContextCompat;
 
 /** Manages camera permission request and handling. */
 public class PermissionHelper {
@@ -29,9 +30,12 @@ public class PermissionHelper {
 
   private static final String CAMERA_PERMISSION = Manifest.permission.CAMERA;
 
+  private static final String READ_EXTERNAL_STORAGE_PERMISSION =
+      Manifest.permission.READ_EXTERNAL_STORAGE;
+
   private static final int REQUEST_CODE = 0;
 
-  private static boolean permissionsGranted(Activity context, String[] permissions) {
+  public static boolean permissionsGranted(Activity context, String[] permissions) {
     for (String permission : permissions) {
       int permissionStatus = ContextCompat.checkSelfPermission(context, permission);
       if (permissionStatus != PackageManager.PERMISSION_GRANTED) {
@@ -41,10 +45,9 @@ public class PermissionHelper {
     return true;
   }
 
-  private static void checkAndRequestPermissions(
-      Activity context, String[] permissions, int permissionCode) {
+  public static void checkAndRequestPermissions(Activity context, String[] permissions) {
     if (!permissionsGranted(context, permissions)) {
-      ActivityCompat.requestPermissions(context, permissions, permissionCode);
+      ActivityCompat.requestPermissions(context, permissions, REQUEST_CODE);
     }
   }
 
@@ -58,7 +61,7 @@ public class PermissionHelper {
    */
   public static void checkAndRequestCameraPermissions(Activity context) {
     Log.d(TAG, "checkAndRequestCameraPermissions");
-    checkAndRequestPermissions(context, new String[] {CAMERA_PERMISSION}, REQUEST_CODE);
+    checkAndRequestPermissions(context, new String[] {CAMERA_PERMISSION});
   }
 
   /** Called by context to check if audio permissions have been granted. */
@@ -69,22 +72,26 @@ public class PermissionHelper {
   /** Called by context to check if audio permissions have been granted and if not, request them. */
   public static void checkAndRequestAudioPermissions(Activity context) {
     Log.d(TAG, "checkAndRequestAudioPermissions");
-    checkAndRequestPermissions(context, new String[] {AUDIO_PERMISSION}, REQUEST_CODE);
+    checkAndRequestPermissions(context, new String[] {AUDIO_PERMISSION});
   }
 
-  /** Called by context to check if audio and camera permissions have been granted. */
-  public static boolean audioCameraPermissionsGranted(Activity context) {
-    return permissionsGranted(context, new String[] {AUDIO_PERMISSION, CAMERA_PERMISSION});
+  /** Called by context to check if read external storage permissions have been granted. */
+  public static boolean readExternalStoragePermissionsGranted(Activity context) {
+    if (Build.VERSION.SDK_INT < Build.VERSION_CODES.JELLY_BEAN) {
+      return true;
+    }
+    return permissionsGranted(context, new String[] {READ_EXTERNAL_STORAGE_PERMISSION});
   }
 
   /**
-   * Called by context to check if audio and camera permissions have been granted and if not,
+   * Called by context to check if read external storage permissions have been granted and if not,
    * request them.
    */
-  public static void checkAndRequestAudioCameraPermissions(Activity context) {
-    Log.d(TAG, "checkAndRequestAudioCameraPermissions");
-    checkAndRequestPermissions(
-        context, new String[] {AUDIO_PERMISSION, CAMERA_PERMISSION}, REQUEST_CODE);
+  public static void checkAndRequestReadExternalStoragePermissions(Activity context) {
+    if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.JELLY_BEAN) {
+      Log.d(TAG, "checkAndRequestReadExternalStoragePermissions");
+      checkAndRequestPermissions(context, new String[] {READ_EXTERNAL_STORAGE_PERMISSION});
+    }
   }
 
   /** Called by context when permissions request has been completed. */

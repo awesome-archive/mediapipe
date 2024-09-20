@@ -18,9 +18,11 @@
 #include <vector>
 
 #include "absl/base/macros.h"
+#include "absl/log/absl_check.h"
 #include "absl/memory/memory.h"
 #include "mediapipe/framework/calculator_context.h"
 #include "mediapipe/framework/calculator_context_manager.h"
+#include "mediapipe/framework/calculator_state.h"
 #include "mediapipe/framework/input_stream_handler.h"
 #include "mediapipe/framework/port/gmock.h"
 #include "mediapipe/framework/port/gtest.h"
@@ -57,7 +59,7 @@ class BarrierInputStreamHandlerTest : public ::testing::Test {
                   std::placeholders::_1, std::placeholders::_2);
 
     std::shared_ptr<tool::TagMap> input_tag_map =
-        tool::CreateTagMap({"input_a", "input_b", "input_c"}).ValueOrDie();
+        tool::CreateTagMap({"input_a", "input_b", "input_c"}).value();
 
     input_stream_managers_.reset(
         new InputStreamManager[input_tag_map->NumEntries()]);
@@ -66,7 +68,7 @@ class BarrierInputStreamHandlerTest : public ::testing::Test {
          id < input_tag_map->EndId(); ++id) {
       const std::string& stream_name = names[id.value()];
       name_to_id_[stream_name] = id;
-      MEDIAPIPE_ASSERT_OK(input_stream_managers_[id.value()].Initialize(
+      MP_ASSERT_OK(input_stream_managers_[id.value()].Initialize(
           stream_name, &packet_type_, /*back_edge=*/false));
     }
     SetupInputStreamHandler(input_tag_map);
@@ -74,24 +76,25 @@ class BarrierInputStreamHandlerTest : public ::testing::Test {
 
   void SetupInputStreamHandler(
       const std::shared_ptr<tool::TagMap>& input_tag_map) {
-    calculator_state_ = absl::make_unique<CalculatorState>(
+    calculator_state_ = std::make_unique<CalculatorState>(
         "Node", /*node_id=*/0, "Calculator", CalculatorGraphConfig::Node(),
-        nullptr);
+        /*profiling_context=*/nullptr,
+        /*graph_service_manager=*/nullptr);
     calculator_context_manager_.Initialize(
         calculator_state_.get(), input_tag_map,
-        /*output_tag_map=*/tool::CreateTagMap({"output_a"}).ValueOrDie(),
+        /*output_tag_map=*/tool::CreateTagMap({"output_a"}).value(),
         /*calculator_run_in_parallel=*/false);
 
-    mediapipe::StatusOr<std::unique_ptr<mediapipe::InputStreamHandler>>
+    absl::StatusOr<std::unique_ptr<mediapipe::InputStreamHandler>>
         status_or_handler = InputStreamHandlerRegistry::CreateByName(
             "BarrierInputStreamHandler", input_tag_map,
             &calculator_context_manager_, MediaPipeOptions(),
             /*calculator_run_in_parallel=*/false);
     ASSERT_TRUE(status_or_handler.ok());
-    input_stream_handler_ = std::move(status_or_handler.ValueOrDie());
-    MEDIAPIPE_ASSERT_OK(input_stream_handler_->InitializeInputStreamManagers(
+    input_stream_handler_ = std::move(status_or_handler.value());
+    MP_ASSERT_OK(input_stream_handler_->InitializeInputStreamManagers(
         input_stream_managers_.get()));
-    MEDIAPIPE_ASSERT_OK(
+    MP_ASSERT_OK(
         calculator_context_manager_.PrepareForRun(setup_shards_callback_));
     input_stream_handler_->PrepareForRun(headers_ready_callback_,
                                          notification_callback_,
@@ -105,16 +108,14 @@ class BarrierInputStreamHandlerTest : public ::testing::Test {
   void NotifyNoOp() {}
 
   void Schedule(CalculatorContext* calculator_context) {
-    CHECK(calculator_context);
+    ABSL_CHECK(calculator_context);
     calculator_context_ = calculator_context;
   }
 
-  void RecordError(const ::mediapipe::Status& error) {
-    errors_.push_back(error);
-  }
+  void RecordError(const absl::Status& error) { errors_.push_back(error); }
 
-  ::mediapipe::Status SetupShardsNoOp(CalculatorContext* calculator_context) {
-    return ::mediapipe::OkStatus();
+  absl::Status SetupShardsNoOp(CalculatorContext* calculator_context) {
+    return absl::OkStatus();
   }
 
   void ReportQueueNoOp(InputStreamManager* stream, bool* stream_was_full) {}
@@ -123,13 +124,13 @@ class BarrierInputStreamHandlerTest : public ::testing::Test {
   std::function<void()> headers_ready_callback_;
   std::function<void()> notification_callback_;
   std::function<void(CalculatorContext*)> schedule_callback_;
-  std::function<void(::mediapipe::Status)> error_callback_;
-  std::function<::mediapipe::Status(CalculatorContext*)> setup_shards_callback_;
+  std::function<void(absl::Status)> error_callback_;
+  std::function<absl::Status(CalculatorContext*)> setup_shards_callback_;
   InputStreamManager::QueueSizeCallback queue_full_callback_;
   InputStreamManager::QueueSizeCallback queue_not_full_callback_;
 
   // Vector of errors encountered while using the stream.
-  std::vector<::mediapipe::Status> errors_;
+  std::vector<absl::Status> errors_;
 
   std::unique_ptr<CalculatorState> calculator_state_;
   CalculatorContextManager calculator_context_manager_;

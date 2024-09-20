@@ -15,11 +15,12 @@
 #ifndef MEDIAPIPE_FRAMEWORK_PACKET_GENERATOR_H_
 #define MEDIAPIPE_FRAMEWORK_PACKET_GENERATOR_H_
 
+#include <memory>
 #include <string>
 #include <type_traits>
 
+#include "absl/base/attributes.h"
 #include "absl/base/macros.h"
-#include "absl/memory/memory.h"
 #include "mediapipe/framework/deps/registration.h"
 #include "mediapipe/framework/packet_generator.pb.h"
 #include "mediapipe/framework/packet_set.h"
@@ -49,12 +50,12 @@ class PacketGenerator {
   // and
   // produce output side packets.
   //
-  // static ::mediapipe::Status FillExpectations(
+  // static absl::Status FillExpectations(
   //     const PacketGeneratorOptions& extendable_options,
   //     PacketTypeSet* input_side_packets,
   //     PacketTypeSet* output_side_packets);
   //
-  // static ::mediapipe::Status Generate(
+  // static absl::Status Generate(
   //     const PacketGeneratorOptions& extendable_options,
   //     const PacketSet& input_side_packets,
   //     PacketSet* output_side_packets);
@@ -69,11 +70,11 @@ namespace internal {
 class StaticAccessToGenerator {
  public:
   virtual ~StaticAccessToGenerator() {}
-  virtual ::mediapipe::Status FillExpectations(
+  virtual absl::Status FillExpectations(
       const PacketGeneratorOptions& extendable_options,  //
       PacketTypeSet* input_side_packets,                 //
       PacketTypeSet* output_side_packets) = 0;
-  virtual ::mediapipe::Status Generate(
+  virtual absl::Status Generate(
       const PacketGeneratorOptions& extendable_options,  //
       const PacketSet& input_side_packets,               //
       PacketSet* output_side_packets) = 0;
@@ -87,7 +88,7 @@ using StaticAccessToGeneratorRegistry =
 template <class T>
 constexpr bool PacketGeneratorHasFillExpectations(
     decltype(&T::FillExpectations) /*unused*/) {
-  typedef ::mediapipe::Status (*FillExpectationsType)(
+  typedef absl::Status (*FillExpectationsType)(
       const PacketGeneratorOptions& extendable_options,  //
       PacketTypeSet* input_side_packets,                 //
       PacketTypeSet* output_side_packets);
@@ -100,7 +101,7 @@ constexpr bool PacketGeneratorHasFillExpectations(...) {
 }
 template <class T>
 constexpr bool PacketGeneratorHasGenerate(decltype(&T::Generate) /*unused*/) {
-  typedef ::mediapipe::Status (*GenerateType)(
+  typedef absl::Status (*GenerateType)(
       const PacketGeneratorOptions& extendable_options,  //
       const PacketSet& input_side_packets,               //
       PacketSet* output_side_packets);
@@ -117,10 +118,10 @@ constexpr bool PacketGeneratorHasGenerate(...) {
 template <typename PacketGeneratorSubclass>
 class StaticAccessToGeneratorTyped : public StaticAccessToGenerator {
  public:
-  static_assert(std::is_base_of<::mediapipe::PacketGenerator,
+  static_assert(std::is_base_of<mediapipe::PacketGenerator,
                                 PacketGeneratorSubclass>::value,
                 "Classes registered with REGISTER_PACKET_GENERATOR must be "
-                "subclasses of ::mediapipe::PacketGenerator.");
+                "subclasses of mediapipe::PacketGenerator.");
   static_assert(
       PacketGeneratorHasFillExpectations<PacketGeneratorSubclass>(nullptr),
       "FillExpectations() must be defined with the correct signature in "
@@ -129,7 +130,7 @@ class StaticAccessToGeneratorTyped : public StaticAccessToGenerator {
                 "Generate() must be defined with the correct signature in "
                 "every PacketGenerator.");
 
-  ::mediapipe::Status FillExpectations(
+  absl::Status FillExpectations(
       const PacketGeneratorOptions& extendable_options,  //
       PacketTypeSet* input_side_packets,                 //
       PacketTypeSet* output_side_packets) final {
@@ -137,10 +138,9 @@ class StaticAccessToGeneratorTyped : public StaticAccessToGenerator {
         extendable_options, input_side_packets, output_side_packets);
   }
 
-  ::mediapipe::Status Generate(
-      const PacketGeneratorOptions& extendable_options,  //
-      const PacketSet& input_side_packets,               //
-      PacketSet* output_side_packets) final {
+  absl::Status Generate(const PacketGeneratorOptions& extendable_options,  //
+                        const PacketSet& input_side_packets,               //
+                        PacketSet* output_side_packets) final {
     return PacketGeneratorSubclass::Generate(
         extendable_options, input_side_packets, output_side_packets);
   }
@@ -150,12 +150,12 @@ class StaticAccessToGeneratorTyped : public StaticAccessToGenerator {
 
 // Macro for registering PacketGenerators.  It actually just registers
 // the StaticAccessToGeneratorTyped class.
-#define REGISTER_PACKET_GENERATOR(name)                       \
-  REGISTER_FACTORY_FUNCTION_QUALIFIED(                        \
-      ::mediapipe::internal::StaticAccessToGeneratorRegistry, \
-      generator_registration, name,                           \
-      absl::make_unique<                                      \
-          ::mediapipe::internal::StaticAccessToGeneratorTyped<name>>)
+#define REGISTER_PACKET_GENERATOR(name)                     \
+  REGISTER_FACTORY_FUNCTION_QUALIFIED(                      \
+      mediapipe::internal::StaticAccessToGeneratorRegistry, \
+      generator_registration, name,                         \
+      std::make_unique<                                     \
+          mediapipe::internal::StaticAccessToGeneratorTyped<name>>)
 
 }  // namespace mediapipe
 

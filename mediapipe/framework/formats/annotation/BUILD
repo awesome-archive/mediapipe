@@ -14,38 +14,21 @@
 # limitations under the License.
 #
 
-licenses(["notice"])  # Apache 2.0
+load("//mediapipe/framework/port:build_config.bzl", "mediapipe_proto_library")
 
-exports_files(["LICENSE"])
+package(default_visibility = ["//visibility:public"])
 
-load("//mediapipe/framework/port:build_config.bzl", "mediapipe_cc_proto_library")
+licenses(["notice"])
 
-package(default_visibility = ["//visibility:private"])
-
-proto_library(
+mediapipe_proto_library(
     name = "locus_proto",
     srcs = ["locus.proto"],
-    visibility = ["//mediapipe:__subpackages__"],
-    deps = ["//mediapipe/framework/formats/annotation:rasterization_proto"],
+    deps = [
+        ":rasterization_proto",
+    ],
 )
 
-proto_library(
+mediapipe_proto_library(
     name = "rasterization_proto",
     srcs = ["rasterization.proto"],
-    visibility = ["//mediapipe:__subpackages__"],
-)
-
-mediapipe_cc_proto_library(
-    name = "locus_cc_proto",
-    srcs = ["locus.proto"],
-    cc_deps = [":rasterization_cc_proto"],
-    visibility = ["//mediapipe:__subpackages__"],
-    deps = [":locus_proto"],
-)
-
-mediapipe_cc_proto_library(
-    name = "rasterization_cc_proto",
-    srcs = ["rasterization.proto"],
-    visibility = ["//mediapipe:__subpackages__"],
-    deps = [":rasterization_proto"],
 )

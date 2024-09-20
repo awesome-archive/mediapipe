@@ -17,6 +17,7 @@
 #include <cmath>
 #include <limits>
 
+#include "absl/log/absl_check.h"
 #include "absl/strings/str_split.h"
 #include "mediapipe/framework/port/opencv_imgcodecs_inc.h"
 #include "mediapipe/framework/port/ret_check.h"
@@ -57,13 +58,13 @@ bool ImageMetadata(const std::string& image_str, std::string* format_string,
 
 // Finds the nearest timestamp in a FeatureList of timestamps. The FeatureList
 // must contain int64 values and only the first value at each step is used.
-int NearestIndex(int64 timestamp,
+int NearestIndex(int64_t timestamp,
                  const tensorflow::FeatureList& int64_feature_list) {
-  int64 closest_distance = std::numeric_limits<int64>::max();
+  int64_t closest_distance = std::numeric_limits<int64_t>::max();
   int index = -1;
   for (int i = 0; i < int64_feature_list.feature_size(); ++i) {
-    int64 current_value = int64_feature_list.feature(i).int64_list().value(0);
-    int64 current_distance = std::abs(current_value - timestamp);
+    int64_t current_value = int64_feature_list.feature(i).int64_list().value(0);
+    int64_t current_distance = std::abs(current_value - timestamp);
     if (current_distance < closest_distance) {
       index = i;
       closest_distance = current_distance;
@@ -74,8 +75,8 @@ int NearestIndex(int64 timestamp,
 
 // Find the numerical sampling rate between two values in seconds if the input
 // timestamps are in microseconds.
-float TimestampsToRate(int64 first_timestamp, int64 second_timestamp) {
-  int64 timestamp_diff = second_timestamp - first_timestamp;
+float TimestampsToRate(int64_t first_timestamp, int64_t second_timestamp) {
+  int64_t timestamp_diff = second_timestamp - first_timestamp;
   // convert from microseconds to seconds.
   float rate = 1.0 / (static_cast<float>(timestamp_diff) / 1000000);
   return rate;
@@ -85,10 +86,10 @@ float TimestampsToRate(int64 first_timestamp, int64 second_timestamp) {
 // "segment/start/index" and "segment/end/index" by finding the closest
 // timestamps in the "image/timestamp" FeatureList if image timestamps are
 // present.
-::mediapipe::Status ReconcileAnnotationIndicesByImageTimestamps(
+absl::Status ReconcileAnnotationIndicesByImageTimestamps(
     tensorflow::SequenceExample* sequence) {
   if (GetImageTimestampSize(*sequence) == 0) {
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
   int index;
 
@@ -100,33 +101,33 @@ float TimestampsToRate(int64 first_timestamp, int64 second_timestamp) {
         << "start: " << segment_size
         << ", end: " << GetSegmentEndTimestampSize(*sequence);
 
-    std::vector<int64> start_indices;
+    std::vector<int64_t> start_indices;
     start_indices.reserve(segment_size);
-    for (const int64& timestamp : GetSegmentStartTimestamp(*sequence)) {
+    for (const int64_t& timestamp : GetSegmentStartTimestamp(*sequence)) {
       index = NearestIndex(timestamp,
                            GetFeatureList(*sequence, kImageTimestampKey));
       start_indices.push_back(index);
     }
     SetSegmentStartIndex(start_indices, sequence);
 
-    std::vector<int64> end_indices;
+    std::vector<int64_t> end_indices;
     end_indices.reserve(segment_size);
-    for (const int64& timestamp : GetSegmentEndTimestamp(*sequence)) {
+    for (const int64_t& timestamp : GetSegmentEndTimestamp(*sequence)) {
       index = NearestIndex(timestamp,
                            GetFeatureList(*sequence, kImageTimestampKey));
       end_indices.push_back(index);
     }
     SetSegmentEndIndex(end_indices, sequence);
   }
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 // Sets the values of "image/format", "image/channels", "image/height",
 // "image/width", and "image/frame_rate" based image metadata and timestamps.
-::mediapipe::Status ReconcileMetadataImages(
-    const std::string& prefix, tensorflow::SequenceExample* sequence) {
+absl::Status ReconcileMetadataImages(const std::string& prefix,
+                                     tensorflow::SequenceExample* sequence) {
   if (GetImageEncodedSize(prefix, *sequence) == 0) {
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
   std::string format;
   int height, width, channels;
@@ -144,7 +145,23 @@ float TimestampsToRate(int64 first_timestamp, int64 second_timestamp) {
                                   GetImageTimestampAt(prefix, *sequence, 1));
     SetImageFrameRate(prefix, rate, sequence);
   }
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
+}
+
+// Reconciles metadata for all images.
+absl::Status ReconcileMetadataImages(tensorflow::SequenceExample* sequence) {
+  RET_CHECK_OK(ReconcileMetadataImages("", sequence));
+  for (const auto& key_value : sequence->feature_lists().feature_list()) {
+    const auto& key = key_value.first;
+    if (::absl::StrContains(key, kImageTimestampKey)) {
+      std::string prefix = "";
+      if (key != kImageTimestampKey) {
+        prefix = key.substr(0, key.size() - sizeof(kImageTimestampKey));
+      }
+      RET_CHECK_OK(ReconcileMetadataImages(prefix, sequence));
+    }
+  }
+  return absl::OkStatus();
 }
 
 // Sets the values of "feature/${TAG}/dimensions", and
@@ -152,7 +169,7 @@ float TimestampsToRate(int64 first_timestamp, int64 second_timestamp) {
 // dimensions are already present as a context feature, this method verifies
 // the number of elements in the feature. Otherwise, it will write the
 // dimensions as a 1D vector with the number of elements.
-::mediapipe::Status ReconcileMetadataFeatureFloats(
+absl::Status ReconcileMetadataFeatureFloats(
     tensorflow::SequenceExample* sequence) {
   // Loop through all keys and see if they contain "/feature/floats"
   // If so, check dimensions and set rate.
@@ -160,10 +177,15 @@ float TimestampsToRate(int64 first_timestamp, int64 second_timestamp) {
     const std::string& key = key_value.first;
     if (absl::StrContains(key, kFeatureFloatsKey)) {
       const auto prefix = key.substr(0, key.find(kFeatureFloatsKey) - 1);
+      if (GetFeatureFloatsSize(prefix, *sequence) < 1) {
+        // Unable to determine the feature dimensions as no data is provided.
+        continue;
+      }
       int number_of_elements = GetFeatureFloatsAt(prefix, *sequence, 0).size();
-      if (HasFeatureDimensions(prefix, *sequence)) {
-        int64 product = 1;
-        for (int64 value : GetFeatureDimensions(prefix, *sequence)) {
+      if (HasFeatureDimensions(prefix, *sequence) &&
+          !GetFeatureDimensions(prefix, *sequence).empty()) {
+        int64_t product = 1;
+        for (int64_t value : GetFeatureDimensions(prefix, *sequence)) {
           product *= value;
         }
         RET_CHECK_EQ(number_of_elements, product)
@@ -182,7 +204,7 @@ float TimestampsToRate(int64 first_timestamp, int64 second_timestamp) {
       }
     }
   }
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 // Go through all bounding box annotations and move the annotation to the
@@ -190,50 +212,76 @@ float TimestampsToRate(int64 first_timestamp, int64 second_timestamp) {
 // nothing. If two or more annotations are closest to the same frame, then only
 // the closest annotation is saved. This matches the behavior of downsampling
 // images streams in time.
-::mediapipe::Status ReconcileMetadataBoxAnnotations(
-    tensorflow::SequenceExample* sequence) {
-  int num_bboxes = GetBBoxTimestampSize(*sequence);
+absl::Status ReconcileMetadataBoxAnnotations(
+    const std::string& prefix, tensorflow::SequenceExample* sequence) {
+  int num_bboxes = GetBBoxTimestampSize(prefix, *sequence);
   int num_frames = GetImageTimestampSize(*sequence);
   if (num_bboxes && num_frames) {
     // If no one has indicated which frames are annotated, assume annotations
     // are dense.
-    if (GetBBoxIsAnnotatedSize(*sequence) == 0) {
+    if (GetBBoxIsAnnotatedSize(prefix, *sequence) == 0) {
       for (int i = 0; i < num_bboxes; ++i) {
-        AddBBoxIsAnnotated(true, sequence);
+        AddBBoxIsAnnotated(prefix, true, sequence);
       }
     }
-    RET_CHECK_EQ(num_bboxes, GetBBoxIsAnnotatedSize(*sequence))
+    RET_CHECK_EQ(num_bboxes, GetBBoxIsAnnotatedSize(prefix, *sequence))
         << "Expected number of BBox timestamps and annotation marks to match.";
     // Update num_bboxes.
-    if (GetBBoxSize(*sequence) > 0) {
-      auto* bbox_feature_list =
-          MutableFeatureList(kRegionBBoxXMinKey, sequence);
+    if (GetBBoxSize(prefix, *sequence) > 0) {
+      std::string xmin_key = merge_prefix(prefix, kRegionBBoxXMinKey);
+      auto* bbox_feature_list = MutableFeatureList(xmin_key, sequence);
       RET_CHECK_EQ(num_bboxes, bbox_feature_list->feature_size())
           << "Expected number of BBox timestamps and boxes to match.";
-      ClearBBoxNumRegions(sequence);
+      ClearBBoxNumRegions(prefix, sequence);
       for (int i = 0; i < num_bboxes; ++i) {
         AddBBoxNumRegions(
-            bbox_feature_list->feature(i).float_list().value_size(), sequence);
+            prefix, bbox_feature_list->feature(i).float_list().value_size(),
+            sequence);
+      }
+    }
+    if (GetPointSize(prefix, *sequence) > 0) {
+      std::string x_key = merge_prefix(prefix, kRegionPointXKey);
+      auto* region_feature_list = MutableFeatureList(x_key, sequence);
+      RET_CHECK_EQ(num_bboxes, region_feature_list->feature_size())
+          << "Expected number of BBox timestamps and boxes to match.";
+      ClearBBoxNumRegions(prefix, sequence);
+      for (int i = 0; i < num_bboxes; ++i) {
+        AddBBoxNumRegions(
+            prefix, region_feature_list->feature(i).float_list().value_size(),
+            sequence);
+      }
+    }
+    if (Get3dPointSize(prefix, *sequence) > 0) {
+      std::string x_key = merge_prefix(prefix, kRegion3dPointXKey);
+      auto* region_feature_list = MutableFeatureList(x_key, sequence);
+      RET_CHECK_EQ(num_bboxes, region_feature_list->feature_size())
+          << "Expected number of BBox timestamps and boxes to match.";
+      ClearBBoxNumRegions(prefix, sequence);
+      for (int i = 0; i < num_bboxes; ++i) {
+        AddBBoxNumRegions(
+            prefix, region_feature_list->feature(i).float_list().value_size(),
+            sequence);
       }
     }
     // Collect which timestamps currently match to which indices in timestamps.
     // skip empty timestamps.
     // Requires sorted indices.
-    ::std::vector<int64> box_timestamps(num_bboxes);
+    ::std::vector<int64_t> box_timestamps(num_bboxes);
     int bbox_index = 0;
-    for (auto& feature :
-         GetFeatureList(*sequence, kRegionTimestampKey).feature()) {
+    std::string timestamp_key = merge_prefix(prefix, kRegionTimestampKey);
+    for (auto& feature : GetFeatureList(*sequence, timestamp_key).feature()) {
       box_timestamps[bbox_index] = feature.int64_list().value(0);
       ++bbox_index;
     }
-    ::std::vector<int32> box_is_annotated(num_bboxes);
+    ::std::vector<int32_t> box_is_annotated(num_bboxes);
     bbox_index = 0;
+    std::string is_annotated_key = merge_prefix(prefix, kRegionIsAnnotatedKey);
     for (auto& feature :
-         GetFeatureList(*sequence, kRegionIsAnnotatedKey).feature()) {
+         GetFeatureList(*sequence, is_annotated_key).feature()) {
       box_is_annotated[bbox_index] = feature.int64_list().value(0);
       ++bbox_index;
     }
-    ::std::vector<int64> image_timestamps(num_frames);
+    ::std::vector<int64_t> image_timestamps(num_frames);
     int frame_index = 0;
     for (auto& feature :
          GetFeatureList(*sequence, kImageTimestampKey).feature()) {
@@ -270,61 +318,85 @@ float TimestampsToRate(int64 first_timestamp, int64 second_timestamp) {
     }
     // Only update unmodified bbox timestamp if it doesn't exist to prevent
     // overwriting with modified values.
-    if (!GetUnmodifiedBBoxTimestampSize(*sequence)) {
-      for (int i = 0; i < num_bboxes; ++i) {
-        if (GetBBoxIsAnnotatedAt(*sequence, i)) {
-          AddUnmodifiedBBoxTimestamp(box_timestamps[i], sequence);
+    if (!GetUnmodifiedBBoxTimestampSize(prefix, *sequence)) {
+      for (int i = 0; i < num_frames; ++i) {
+        const int bbox_index = bbox_index_if_annotated[i];
+        if (bbox_index >= 0 &&
+            GetBBoxIsAnnotatedAt(prefix, *sequence, bbox_index)) {
+          AddUnmodifiedBBoxTimestamp(prefix, box_timestamps[bbox_index],
+                                     sequence);
         }
       }
     }
     // store some new feature_lists in a temporary sequence
+    std::string expected_prefix = merge_prefix(prefix, "region/");
     ::tensorflow::SequenceExample tmp_seq;
     for (const auto& key_value : sequence->feature_lists().feature_list()) {
       const std::string& key = key_value.first;
-      if (::absl::StartsWith(key, "region/")) {
+      if (::absl::StartsWith(key, expected_prefix)) {
         // create a new set of values and swap them in.
         tmp_seq.Clear();
         auto* old_feature_list = MutableFeatureList(key, sequence);
-        if (key != kUnmodifiedRegionTimestampKey) {
+        auto* new_feature_list = MutableFeatureList(key, &tmp_seq);
+        if (key != merge_prefix(prefix, kUnmodifiedRegionTimestampKey)) {
           RET_CHECK_EQ(num_bboxes, old_feature_list->feature().size())
               << "Expected number of BBox timestamps to match number of "
                  "entries "
               << "in " << key;
-        }
-        auto* new_feature_list = MutableFeatureList(key, &tmp_seq);
-        for (int i = 0; i < num_frames; ++i) {
-          if (bbox_index_if_annotated[i] >= 0) {
-            if (key == kRegionTimestampKey) {
-              new_feature_list->add_feature()->mutable_int64_list()->add_value(
-                  image_timestamps[i]);
+          for (int i = 0; i < num_frames; ++i) {
+            if (bbox_index_if_annotated[i] >= 0) {
+              if (key == merge_prefix(prefix, kRegionTimestampKey)) {
+                new_feature_list->add_feature()
+                    ->mutable_int64_list()
+                    ->add_value(image_timestamps[i]);
+              } else {
+                *new_feature_list->add_feature() =
+                    old_feature_list->feature(bbox_index_if_annotated[i]);
+              }
             } else {
-              *new_feature_list->add_feature() =
-                  old_feature_list->feature(bbox_index_if_annotated[i]);
-            }
-          } else {
-            // Add either a default value or an empty.
-            if (key == kRegionIsAnnotatedKey) {
-              new_feature_list->add_feature()->mutable_int64_list()->add_value(
-                  0);
-            } else if (key == kRegionNumRegionsKey) {
-              new_feature_list->add_feature()->mutable_int64_list()->add_value(
-                  0);
-            } else if (key == kRegionTimestampKey) {
-              new_feature_list->add_feature()->mutable_int64_list()->add_value(
-                  image_timestamps[i]);
-            } else if (key == kUnmodifiedRegionTimestampKey) {
-              // Do not add an unmodified timestamp when
-              // is_annotated == false.
-            } else {
-              new_feature_list->add_feature();  // Adds an empty.
+              // Add either a default value or an empty.
+              if (key == merge_prefix(prefix, kRegionIsAnnotatedKey)) {
+                new_feature_list->add_feature()
+                    ->mutable_int64_list()
+                    ->add_value(0);
+              } else if (key == merge_prefix(prefix, kRegionNumRegionsKey)) {
+                new_feature_list->add_feature()
+                    ->mutable_int64_list()
+                    ->add_value(0);
+              } else if (key == merge_prefix(prefix, kRegionTimestampKey)) {
+                new_feature_list->add_feature()
+                    ->mutable_int64_list()
+                    ->add_value(image_timestamps[i]);
+              } else {
+                new_feature_list->add_feature();  // Adds an empty.
+              }
             }
           }
+          *old_feature_list = *new_feature_list;
         }
-        *old_feature_list = *new_feature_list;
       }
     }
   }
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
+}
+
+absl::Status ReconcileMetadataRegionAnnotations(
+    tensorflow::SequenceExample* sequence) {
+  // Copy keys for fixed iteration order while updating feature_lists.
+  std::vector<std::string> keys;
+  for (const auto& key_value : sequence->feature_lists().feature_list()) {
+    keys.push_back(key_value.first);
+  }
+  for (const std::string& key : keys) {
+    if (::absl::StrContains(key, kRegionTimestampKey)) {
+      std::string prefix = "";
+      if (key != kRegionTimestampKey) {
+        prefix = key.substr(0, key.size() - sizeof(kRegionTimestampKey));
+      }
+      RET_CHECK_OK(ReconcileMetadataBoxAnnotations(prefix, sequence));
+    }
+  }
+  return absl::OkStatus();
 }
 }  // namespace
 
@@ -341,6 +413,7 @@ std::vector<::mediapipe::Location> GetBBoxAt(
   const auto& ymins = GetBBoxYMinAt(prefix, sequence, index);
   const auto& xmaxs = GetBBoxXMaxAt(prefix, sequence, index);
   const auto& ymaxs = GetBBoxYMaxAt(prefix, sequence, index);
+  bboxes.reserve(xmins.size());
   for (int i = 0; i < xmins.size(); ++i) {
     bboxes.push_back(::mediapipe::Location::CreateRelativeBBoxLocation(
         xmins[i], ymins[i], xmaxs[i] - xmins[i], ymaxs[i] - ymins[i]));
@@ -366,6 +439,14 @@ void AddBBox(const std::string& prefix,
   AddBBoxYMin(prefix, ymins, sequence);
   AddBBoxXMax(prefix, xmaxs, sequence);
   AddBBoxYMax(prefix, ymaxs, sequence);
+}
+
+void ClearBBox(const std::string& prefix,
+               tensorflow::SequenceExample* sequence) {
+  ClearBBoxXMin(prefix, sequence);
+  ClearBBoxYMin(prefix, sequence);
+  ClearBBoxXMax(prefix, sequence);
+  ClearBBoxYMax(prefix, sequence);
 }
 
 int GetPointSize(const std::string& prefix,
@@ -399,15 +480,62 @@ void AddPoint(const std::string& prefix,
   AddBBoxPointX(prefix, xs, sequence);
 }
 
+void ClearPoint(const std::string& prefix,
+                tensorflow::SequenceExample* sequence) {
+  ClearBBoxPointY(prefix, sequence);
+  ClearBBoxPointX(prefix, sequence);
+}
+
+int Get3dPointSize(const std::string& prefix,
+                   const tensorflow::SequenceExample& sequence) {
+  return GetBBox3dPointXSize(prefix, sequence);
+}
+
+std::vector<::std::tuple<float, float, float>> Get3dPointAt(
+    const std::string& prefix, const tensorflow::SequenceExample& sequence,
+    int index) {
+  const auto& xs = GetBBox3dPointXAt(prefix, sequence, index);
+  const auto& ys = GetBBox3dPointYAt(prefix, sequence, index);
+  const auto& zs = GetBBox3dPointZAt(prefix, sequence, index);
+  std::vector<::std::tuple<float, float, float>> points(ys.size());
+  for (int i = 0; i < xs.size(); ++i) {
+    points[i] = std::make_tuple(xs[i], ys[i], zs[i]);
+  }
+  return points;
+}
+
+void Add3dPoint(const std::string& prefix,
+                const std::vector<::std::tuple<float, float, float>>& points,
+                tensorflow::SequenceExample* sequence) {
+  ::std::vector<float> xs;
+  ::std::vector<float> ys;
+  ::std::vector<float> zs;
+  for (auto& point : points) {
+    xs.push_back(std::get<0>(point));
+    ys.push_back(std::get<1>(point));
+    zs.push_back(std::get<2>(point));
+  }
+  AddBBox3dPointX(prefix, xs, sequence);
+  AddBBox3dPointY(prefix, ys, sequence);
+  AddBBox3dPointZ(prefix, zs, sequence);
+}
+
+void Clear3dPoint(const std::string& prefix,
+                  tensorflow::SequenceExample* sequence) {
+  ClearBBox3dPointX(prefix, sequence);
+  ClearBBox3dPointY(prefix, sequence);
+  ClearBBox3dPointZ(prefix, sequence);
+}
+
 std::unique_ptr<mediapipe::Matrix> GetAudioFromFeatureAt(
     const std::string& prefix, const tensorflow::SequenceExample& sequence,
     int index) {
   const auto& flat_data = GetFeatureFloatsAt(prefix, sequence, index);
-  CHECK(HasFeatureNumChannels(prefix, sequence))
+  ABSL_CHECK(HasFeatureNumChannels(prefix, sequence))
       << "GetAudioAt requires num_channels context to be specified as key: "
       << merge_prefix(prefix, kFeatureNumChannelsKey);
   int num_channels = GetFeatureNumChannels(prefix, sequence);
-  CHECK_EQ(flat_data.size() % num_channels, 0)
+  ABSL_CHECK_EQ(flat_data.size() % num_channels, 0)
       << "The data size is not a multiple of the number of channels: "
       << flat_data.size() << " % " << num_channels << " = "
       << flat_data.size() % num_channels << " for sequence index " << index;
@@ -430,19 +558,20 @@ void AddAudioAsFeature(const std::string& prefix,
       .Swap(value_list);
 }
 
-::mediapipe::Status ReconcileMetadata(bool reconcile_bbox_annotations,
-                                      tensorflow::SequenceExample* sequence) {
+absl::Status ReconcileMetadata(bool reconcile_bbox_annotations,
+                               bool reconcile_region_annotations,
+                               tensorflow::SequenceExample* sequence) {
   RET_CHECK_OK(ReconcileAnnotationIndicesByImageTimestamps(sequence));
-  RET_CHECK_OK(ReconcileMetadataImages("", sequence));
-  RET_CHECK_OK(ReconcileMetadataImages(kForwardFlowPrefix, sequence));
-  RET_CHECK_OK(ReconcileMetadataImages(kClassSegmentationPrefix, sequence));
-  RET_CHECK_OK(ReconcileMetadataImages(kInstanceSegmentationPrefix, sequence));
+  RET_CHECK_OK(ReconcileMetadataImages(sequence));
   RET_CHECK_OK(ReconcileMetadataFeatureFloats(sequence));
   if (reconcile_bbox_annotations) {
-    RET_CHECK_OK(ReconcileMetadataBoxAnnotations(sequence));
+    RET_CHECK_OK(ReconcileMetadataBoxAnnotations("", sequence));
+  }
+  if (reconcile_region_annotations) {
+    RET_CHECK_OK(ReconcileMetadataRegionAnnotations(sequence));
   }
   // audio is always reconciled in the framework.
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace mediasequence

@@ -12,64 +12,200 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
+load("@mediapipe//mediapipe:platforms.bzl", "config_setting_and_platform")
+
 licenses(["notice"])  # Apache 2.0
 
+# Generic Android
 config_setting(
     name = "android",
-    values = {"crosstool_top": "//external:android/crosstool"},
+    constraint_values = [
+        "@platforms//os:android",
+    ],
     visibility = ["//visibility:public"],
 )
 
-config_setting(
+# Android x86 32-bit.
+config_setting_and_platform(
     name = "android_x86",
-    values = {
-        "crosstool_top": "//external:android/crosstool",
-        "cpu": "x86",
-    },
+    constraint_values = [
+        "@platforms//os:android",
+        "@platforms//cpu:x86_32",
+    ],
     visibility = ["//visibility:public"],
 )
 
-config_setting(
+# Android x86 64-bit.
+config_setting_and_platform(
     name = "android_x86_64",
-    values = {
-        "crosstool_top": "//external:android/crosstool",
-        "cpu": "x86_64",
-    },
+    constraint_values = [
+        "@platforms//os:android",
+        "@platforms//cpu:x86_64",
+    ],
     visibility = ["//visibility:public"],
 )
 
-config_setting(
-    name = "android_armeabi",
-    values = {
-        "crosstool_top": "//external:android/crosstool",
-        "cpu": "armeabi",
-    },
-    visibility = ["//visibility:public"],
-)
-
-config_setting(
+# Android ARMv7.
+config_setting_and_platform(
     name = "android_arm",
-    values = {
-        "crosstool_top": "//external:android/crosstool",
-        "cpu": "armeabi-v7a",
-    },
+    constraint_values = [
+        "@platforms//os:android",
+        "@platforms//cpu:armv7",
+    ],
     visibility = ["//visibility:public"],
 )
 
-config_setting(
+# Android ARM64.
+config_setting_and_platform(
     name = "android_arm64",
-    values = {
-        "crosstool_top": "//external:android/crosstool",
-        "cpu": "arm64-v8a",
-    },
+    constraint_values = [
+        "@platforms//os:android",
+        "@platforms//cpu:arm64",
+    ],
     visibility = ["//visibility:public"],
 )
 
+# Generic MacOS.
 config_setting(
     name = "macos",
-    values = {
-        "apple_platform_type": "macos",
-        "cpu": "darwin",
-    },
+    constraint_values = [
+        "@platforms//os:macos",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# MacOS x86 64-bit.
+config_setting_and_platform(
+    name = "macos_x86_64",
+    constraint_values = [
+        "@platforms//os:macos",
+        "@platforms//cpu:x86_64",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# MacOS ARM64.
+config_setting_and_platform(
+    name = "macos_arm64",
+    constraint_values = [
+        "@platforms//os:macos",
+        "@platforms//cpu:arm64",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# Generic iOS.
+config_setting(
+    name = "ios",
+    constraint_values = [
+        "@platforms//os:ios",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# iOS device ARM32.
+config_setting_and_platform(
+    name = "ios_armv7",
+    constraint_values = [
+        "@platforms//os:ios",
+        "@platforms//cpu:arm",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# iOS device ARM64.
+config_setting_and_platform(
+    name = "ios_arm64",
+    constraint_values = [
+        "@platforms//os:ios",
+        "@platforms//cpu:arm64",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# iOS device ARM64E.
+config_setting_and_platform(
+    name = "ios_arm64e",
+    constraint_values = [
+        "@platforms//os:ios",
+        "@platforms//cpu:arm64e",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# iOS simulator x86 32-bit.
+config_setting_and_platform(
+    name = "ios_i386",
+    constraint_values = [
+        "@platforms//os:ios",
+        "@platforms//cpu:x86_32",
+        "@build_bazel_apple_support//constraints:simulator",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# iOS simulator x86 64-bit.
+config_setting_and_platform(
+    name = "ios_x86_64",
+    constraint_values = [
+        "@platforms//os:ios",
+        "@platforms//cpu:x86_64",
+        "@build_bazel_apple_support//constraints:simulator",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# iOS simulator ARM64.
+config_setting_and_platform(
+    name = "ios_sim_arm64",
+    constraint_values = [
+        "@platforms//os:ios",
+        "@platforms//cpu:arm64",
+        "@build_bazel_apple_support//constraints:simulator",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+alias(
+    name = "apple",
+    actual = select({
+        ":macos": ":macos",
+        ":ios": ":ios",
+        "//conditions:default": ":ios",  # Arbitrarily chosen from above.
+    }),
+    visibility = ["//visibility:public"],
+)
+
+# Windows 64-bit.
+config_setting_and_platform(
+    name = "windows",
+    constraint_values = [
+        "@platforms//os:windows",
+        "@platforms//cpu:x86_64",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# Linux 64-bit.
+config_setting_and_platform(
+    name = "linux",
+    constraint_values = [
+        "@platforms//os:linux",
+        "@platforms//cpu:x86_64",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+# Emscripten (WebAssembly)
+config_setting_and_platform(
+    name = "emscripten",
+    constraint_values = [
+        "@platforms//cpu:wasm32",
+    ],
+    visibility = ["//visibility:public"],
+)
+
+exports_files(
+    ["provisioning_profile.mobileprovision"],
     visibility = ["//visibility:public"],
 )

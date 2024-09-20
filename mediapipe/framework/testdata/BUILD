@@ -13,60 +13,66 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-licenses(["notice"])  # Apache 2.0
+load("//mediapipe/framework/port:build_config.bzl", "mediapipe_proto_library")
+
+licenses(["notice"])
 
 package(default_visibility = ["//visibility:private"])
 
-exports_files(["LICENSE"])
+mediapipe_proto_library(
+    name = "resource_path_proto",
+    srcs = ["resource_path.proto"],
+    visibility = ["//visibility:public"],
+)
 
-load("//mediapipe/framework/port:build_config.bzl", "mediapipe_cc_proto_library")
-
-proto_library(
+mediapipe_proto_library(
     name = "sky_light_calculator_proto",
     srcs = ["sky_light_calculator.proto"],
-    visibility = ["//mediapipe:__subpackages__"],
-    deps = ["//mediapipe/framework:calculator_proto"],
+    visibility = ["//visibility:public"],
 )
 
-mediapipe_cc_proto_library(
-    name = "sky_light_calculator_cc_proto",
-    srcs = ["sky_light_calculator.proto"],
-    cc_deps = ["//mediapipe/framework:calculator_cc_proto"],
-    visibility = ["//mediapipe:__subpackages__"],
-    deps = [":sky_light_calculator_proto"],
+mediapipe_proto_library(
+    name = "sky_light_nested_calculator_proto",
+    srcs = ["sky_light_nested_calculator.proto"],
+    visibility = ["//visibility:public"],
 )
 
-proto_library(
+mediapipe_proto_library(
     name = "night_light_calculator_proto",
     srcs = ["night_light_calculator.proto"],
-    visibility = ["//mediapipe:__subpackages__"],
-    deps = ["//mediapipe/framework:calculator_proto"],
+    visibility = ["//visibility:public"],
+    deps = [
+        "//mediapipe/framework:calculator_options_proto",
+        "//mediapipe/framework:calculator_proto",
+    ],
 )
 
-mediapipe_cc_proto_library(
-    name = "night_light_calculator_cc_proto",
-    srcs = ["night_light_calculator.proto"],
-    cc_deps = ["//mediapipe/framework:calculator_cc_proto"],
-    visibility = ["//mediapipe:__subpackages__"],
-    deps = [":night_light_calculator_proto"],
+mediapipe_proto_library(
+    name = "proto3_options_proto",
+    srcs = ["proto3_options.proto"],
+    visibility = ["//visibility:public"],
 )
 
-proto_library(
+mediapipe_proto_library(
     name = "zoo_mutator_proto",
     srcs = ["zoo_mutator.proto"],
-    visibility = ["//mediapipe:__subpackages__"],
-    deps = ["@protobuf_archive//:any_proto"],
+    deps = ["@com_google_protobuf//:any_proto"],
 )
 
-proto_library(
+mediapipe_proto_library(
     name = "zoo_mutation_calculator_proto",
     srcs = ["zoo_mutation_calculator.proto"],
-    features = ["-proto_dynamic_mode_static_link"],
     visibility = ["//mediapipe:__subpackages__"],
     deps = [
         ":zoo_mutator_proto",
-        "//mediapipe/framework:calculator_options_proto",
-        "//mediapipe/framework:packet_factory_proto",
         "//mediapipe/framework:packet_generator_proto",
     ],
 )
+
+exports_files([
+    "perfetto_detailed.pbtxt",
+    "perfetto_minimal.pbtxt",
+    "perfeoot_memory.pbtxt",
+    "resource_calculator.data",
+    "resource_subgraph.data",
+])

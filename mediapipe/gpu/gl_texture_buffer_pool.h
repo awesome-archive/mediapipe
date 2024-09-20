@@ -18,16 +18,20 @@
 #ifndef MEDIAPIPE_GPU_GL_TEXTURE_BUFFER_POOL_H_
 #define MEDIAPIPE_GPU_GL_TEXTURE_BUFFER_POOL_H_
 
-#include <utility>
-#include <vector>
+#include <cstdint>
+#include <memory>
 
-#include "absl/synchronization/mutex.h"
+#include "absl/status/statusor.h"
+#include "absl/strings/str_format.h"
+#include "mediapipe/framework/port/ret_check.h"
 #include "mediapipe/gpu/gl_texture_buffer.h"
+#include "mediapipe/gpu/gpu_buffer_format.h"
+#include "mediapipe/gpu/multi_pool.h"
+#include "mediapipe/gpu/reusable_pool.h"
 
 namespace mediapipe {
 
-class GlTextureBufferPool
-    : public std::enable_shared_from_this<GlTextureBufferPool> {
+class GlTextureBufferPool : public ReusablePool<GlTextureBuffer> {
  public:
   // Creates a pool. This pool will manage buffers of the specified dimensions,
   // and will keep keep_count buffers around for reuse.
@@ -36,40 +40,36 @@ class GlTextureBufferPool
   static std::shared_ptr<GlTextureBufferPool> Create(int width, int height,
                                                      GpuBufferFormat format,
                                                      int keep_count) {
-    return std::shared_ptr<GlTextureBufferPool>(
-        new GlTextureBufferPool(width, height, format, keep_count));
+    return Create({width, height, format}, {.keep_count = keep_count});
   }
 
-  // Obtains a buffers. May either be reused or created anew.
-  // A GlContext must be current when this is called.
-  GlTextureBufferSharedPtr GetBuffer();
+  static std::shared_ptr<GlTextureBufferPool> Create(
+      const internal::GpuBufferSpec& spec, const MultiPoolOptions& options) {
+    return std::shared_ptr<GlTextureBufferPool>(
+        new GlTextureBufferPool(spec, options));
+  }
 
-  int width() const { return width_; }
-  int height() const { return height_; }
-  GpuBufferFormat format() const { return format_; }
+  int width() const { return spec_.width; }
+  int height() const { return spec_.height; }
+  GpuBufferFormat format() const { return spec_.format; }
 
-  // This method is meant for testing.
-  std::pair<int, int> GetInUseAndAvailableCounts();
+  static absl::StatusOr<GlTextureBufferSharedPtr> CreateBufferWithoutPool(
+      const internal::GpuBufferSpec& spec) {
+    std::unique_ptr<GlTextureBuffer> buffer = GlTextureBuffer::Create(spec);
+    RET_CHECK(buffer) << absl::StrFormat(
+        "Failed to create GL texture buffer: %d x %d, %d", spec.width,
+        spec.height, static_cast<uint32_t>(spec.format));
+    return buffer;
+  }
 
- private:
-  GlTextureBufferPool(int width, int height, GpuBufferFormat format,
-                      int keep_count);
+ protected:
+  GlTextureBufferPool(const internal::GpuBufferSpec& spec,
+                      const MultiPoolOptions& options)
+      : ReusablePool<GlTextureBuffer>(
+            [this] { return GlTextureBuffer::Create(spec_); }, options),
+        spec_(spec) {}
 
-  // Return a buffer to the pool.
-  void Return(GlTextureBuffer* buf);
-
-  // If the total number of buffers is greater than keep_count, destroys any
-  // surplus buffers that are no longer in use.
-  void TrimAvailable() EXCLUSIVE_LOCKS_REQUIRED(mutex_);
-
-  const int width_;
-  const int height_;
-  const GpuBufferFormat format_;
-  const int keep_count_;
-
-  absl::Mutex mutex_;
-  int in_use_count_ GUARDED_BY(mutex_) = 0;
-  std::vector<std::unique_ptr<GlTextureBuffer>> available_ GUARDED_BY(mutex_);
+  const internal::GpuBufferSpec spec_;
 };
 
 }  // namespace mediapipe

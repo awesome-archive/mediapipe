@@ -149,21 +149,25 @@ identify common storage patterns (e.g. storing an image along with the height
 and width) under different names (e.g. storing a left and right image in a
 stereo pair.) An example creating functions such as
 add_left_image_encoded that adds a string under the key "LEFT/image/encoded"
- add_left_image_encoded = functools.partial(add_image_encoded, prefix="LEFT")
+ add_left_image_encoded = msu.function_with_default(add_image_encoded, "LEFT")
 """
 
 from __future__ import absolute_import
 from __future__ import division
 from __future__ import print_function
-import functools
 import numpy as np
-from mediapipe.util.sequence import media_sequence_util as msu
+from mediapipe.util.sequence import media_sequence_util
+msu = media_sequence_util
+
+_HAS_DYNAMIC_ATTRIBUTES = True
 
 ##################################  METADATA  #################################
 # A unique identifier for each example.
 EXAMPLE_ID_KEY = "example/id"
 # The name o fthe data set, including the version.
 EXAMPLE_DATASET_NAME_KEY = "example/dataset_name"
+# String flags or attributes for this example within a data set.
+EXAMPLE_DATASET_FLAG_STRING_KEY = "example/dataset/flag/string"
 # The relative path to the data on disk from some root directory.
 CLIP_DATA_PATH_KEY = "clip/data_path"
 # Any identifier for the media beyond the data path.
@@ -184,14 +188,22 @@ CLIP_LABEL_INDEX_KEY = "clip/label/index"
 CLIP_LABEL_STRING_KEY = "clip/label/string"
 # A list of label confidences for this clip.
 CLIP_LABEL_CONFIDENCE_KEY = "clip/label/confidence"
+# A list of label start timestamps for this clip.
+CLIP_LABEL_START_TIMESTAMP_KEY = "clip/label/start/timestamp"
+# A list of label end timestamps for this clip.
+CLIP_LABEL_END_TIMESTAMP_KEY = "clip/label/end/timestamp"
 msu.create_bytes_context_feature(
     "example_id", EXAMPLE_ID_KEY, module_dict=globals())
 msu.create_bytes_context_feature(
     "example_dataset_name", EXAMPLE_DATASET_NAME_KEY, module_dict=globals())
+msu.create_bytes_list_context_feature(
+    "example_dataset_flag_string", EXAMPLE_DATASET_FLAG_STRING_KEY,
+    module_dict=globals())
 msu.create_bytes_context_feature(
     "clip_media_id", CLIP_MEDIA_ID_KEY, module_dict=globals())
 msu.create_bytes_context_feature(
-    "clip_alternative_media_id", CLIP_MEDIA_ID_KEY, module_dict=globals())
+    "clip_alternative_media_id", ALTERNATIVE_CLIP_MEDIA_ID_KEY,
+    module_dict=globals())
 msu.create_bytes_context_feature(
     "clip_encoded_media_bytes", CLIP_ENCODED_MEDIA_BYTES_KEY,
     module_dict=globals())
@@ -210,6 +222,14 @@ msu.create_int_list_context_feature(
     "clip_label_index", CLIP_LABEL_INDEX_KEY, module_dict=globals())
 msu.create_float_list_context_feature(
     "clip_label_confidence", CLIP_LABEL_CONFIDENCE_KEY, module_dict=globals())
+msu.create_int_list_context_feature(
+    "clip_label_start_timestamp",
+    CLIP_LABEL_START_TIMESTAMP_KEY,
+    module_dict=globals())
+msu.create_int_list_context_feature(
+    "clip_label_end_timestamp",
+    CLIP_LABEL_END_TIMESTAMP_KEY,
+    module_dict=globals())
 
 ##################################  SEGMENTS  #################################
 # A list of segment start times in microseconds.
@@ -259,6 +279,10 @@ REGION_BBOX_XMAX_KEY = "region/bbox/xmax"
 REGION_POINT_X_KEY = "region/point/x"
 REGION_POINT_Y_KEY = "region/point/y"
 REGION_RADIUS_KEY = "region/radius"
+# The 3D point can denote keypoints.
+REGION_3D_POINT_X_KEY = "region/3d_point/x"
+REGION_3D_POINT_Y_KEY = "region/3d_point/y"
+REGION_3D_POINT_Z_KEY = "region/3d_point/z"
 # The number of regions at that timestep.
 REGION_NUM_REGIONS_KEY = "region/num_regions"
 # Whether that timestep is annotated for regions.
@@ -283,13 +307,15 @@ REGION_TRACK_CONFIDENCE_KEY = "region/track/confidence"
 # have overlapping track ids.
 REGION_CLASS_INDEX_KEY = "region/class/index"
 REGION_CLASS_STRING_KEY = "region/class/string"
-REGION_CLASS_CONFIDENCE_KEY = "region/class/confidencee"
+REGION_CLASS_CONFIDENCE_KEY = "region/class/confidence"
 # The timestamp of the region annotation in microseconds.
 REGION_TIMESTAMP_KEY = "region/timestamp"
 # The original timestamp in microseconds for region annotations.
 # If regions are aligned to image frames, this field preserves the original
 # timestamps.
 REGION_UNMODIFIED_TIMESTAMP_KEY = "region/unmodified_timestamp"
+# The list of region parts expected in this example.
+REGION_PARTS_KEY = "region/parts"
 # The dimensions of each embedding per region / bounding box.
 REGION_EMBEDDING_DIMENSIONS_PER_REGION_KEY = (
     "region/embedding/dimensions_per_region")
@@ -360,6 +386,18 @@ def _create_region_with_prefix(name, prefix):
                                      prefix=prefix, module_dict=globals())
   msu.create_float_list_feature_list(name + "_point_y", REGION_POINT_Y_KEY,
                                      prefix=prefix, module_dict=globals())
+  msu.create_float_list_feature_list(
+      name + "_3d_point_x", REGION_3D_POINT_X_KEY,
+      prefix=prefix, module_dict=globals())
+  msu.create_float_list_feature_list(
+      name + "_3d_point_y", REGION_3D_POINT_Y_KEY,
+      prefix=prefix, module_dict=globals())
+  msu.create_float_list_feature_list(
+      name + "_3d_point_z", REGION_3D_POINT_Z_KEY,
+      prefix=prefix, module_dict=globals())
+  msu.create_bytes_list_context_feature(name + "_parts",
+                                        REGION_PARTS_KEY,
+                                        prefix=prefix, module_dict=globals())
   msu.create_float_list_context_feature(
       name + "_embedding_dimensions_per_region",
       REGION_EMBEDDING_DIMENSIONS_PER_REGION_KEY,
@@ -385,10 +423,17 @@ def _create_region_with_prefix(name, prefix):
         get_bbox_xmax_at(index, sequence_example, prefix=prefix)),
                     1)
   def add_prefixed_bbox(values, sequence_example, prefix):
-    add_bbox_ymin(values[:, 0], sequence_example, prefix=prefix)
-    add_bbox_xmin(values[:, 1], sequence_example, prefix=prefix)
-    add_bbox_ymax(values[:, 2], sequence_example, prefix=prefix)
-    add_bbox_xmax(values[:, 3], sequence_example, prefix=prefix)
+    values = np.array(values)
+    if values.size == 0:
+      add_bbox_ymin([], sequence_example, prefix=prefix)
+      add_bbox_xmin([], sequence_example, prefix=prefix)
+      add_bbox_ymax([], sequence_example, prefix=prefix)
+      add_bbox_xmax([], sequence_example, prefix=prefix)
+    else:
+      add_bbox_ymin(values[:, 0], sequence_example, prefix=prefix)
+      add_bbox_xmin(values[:, 1], sequence_example, prefix=prefix)
+      add_bbox_ymax(values[:, 2], sequence_example, prefix=prefix)
+      add_bbox_xmax(values[:, 3], sequence_example, prefix=prefix)
   def get_prefixed_bbox_size(sequence_example, prefix):
     return get_bbox_ymin_size(sequence_example, prefix=prefix)
   def has_prefixed_bbox(sequence_example, prefix):
@@ -398,18 +443,75 @@ def _create_region_with_prefix(name, prefix):
     clear_bbox_xmin(sequence_example, prefix=prefix)
     clear_bbox_ymax(sequence_example, prefix=prefix)
     clear_bbox_xmax(sequence_example, prefix=prefix)
+  def get_prefixed_point_at(index, sequence_example, prefix):
+    return np.stack((
+        get_bbox_point_y_at(index, sequence_example, prefix=prefix),
+        get_bbox_point_x_at(index, sequence_example, prefix=prefix)),
+                    1)
+  def add_prefixed_point(values, sequence_example, prefix):
+    add_bbox_point_y(values[:, 0], sequence_example, prefix=prefix)
+    add_bbox_point_x(values[:, 1], sequence_example, prefix=prefix)
+  def get_prefixed_point_size(sequence_example, prefix):
+    return get_bbox_point_y_size(sequence_example, prefix=prefix)
+  def has_prefixed_point(sequence_example, prefix):
+    return has_bbox_point_y(sequence_example, prefix=prefix)
+  def clear_prefixed_point(sequence_example, prefix):
+    clear_bbox_point_y(sequence_example, prefix=prefix)
+    clear_bbox_point_x(sequence_example, prefix=prefix)
+  def get_prefixed_3d_point_at(index, sequence_example, prefix):
+    return np.stack((
+        get_bbox_3d_point_x_at(index, sequence_example, prefix=prefix),
+        get_bbox_3d_point_y_at(index, sequence_example, prefix=prefix),
+        get_bbox_3d_point_z_at(index, sequence_example, prefix=prefix)),
+                    1)
+  def add_prefixed_3d_point(values, sequence_example, prefix):
+    add_bbox_3d_point_x(values[:, 0], sequence_example, prefix=prefix)
+    add_bbox_3d_point_y(values[:, 1], sequence_example, prefix=prefix)
+    add_bbox_3d_point_z(values[:, 2], sequence_example, prefix=prefix)
+  def get_prefixed_3d_point_size(sequence_example, prefix):
+    return get_bbox_3d_point_x_size(sequence_example, prefix=prefix)
+  def has_prefixed_3d_point(sequence_example, prefix):
+    return has_bbox_3d_point_x(sequence_example, prefix=prefix)
+  def clear_prefixed_3d_point(sequence_example, prefix):
+    clear_bbox_3d_point_x(sequence_example, prefix=prefix)
+    clear_bbox_3d_point_y(sequence_example, prefix=prefix)
+    clear_bbox_3d_point_z(sequence_example, prefix=prefix)
   # pylint: enable=undefined-variable
   msu.add_functions_to_module({
       "get_" + name + "_at":
-          functools.partial(get_prefixed_bbox_at, prefix=prefix),
+          msu.function_with_default(get_prefixed_bbox_at, prefix),
       "add_" + name:
-          functools.partial(add_prefixed_bbox, prefix=prefix),
+          msu.function_with_default(add_prefixed_bbox, prefix),
       "get_" + name + "_size":
-          functools.partial(get_prefixed_bbox_size, prefix=prefix),
+          msu.function_with_default(get_prefixed_bbox_size, prefix),
       "has_" + name:
-          functools.partial(has_prefixed_bbox, prefix=prefix),
+          msu.function_with_default(has_prefixed_bbox, prefix),
       "clear_" + name:
-          functools.partial(clear_prefixed_bbox, prefix=prefix),
+          msu.function_with_default(clear_prefixed_bbox, prefix),
+  }, module_dict=globals())
+  msu.add_functions_to_module({
+      "get_" + name + "_point_at":
+          msu.function_with_default(get_prefixed_point_at, prefix),
+      "add_" + name + "_point":
+          msu.function_with_default(add_prefixed_point, prefix),
+      "get_" + name + "_point_size":
+          msu.function_with_default(get_prefixed_point_size, prefix),
+      "has_" + name + "_point":
+          msu.function_with_default(has_prefixed_point, prefix),
+      "clear_" + name + "_point":
+          msu.function_with_default(clear_prefixed_point, prefix),
+  }, module_dict=globals())
+  msu.add_functions_to_module({
+      "get_" + name + "_3d_point_at":
+          msu.function_with_default(get_prefixed_3d_point_at, prefix),
+      "add_" + name + "_3d_point":
+          msu.function_with_default(add_prefixed_3d_point, prefix),
+      "get_" + name + "_3d_point_size":
+          msu.function_with_default(get_prefixed_3d_point_size, prefix),
+      "has_" + name + "_3d_point":
+          msu.function_with_default(has_prefixed_3d_point, prefix),
+      "clear_" + name + "_3d_point":
+          msu.function_with_default(clear_prefixed_3d_point, prefix),
   }, module_dict=globals())
 
 
@@ -450,6 +552,8 @@ IMAGE_TIMESTAMP_KEY = "image/timestamp"
 IMAGE_LABEL_INDEX_KEY = "image/label/index"
 IMAGE_LABEL_STRING_KEY = "image/label/string"
 IMAGE_LABEL_CONFIDENCE_KEY = "image/label/confidence"
+# The path of the image file if it did not come from a media clip.
+IMAGE_DATA_PATH_KEY = "image/data_path"
 
 
 def _create_image_with_prefix(name, prefix):
@@ -477,9 +581,13 @@ def _create_image_with_prefix(name, prefix):
   msu.create_int_list_context_feature(
       name + "_object_class_index", IMAGE_OBJECT_CLASS_INDEX_KEY,
       prefix=prefix, module_dict=globals())
+  msu.create_bytes_context_feature(name + "_data_path", IMAGE_DATA_PATH_KEY,
+                                   prefix=prefix, module_dict=globals())
   msu.create_int_feature_list(name + "_timestamp", IMAGE_TIMESTAMP_KEY,
                               prefix=prefix, module_dict=globals())
-
+  msu.create_bytes_list_feature_list(name + "_multi_encoded",
+                                     IMAGE_MULTI_ENCODED_KEY, prefix=prefix,
+                                     module_dict=globals())
 FORWARD_FLOW_PREFIX = "FORWARD_FLOW"
 CLASS_SEGMENTATION_PREFIX = "CLASS_SEGMENTATION"
 INSTANCE_SEGMENTATION_PREFIX = "INSTANCE_SEGMENTATION"
@@ -487,6 +595,50 @@ _create_image_with_prefix("image", "")
 _create_image_with_prefix("forward_flow", FORWARD_FLOW_PREFIX)
 _create_image_with_prefix("class_segmentation", CLASS_SEGMENTATION_PREFIX)
 _create_image_with_prefix("instance_segmentation", INSTANCE_SEGMENTATION_PREFIX)
+
+##################################  TEXT  #################################
+# Which language text tokens are likely to be in.
+TEXT_LANGUAGE_KEY = "text/language"
+# A large block of text that applies to the media.
+TEXT_CONTEXT_CONTENT_KEY = "text/context/content"
+# A large block of text that applies to the media as token ids.
+TEXT_CONTEXT_TOKEN_ID_KEY = "text/context/token_id"
+# A large block of text that applies to the media as embeddings.
+TEXT_CONTEXT_EMBEDDING_KEY = "text/context/embedding"
+
+# The text contents for a given time.
+TEXT_CONTENT_KEY = "text/content"
+# The start time for the text becoming relevant.
+TEXT_TIMESTAMP_KEY = "text/timestamp"
+# The duration where the text is relevant.
+TEXT_DURATION_KEY = "text/duration"
+# The confidence that this is the correct text.
+TEXT_CONFIDENCE_KEY = "text/confidence"
+# A floating point embedding corresponding to the text.
+TEXT_EMBEDDING_KEY = "text/embedding"
+# An integer id corresponding to the text.
+TEXT_TOKEN_ID_KEY = "text/token/id"
+
+msu.create_bytes_context_feature(
+    "text_language", TEXT_LANGUAGE_KEY, module_dict=globals())
+msu.create_bytes_context_feature(
+    "text_context_content", TEXT_CONTEXT_CONTENT_KEY, module_dict=globals())
+msu.create_int_list_context_feature(
+    "text_context_token_id", TEXT_CONTEXT_TOKEN_ID_KEY, module_dict=globals())
+msu.create_float_list_context_feature(
+    "text_context_embedding", TEXT_CONTEXT_EMBEDDING_KEY, module_dict=globals())
+msu.create_bytes_feature_list(
+    "text_content", TEXT_CONTENT_KEY, module_dict=globals())
+msu.create_int_feature_list(
+    "text_timestamp", TEXT_TIMESTAMP_KEY, module_dict=globals())
+msu.create_int_feature_list(
+    "text_duration", TEXT_DURATION_KEY, module_dict=globals())
+msu.create_float_feature_list(
+    "text_confidence", TEXT_CONFIDENCE_KEY, module_dict=globals())
+msu.create_float_list_feature_list(
+    "text_embedding", TEXT_EMBEDDING_KEY, module_dict=globals())
+msu.create_int_feature_list(
+    "text_token_id", TEXT_TOKEN_ID_KEY, module_dict=globals())
 
 ##################################  FEATURES  #################################
 # The dimensions of the feature.
@@ -519,6 +671,12 @@ FEATURE_TIMESTAMP_KEY = "feature/timestamp"
 FEATURE_DURATION_KEY = "feature/duration"
 # Encodes an optional confidence score for the generated features.
 FEATURE_CONFIDENCE_KEY = "feature/confidence"
+# The feature as a list of floats in the context.
+CONTEXT_FEATURE_FLOATS_KEY = "context_feature/floats"
+# The feature as a list of bytes in the context. May be encoded.
+CONTEXT_FEATURE_BYTES_KEY = "context_feature/bytes"
+# The feature as a list of ints in the context.
+CONTEXT_FEATURE_INTS_KEY = "context_feature/ints"
 
 msu.create_int_list_context_feature(
     "feature_dimensions", FEATURE_DIMENSIONS_KEY, module_dict=globals())
@@ -549,4 +707,10 @@ msu.create_int_list_feature_list(
     "feature_duration", FEATURE_DURATION_KEY, module_dict=globals())
 msu.create_float_list_feature_list(
     "feature_confidence", FEATURE_CONFIDENCE_KEY, module_dict=globals())
+msu.create_float_list_context_feature(
+    "context_feature_floats", CONTEXT_FEATURE_FLOATS_KEY, module_dict=globals())
+msu.create_bytes_list_context_feature(
+    "context_feature_bytes", CONTEXT_FEATURE_BYTES_KEY, module_dict=globals())
+msu.create_int_list_context_feature(
+    "context_feature_ints", CONTEXT_FEATURE_INTS_KEY, module_dict=globals())
 

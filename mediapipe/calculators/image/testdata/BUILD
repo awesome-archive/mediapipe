@@ -13,14 +13,16 @@
 # limitations under the License.
 #
 
-licenses(["notice"])  # Apache 2.0
+licenses(["notice"])
 
 filegroup(
     name = "test_images",
     srcs = [
+        "binary_mask.png",
         "dino.jpg",
         "dino_quality_50.jpg",
         "dino_quality_80.jpg",
+        "front_camera_pixel2.jpg",
     ],
     visibility = ["//visibility:public"],
 )

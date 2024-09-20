@@ -22,6 +22,7 @@
 
 #include "absl/base/attributes.h"
 #include "absl/base/thread_annotations.h"
+#include "absl/log/absl_log.h"
 #include "absl/strings/substitute.h"
 #include "absl/synchronization/mutex.h"
 #include "mediapipe/framework/input_stream_handler.h"
@@ -30,7 +31,6 @@
 #include "mediapipe/framework/packet.h"
 #include "mediapipe/framework/packet_set.h"
 #include "mediapipe/framework/packet_type.h"
-#include "mediapipe/framework/port/logging.h"
 #include "mediapipe/framework/port/ret_check.h"
 #include "mediapipe/framework/port/status.h"
 #include "mediapipe/framework/timestamp.h"
@@ -50,18 +50,18 @@ class GraphOutputStream {
   // input stream and attaches the input stream to an output stream as
   // the mirror for observation/polling.  Ownership of output_stream_manager
   // is not transferred to the graph output stream object.
-  ::mediapipe::Status Initialize(const std::string& stream_name,
-                                 const PacketType* packet_type,
-                                 OutputStreamManager* output_stream_manager);
+  absl::Status Initialize(const std::string& stream_name,
+                          const PacketType* packet_type,
+                          OutputStreamManager* output_stream_manager,
+                          bool observe_timestamp_bounds = false);
 
   // Installs callbacks into its GraphOutputStreamHandler.
-  virtual void PrepareForRun(
-      std::function<void()> notification_callback,
-      std::function<void(::mediapipe::Status)> error_callback);
+  virtual void PrepareForRun(std::function<void()> notification_callback,
+                             std::function<void(absl::Status)> error_callback);
 
   // Notifies the graph output stream of new packets emitted by the output
   // stream.
-  virtual ::mediapipe::Status Notify() = 0;
+  virtual absl::Status Notify() = 0;
 
   // Notifies the graph output stream of the errors in the calculator graph.
   virtual void NotifyError() = 0;
@@ -76,7 +76,7 @@ class GraphOutputStream {
   // TODO: Simplify this. We are forced to use an ISH just to
   // receive a packet, even though we do not need to do any of the things an ISH
   // normally does. The fact that we have to disable required overrides with
-  // LOG(FATAL) shows that this is the wrong interface.
+  // ABSL_LOG(FATAL) shows that this is the wrong interface.
   class GraphOutputStreamHandler : public InputStreamHandler {
    public:
     GraphOutputStreamHandler(std::shared_ptr<tool::TagMap> tag_map,
@@ -88,18 +88,22 @@ class GraphOutputStream {
 
    protected:
     NodeReadiness GetNodeReadiness(Timestamp* min_stream_timestamp) override {
-      LOG(FATAL) << "GraphOutputStreamHandler::GetNodeReadiness should "
-                    "never be invoked.";
+      ABSL_LOG(FATAL) << "GraphOutputStreamHandler::GetNodeReadiness should "
+                         "never be invoked.";
       return NodeReadiness::kNotReady;
     }
 
     void FillInputSet(Timestamp input_timestamp,
                       InputStreamShardSet* input_set) override {
-      LOG(FATAL) << "GraphOutputStreamHandler::FillInputSet should "
-                    "never be invoked.";
+      ABSL_LOG(FATAL) << "GraphOutputStreamHandler::FillInputSet should "
+                         "never be invoked.";
     }
   };
 
+  bool observe_timestamp_bounds_;
+  absl::Mutex mutex_;
+  bool notifying_ ABSL_GUARDED_BY(mutex_) = false;
+  Timestamp last_processed_ts_ = Timestamp::Unstarted();
   std::unique_ptr<InputStreamHandler> input_stream_handler_;
   std::unique_ptr<InputStreamManager> input_stream_;
 };
@@ -110,38 +114,40 @@ class OutputStreamObserver : public GraphOutputStream {
  public:
   virtual ~OutputStreamObserver() {}
 
-  ::mediapipe::Status Initialize(
+  absl::Status Initialize(
       const std::string& stream_name, const PacketType* packet_type,
-      std::function<::mediapipe::Status(const Packet&)> packet_callback,
-      OutputStreamManager* output_stream_manager);
+      std::function<absl::Status(const Packet&)> packet_callback,
+      OutputStreamManager* output_stream_manager,
+      bool observe_timestamp_bounds = false);
 
   // Notifies the observer of new packets emitted by the observed
   // output stream.
-  ::mediapipe::Status Notify() override;
+  absl::Status Notify() override;
 
   // Notifies the observer of the errors in the calculator graph.
   void NotifyError() override {}
 
  private:
   // Invoked on every packet emitted by the observed output stream.
-  std::function<::mediapipe::Status(const Packet&)> packet_callback_;
+  std::function<absl::Status(const Packet&)> packet_callback_;
 };
 
 // OutputStreamPollerImpl that returns packets to the caller via
 // Next()/NextBatch().
+// TODO: Support observe_timestamp_bounds.
 class OutputStreamPollerImpl : public GraphOutputStream {
  public:
   virtual ~OutputStreamPollerImpl() {}
 
   // Initializes an OutputStreamPollerImpl.
-  ::mediapipe::Status Initialize(
+  absl::Status Initialize(
       const std::string& stream_name, const PacketType* packet_type,
       std::function<void(InputStreamManager*, bool*)> queue_size_callback,
-      OutputStreamManager* output_stream_manager);
+      OutputStreamManager* output_stream_manager,
+      bool observe_timestamp_bounds = false);
 
-  void PrepareForRun(
-      std::function<void()> notification_callback,
-      std::function<void(::mediapipe::Status)> error_callback) override;
+  void PrepareForRun(std::function<void()> notification_callback,
+                     std::function<void(absl::Status)> error_callback) override;
 
   // Resets graph_has_error_ and cleans the internal packet queue.
   void Reset();
@@ -152,7 +158,7 @@ class OutputStreamPollerImpl : public GraphOutputStream {
   int QueueSize();
 
   // Notifies the poller of new packets emitted by the output stream.
-  ::mediapipe::Status Notify() override;
+  absl::Status Notify() override;
 
   // Notifies the poller of the errors in the calculator graph.
   void NotifyError() override;
@@ -163,8 +169,9 @@ class OutputStreamPollerImpl : public GraphOutputStream {
 
  private:
   absl::Mutex mutex_;
-  absl::CondVar handler_condvar_ GUARDED_BY(mutex_);
-  bool graph_has_error_ GUARDED_BY(mutex_);
+  absl::CondVar handler_condvar_ ABSL_GUARDED_BY(mutex_);
+  bool graph_has_error_ ABSL_GUARDED_BY(mutex_);
+  Timestamp output_timestamp_ ABSL_GUARDED_BY(mutex_) = Timestamp::Min();
 };
 
 }  // namespace internal

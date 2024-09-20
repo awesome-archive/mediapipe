@@ -14,8 +14,10 @@
 
 package com.google.mediapipe.framework;
 
+import com.google.mediapipe.framework.ProtoUtil.SerializedMessage;
 import com.google.protobuf.MessageLite;
 import java.nio.ByteBuffer;
+import java.nio.FloatBuffer;
 
 // TODO: use Preconditions in this file.
 /**
@@ -53,7 +55,11 @@ public class PacketCreator {
   public Packet createRgbImage(ByteBuffer buffer, int width, int height) {
     int widthStep = (((width * 3) + 3) / 4) * 4;
     if (widthStep * height != buffer.capacity()) {
-      throw new RuntimeException("The size of the buffer should be: " + widthStep * height);
+      throw new IllegalArgumentException(
+          "The size of the buffer should be: "
+              + widthStep * height
+              + " but is "
+              + buffer.capacity());
     }
     return Packet.create(
         nativeCreateRgbImage(mediapipeGraph.getNativeHandle(), buffer, width, height));
@@ -67,11 +73,51 @@ public class PacketCreator {
    * @param numSamples number of samples in the data.
    */
   public Packet createAudioPacket(byte[] data, int numChannels, int numSamples) {
-    if (numChannels * numSamples * 2 != data.length) {
-      throw new RuntimeException("Data doesn't have the correct size.");
-    }
+    checkAudioDataSize(data.length, numChannels, numSamples);
     return Packet.create(
-        nativeCreateAudioPacket(mediapipeGraph.getNativeHandle(), data, numChannels, numSamples));
+        nativeCreateAudioPacket(
+            mediapipeGraph.getNativeHandle(), data, /*offset=*/ 0, numChannels, numSamples));
+  }
+
+  /**
+   * Create a MediaPipe audio packet that is used by most of the audio calculators.
+   *
+   * @param data the raw audio data, bytes per sample is 2(only AudioFormat.ENCODING_PCM_16BIT is
+   *     supported). Must either be a direct byte buffer or have an array, and the data has to be
+   *     FILLED with ByteOrder.LITTLE_ENDIAN byte order, which is ByteOrder.nativeOrder() on Android
+   *     (https://developer.android.com/ndk/guides/abis.html).
+   * @param numChannels number of channels in the raw data.
+   * @param numSamples number of samples in the data.
+   */
+  public Packet createAudioPacket(ByteBuffer data, int numChannels, int numSamples) {
+    checkAudioDataSize(data.remaining(), numChannels, numSamples);
+    if (data.isDirect()) {
+      return Packet.create(
+          nativeCreateAudioPacketDirect(
+              mediapipeGraph.getNativeHandle(), data.slice(), numChannels, numSamples));
+    } else if (data.hasArray()) {
+      return Packet.create(
+          nativeCreateAudioPacket(
+              mediapipeGraph.getNativeHandle(),
+              data.array(),
+              data.arrayOffset() + data.position(),
+              numChannels,
+              numSamples));
+    } else {
+      throw new IllegalArgumentException(
+          "Data must be either a direct byte buffer or be backed by a byte array.");
+    }
+  }
+
+  private static void checkAudioDataSize(int length, int numChannels, int numSamples) {
+    final int expectedLength = numChannels * numSamples * 2;
+    if (expectedLength != length) {
+      throw new IllegalArgumentException(
+          "Please check the audio data size, has to be num_channels * num_samples * 2 = "
+              + expectedLength
+              + " but was "
+              + length);
+    }
   }
 
   /**
@@ -81,7 +127,11 @@ public class PacketCreator {
    */
   public Packet createRgbImageFromRgba(ByteBuffer buffer, int width, int height) {
     if (width * height * 4 != buffer.capacity()) {
-      throw new RuntimeException("The size of the buffer should be: " + width * height * 4);
+      throw new IllegalArgumentException(
+          "The size of the buffer should be: "
+              + width * height * 4
+              + " but is "
+              + buffer.capacity());
     }
     return Packet.create(
         nativeCreateRgbImageFromRgba(mediapipeGraph.getNativeHandle(), buffer, width, height));
@@ -94,7 +144,7 @@ public class PacketCreator {
    */
   public Packet createGrayscaleImage(ByteBuffer buffer, int width, int height) {
     if (width * height != buffer.capacity()) {
-      throw new RuntimeException(
+      throw new IllegalArgumentException(
           "The size of the buffer should be: " + width * height + " but is " + buffer.capacity());
     }
     return Packet.create(
@@ -108,10 +158,31 @@ public class PacketCreator {
    */
   public Packet createRgbaImageFrame(ByteBuffer buffer, int width, int height) {
     if (buffer.capacity() != width * height * 4) {
-      throw new RuntimeException("buffer doesn't have the correct size.");
+      throw new IllegalArgumentException(
+          "The size of the buffer should be: "
+              + width * height * 4
+              + " but is "
+              + buffer.capacity());
     }
     return Packet.create(
         nativeCreateRgbaImageFrame(mediapipeGraph.getNativeHandle(), buffer, width, height));
+  }
+
+  /**
+   * Creates a 1 channel float ImageFrame packet.
+   *
+   * <p>Use {@link ByteBuffer#allocateDirect} when allocating the buffer.
+   */
+  public Packet createFloatImageFrame(FloatBuffer buffer, int width, int height) {
+    if (buffer.capacity() != width * height * 4) {
+      throw new IllegalArgumentException(
+          "The size of the buffer should be: "
+              + width * height * 4
+              + " but is "
+              + buffer.capacity());
+    }
+    return Packet.create(
+        nativeCreateFloatImageFrame(mediapipeGraph.getNativeHandle(), buffer, width, height));
   }
 
   public Packet createInt16(short value) {
@@ -155,7 +226,7 @@ public class PacketCreator {
   }
 
   public Packet createFloat32Vector(float[] data) {
-    throw new UnsupportedOperationException("Not implemented yet");
+    return Packet.create(nativeCreateFloat32Vector(mediapipeGraph.getNativeHandle(), data));
   }
 
   public Packet createFloat64Vector(double[] data) {
@@ -164,6 +235,10 @@ public class PacketCreator {
 
   public Packet createInt32Array(int[] data) {
     return Packet.create(nativeCreateInt32Array(mediapipeGraph.getNativeHandle(), data));
+  }
+
+  public Packet createInt32Pair(int first, int second) {
+    return Packet.create(nativeCreateInt32Pair(mediapipeGraph.getNativeHandle(), first, second));
   }
 
   public Packet createFloat32Array(float[] data) {
@@ -209,6 +284,12 @@ public class PacketCreator {
   public Packet createCalculatorOptions(MessageLite message) {
     return Packet.create(
         nativeCreateCalculatorOptions(mediapipeGraph.getNativeHandle(), message.toByteArray()));
+  }
+
+  /** Creates a {@link Packet} containing a protobuf MessageLite. */
+  public Packet createProto(MessageLite message) {
+    SerializedMessage serialized = ProtoUtil.pack(message);
+    return Packet.create(nativeCreateProto(mediapipeGraph.getNativeHandle(), serialized));
   }
 
   /** Creates a {@link Packet} containing the given camera intrinsics. */
@@ -267,39 +348,120 @@ public class PacketCreator {
             frame));
   }
 
+  /**
+   * Creates a mediapipe::Image with the provided {@link TextureFrame}.
+   *
+   * <p>Note: in order for MediaPipe to be able to access the texture, the application's GL context
+   * must be linked with MediaPipe's. This is ensured by calling {@link
+   * Graph#createGlRunner(String,long)} with the native handle to the application's GL context as
+   * the second argument.
+   */
+  public Packet createImage(TextureFrame frame) {
+    return Packet.create(
+        nativeCreateGpuImage(
+            mediapipeGraph.getNativeHandle(),
+            frame.getTextureName(),
+            frame.getWidth(),
+            frame.getHeight(),
+            frame));
+  }
+
+  /**
+   * Creates a 1, 3, or 4 channel 8-bit Image packet from a U8, RGB, or RGBA byte buffer.
+   *
+   * <p>Use {@link ByteBuffer#allocateDirect} when allocating the buffer.
+   *
+   * <p>For 3 and 4 channel images, the pixel rows should have 4-byte alignment.
+   */
+  public Packet createImage(ByteBuffer buffer, int width, int height, int numChannels) {
+    int widthStep;
+    if (numChannels == 4) {
+      widthStep = width * 4;
+    } else if (numChannels == 3) {
+      widthStep = (((width * 3) + 3) / 4) * 4;
+    } else if (numChannels == 1) {
+      widthStep = width;
+    } else {
+      throw new IllegalArgumentException("Channels should be: 1, 3, or 4, but is " + numChannels);
+    }
+    int expectedSize = widthStep * height;
+    if (buffer.capacity() != expectedSize) {
+      throw new IllegalArgumentException(
+          "The size of the buffer should be: " + expectedSize + " but is " + buffer.capacity());
+    }
+    return Packet.create(
+        nativeCreateCpuImage(
+            mediapipeGraph.getNativeHandle(), buffer, width, height, widthStep, numChannels));
+  }
+
   /** Helper callback adaptor to create the Java {@link GlSyncToken}. This is called by JNI code. */
   private void releaseWithSyncToken(long nativeSyncToken, TextureReleaseCallback releaseCallback) {
     releaseCallback.release(new GraphGlSyncToken(nativeSyncToken));
   }
 
   private native long nativeCreateReferencePacket(long context, long packet);
-  private native long nativeCreateRgbImage(long context, ByteBuffer buffer, int width, int height);
+
   private native long nativeCreateAudioPacket(
-      long context, byte[] data, int numChannels, int numSamples);
+      long context, byte[] data, int offset, int numChannels, int numSamples);
+
+  private native long nativeCreateAudioPacketDirect(
+      long context, ByteBuffer data, int numChannels, int numSamples);
+
   private native long nativeCreateRgbImageFromRgba(
       long context, ByteBuffer buffer, int width, int height);
+
+  private native long nativeCreateRgbImage(long context, ByteBuffer buffer, int width, int height);
 
   private native long nativeCreateGrayscaleImage(
       long context, ByteBuffer buffer, int width, int height);
 
   private native long nativeCreateRgbaImageFrame(
       long context, ByteBuffer buffer, int width, int height);
+
+  private native long nativeCreateFloatImageFrame(
+      long context, FloatBuffer buffer, int width, int height);
+
   private native long nativeCreateInt16(long context, short value);
+
   private native long nativeCreateInt32(long context, int value);
+
   private native long nativeCreateInt64(long context, long value);
+
   private native long nativeCreateFloat32(long context, float value);
+
   private native long nativeCreateFloat64(long context, double value);
+
   private native long nativeCreateBool(long context, boolean value);
+
   private native long nativeCreateString(long context, String value);
+
   private native long nativeCreateVideoHeader(long context, int width, int height);
+
   private native long nativeCreateTimeSeriesHeader(
       long context, int numChannels, double sampleRate);
+
   private native long nativeCreateMatrix(long context, int rows, int cols, float[] data);
+
   private native long nativeCreateGpuBuffer(
       long context, int name, int width, int height, TextureReleaseCallback releaseCallback);
+
+  private native long nativeCreateGpuImage(
+      long context, int name, int width, int height, TextureReleaseCallback releaseCallback);
+
+  private native long nativeCreateCpuImage(
+      long context, ByteBuffer buffer, int width, int height, int rowBytes, int numChannels);
+
   private native long nativeCreateInt32Array(long context, int[] data);
+
+  private native long nativeCreateInt32Pair(long context, int first, int second);
+
   private native long nativeCreateFloat32Array(long context, float[] data);
+
+  private native long nativeCreateFloat32Vector(long context, float[] data);
+
   private native long nativeCreateStringFromByteArray(long context, byte[] data);
+
+  private native long nativeCreateProto(long context, SerializedMessage data);
 
   private native long nativeCreateCalculatorOptions(long context, byte[] data);
 

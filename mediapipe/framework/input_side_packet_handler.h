@@ -41,16 +41,20 @@ class InputSidePacketHandler {
 
   // Resets the input side packet handler and its underlying input side packets
   // for another run of the graph.
-  ::mediapipe::Status PrepareForRun(
+  absl::Status PrepareForRun(
       const PacketTypeSet* input_side_packet_types,
       const std::map<std::string, Packet>& all_side_packets,
       std::function<void()> input_side_packets_ready_callback,
-      std::function<void(::mediapipe::Status)> error_callback);
+      std::function<void(absl::Status)> error_callback);
 
   // Sets a particular input side packet.
   void Set(CollectionItemId id, const Packet& packet);
 
   const PacketSet& InputSidePackets() const { return *input_side_packets_; }
+
+  // Returns true if the set of input-side-packets has changed since the
+  // previous run.
+  bool InputSidePacketsChanged();
 
   // Returns the number of missing input side packets.
   int MissingInputSidePacketCount() const {
@@ -59,20 +63,21 @@ class InputSidePacketHandler {
 
  private:
   // Called by Set().
-  ::mediapipe::Status SetInternal(CollectionItemId id, const Packet& packet);
+  absl::Status SetInternal(CollectionItemId id, const Packet& packet);
 
-  // Triggers the error callback with ::mediapipe::Status info when an error
+  // Triggers the error callback with absl::Status info when an error
   // occurs.
-  void TriggerErrorCallback(const ::mediapipe::Status& status) const;
+  void TriggerErrorCallback(const absl::Status& status) const;
 
   const PacketTypeSet* input_side_packet_types_;
 
   std::unique_ptr<PacketSet> input_side_packets_;
+  std::unique_ptr<PacketSet> prev_input_side_packets_;
 
   std::atomic<int> missing_input_side_packet_count_{0};
 
   std::function<void()> input_side_packets_ready_callback_;
-  std::function<void(::mediapipe::Status)> error_callback_;
+  std::function<void(absl::Status)> error_callback_;
 };
 
 }  // namespace mediapipe

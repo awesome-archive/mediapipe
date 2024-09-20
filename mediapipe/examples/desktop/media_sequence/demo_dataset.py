@@ -1,18 +1,18 @@
-r"""Copyright 2019 The MediaPipe Authors.
+# Copyright 2019 The MediaPipe Authors.
+#
+# Licensed under the Apache License, Version 2.0 (the "License");
+# you may not use this file except in compliance with the License.
+# You may obtain a copy of the License at
+#
+#      http://www.apache.org/licenses/LICENSE-2.0
+#
+# Unless required by applicable law or agreed to in writing, software
+# distributed under the License is distributed on an "AS IS" BASIS,
+# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
+# See the License for the specific language governing permissions and
+# limitations under the License.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-     http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-
-A demo data set constructed with MediaSequence and MediaPipe.
+r"""A demo data set constructed with MediaSequence and MediaPipe.
 
 This code demonstrates the steps for constructing a data set with MediaSequence.
 This code has two functions. First, it can be run as a module to download and
@@ -57,12 +57,13 @@ import random
 import subprocess
 import sys
 import tempfile
-import urllib
 
 from absl import app
 from absl import flags
 from absl import logging
-import tensorflow as tf
+from six.moves import range
+from six.moves import urllib
+import tensorflow.compat.v1 as tf
 
 from mediapipe.util.sequence import media_sequence as ms
 
@@ -156,7 +157,7 @@ class DemoDataset(object):
     all_shards_dataset = tf.data.Dataset.from_tensor_slices(all_shards)
     cycle_length = min(16, len(all_shards))
     dataset = all_shards_dataset.apply(
-        tf.contrib.data.parallel_interleave(
+        tf.data.experimental.parallel_interleave(
             tf.data.TFRecordDataset,
             cycle_length=cycle_length,
             block_length=1,
@@ -198,7 +199,7 @@ class DemoDataset(object):
     if sys.version_info >= (3, 0):
       urlretrieve = urllib.request.urlretrieve
     else:
-      urlretrieve = urllib.urlretrieve
+      urlretrieve = urllib.request.urlretrieve
     for split in SPLITS:
       reader = csv.DictReader(SPLITS[split].split("\n"))
       all_metadata = []

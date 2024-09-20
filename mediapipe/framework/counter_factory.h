@@ -16,6 +16,7 @@
 #define MEDIAPIPE_FRAMEWORK_COUNTER_FACTORY_H_
 
 #include <algorithm>
+#include <cstdint>
 #include <map>
 #include <memory>
 #include <string>
@@ -25,7 +26,6 @@
 #include "absl/time/time.h"
 #include "mediapipe/framework/counter.h"
 #include "mediapipe/framework/port.h"
-#include "mediapipe/framework/port/integral_types.h"
 #include "mediapipe/framework/port/map_util.h"
 
 namespace mediapipe {
@@ -51,7 +51,7 @@ class CounterSet {
   // to the existing pointer.
   template <typename CounterType, typename... Args>
   Counter* Emplace(const std::string& name, Args&&... args)
-      LOCKS_EXCLUDED(mu_) {
+      ABSL_LOCKS_EXCLUDED(mu_) {
     absl::WriterMutexLock lock(&mu_);
     std::unique_ptr<Counter>* existing_counter = FindOrNull(counters_, name);
     if (existing_counter) {
@@ -65,9 +65,13 @@ class CounterSet {
   // exist.
   Counter* Get(const std::string& name);
 
+  // Retrieves all counters names and current values from the internal map.
+  std::map<std::string, int64_t> GetCountersValues() ABSL_LOCKS_EXCLUDED(mu_);
+
  private:
   absl::Mutex mu_;
-  std::map<std::string, std::unique_ptr<Counter>> counters_ GUARDED_BY(mu_);
+  std::map<std::string, std::unique_ptr<Counter>> counters_
+      ABSL_GUARDED_BY(mu_);
 };
 
 // Generic counter factory

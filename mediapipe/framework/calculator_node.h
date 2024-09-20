@@ -28,12 +28,14 @@
 #include <unordered_set>
 
 #include "absl/base/macros.h"
+#include "absl/status/status.h"
 #include "absl/synchronization/mutex.h"
 #include "mediapipe/framework/calculator.pb.h"
 #include "mediapipe/framework/calculator_base.h"
 #include "mediapipe/framework/calculator_context.h"
 #include "mediapipe/framework/calculator_context_manager.h"
 #include "mediapipe/framework/calculator_state.h"
+#include "mediapipe/framework/graph_service_manager.h"
 #include "mediapipe/framework/input_side_packet_handler.h"
 #include "mediapipe/framework/input_stream_handler.h"
 #include "mediapipe/framework/legacy_calculator_support.h"
@@ -43,7 +45,6 @@
 #include "mediapipe/framework/packet_set.h"
 #include "mediapipe/framework/packet_type.h"
 #include "mediapipe/framework/port.h"
-#include "mediapipe/framework/port/integral_types.h"
 #include "mediapipe/framework/port/status.h"
 #include "mediapipe/framework/stream_handler.pb.h"
 #include "mediapipe/framework/timestamp.h"
@@ -70,17 +71,18 @@ class CalculatorNode {
   CalculatorNode();
   CalculatorNode(const CalculatorNode&) = delete;
   CalculatorNode& operator=(const CalculatorNode&) = delete;
-  int Id() const { return node_id_; }
+  int Id() const {
+    return node_type_info_ ? node_type_info_->Node().index : -1;
+  }
 
   // Returns a value according to which the scheduler queue determines the
   // relative priority between runnable source nodes; a smaller value means
   // running first. If a node is not a source, this method is not called.
   Timestamp SourceProcessOrder(const CalculatorContext* cc) const;
 
-  // Retrieves a std::string name for the node.  If the node's name was set in
-  // the calculator graph config, it will be returned.  Otherwise, a
-  // human-readable std::string that uniquely identifies the node is returned,
-  // e.g.
+  // Retrieves a string name for the node.  If the node's name was set in the
+  // calculator graph config, it will be returned.  Otherwise, a human-readable
+  // string that uniquely identifies the node is returned, e.g.
   // "[FooBarCalculator with first output stream \"foo_bar_output\"]" for
   // non-sink nodes and "[FooBarCalculator with node ID: 42 and input streams:
   // \"foo_bar_input\"]" for sink nodes.  This name should be used in error
@@ -95,7 +97,7 @@ class CalculatorNode {
   void SetExecutor(const std::string& executor);
 
   // Calls Process() on the Calculator corresponding to this node.
-  ::mediapipe::Status ProcessNode(CalculatorContext* calculator_context);
+  absl::Status ProcessNode(CalculatorContext* calculator_context);
 
   // Initializes the node.  The buffer_size_hint argument is
   // set to the value specified in the graph proto for this field.
@@ -105,12 +107,14 @@ class CalculatorNode {
   // output_side_packets is expected to point to a contiguous flat array with
   // OutputSidePacketImpls corresponding to the output side packet indexes in
   // validated_graph.
-  ::mediapipe::Status Initialize(
-      const ValidatedGraphConfig* validated_graph, int node_id,
-      InputStreamManager* input_stream_managers,
-      OutputStreamManager* output_stream_managers,
-      OutputSidePacketImpl* output_side_packets, int* buffer_size_hint,
-      std::shared_ptr<ProfilingContext> profiling_context);
+  absl::Status Initialize(const ValidatedGraphConfig* validated_graph,
+                          NodeTypeInfo::NodeRef node_ref,
+                          InputStreamManager* input_stream_managers,
+                          OutputStreamManager* output_stream_managers,
+                          OutputSidePacketImpl* output_side_packets,
+                          int* buffer_size_hint,
+                          std::shared_ptr<ProfilingContext> profiling_context,
+                          const GraphServiceManager* graph_service_manager);
 
   // Sets up the node at the beginning of CalculatorGraph::Run(). This
   // method is executed before any OpenNode() calls to the nodes
@@ -121,32 +125,32 @@ class CalculatorNode {
   // can be scheduled. source_node_opened_callback is called when a source
   // node is opened. schedule_callback is passed to the InputStreamHandler
   // and is called each time a new invocation can be scheduled.
-  ::mediapipe::Status PrepareForRun(
+  absl::Status PrepareForRun(
       const std::map<std::string, Packet>& all_side_packets,
       const std::map<std::string, Packet>& service_packets,
       std::function<void()> ready_for_open_callback,
       std::function<void()> source_node_opened_callback,
       std::function<void(CalculatorContext*)> schedule_callback,
-      std::function<void(::mediapipe::Status)> error_callback,
-      CounterFactory* counter_factory) LOCKS_EXCLUDED(status_mutex_);
+      std::function<void(absl::Status)> error_callback,
+      CounterFactory* counter_factory) ABSL_LOCKS_EXCLUDED(status_mutex_);
   // Opens the node.
-  ::mediapipe::Status OpenNode() LOCKS_EXCLUDED(status_mutex_);
+  absl::Status OpenNode() ABSL_LOCKS_EXCLUDED(status_mutex_);
   // Called when a source node's layer becomes active.
-  void ActivateNode() LOCKS_EXCLUDED(status_mutex_);
+  void ActivateNode() ABSL_LOCKS_EXCLUDED(status_mutex_);
   // Cleans up the node after the CalculatorGraph has been run. Deletes
   // the Calculator managed by this node. graph_status is the status of
   // the graph run.
-  void CleanupAfterRun(const ::mediapipe::Status& graph_status)
-      LOCKS_EXCLUDED(status_mutex_);
+  void CleanupAfterRun(const absl::Status& graph_status)
+      ABSL_LOCKS_EXCLUDED(status_mutex_);
 
   // Returns true iff PrepareForRun() has been called (and types verified).
-  bool Prepared() const LOCKS_EXCLUDED(status_mutex_);
+  bool Prepared() const ABSL_LOCKS_EXCLUDED(status_mutex_);
   // Returns true iff Open() has been called on the calculator.
-  bool Opened() const LOCKS_EXCLUDED(status_mutex_);
+  bool Opened() const ABSL_LOCKS_EXCLUDED(status_mutex_);
   // Returns true iff a source calculator's layer is active.
-  bool Active() const LOCKS_EXCLUDED(status_mutex_);
+  bool Active() const ABSL_LOCKS_EXCLUDED(status_mutex_);
   // Returns true iff Close() has been called on the calculator.
-  bool Closed() const LOCKS_EXCLUDED(status_mutex_);
+  bool Closed() const ABSL_LOCKS_EXCLUDED(status_mutex_);
 
   // Returns true iff this is a source node.
   //
@@ -166,35 +170,32 @@ class CalculatorNode {
   // then call EndScheduling when finished running it.
   // If false is returned, the scheduler must not execute the node.
   // This method is thread-safe.
-  bool TryToBeginScheduling() LOCKS_EXCLUDED(status_mutex_);
+  bool TryToBeginScheduling() ABSL_LOCKS_EXCLUDED(status_mutex_);
 
   // Subtracts one from current_in_flight_ to allow a new invocation to be
   // scheduled. Then, it checks scheduling_state_ and invokes SchedulingLoop()
   // if necessary. This method is thread-safe.
   // TODO: this could be done implicitly by the call to ProcessNode
   // or CloseNode.
-  void EndScheduling() LOCKS_EXCLUDED(status_mutex_);
+  void EndScheduling() ABSL_LOCKS_EXCLUDED(status_mutex_);
 
   // Returns true if OpenNode() can be scheduled.
-  bool ReadyForOpen() const LOCKS_EXCLUDED(status_mutex_);
+  bool ReadyForOpen() const ABSL_LOCKS_EXCLUDED(status_mutex_);
 
   // Called by the InputStreamHandler when all the input stream headers
   // become available.
-  void InputStreamHeadersReady() LOCKS_EXCLUDED(status_mutex_);
+  void InputStreamHeadersReady() ABSL_LOCKS_EXCLUDED(status_mutex_);
 
   // Called by the InputSidePacketHandler when all the input side packets
   // become available.
-  void InputSidePacketsReady() LOCKS_EXCLUDED(status_mutex_);
+  void InputSidePacketsReady() ABSL_LOCKS_EXCLUDED(status_mutex_);
 
   // Checks scheduling_state_, and then invokes SchedulingLoop() if necessary.
   // This method is thread-safe.
-  void CheckIfBecameReady() LOCKS_EXCLUDED(status_mutex_);
+  void CheckIfBecameReady() ABSL_LOCKS_EXCLUDED(status_mutex_);
 
   // Called by SchedulerQueue when a node is opened.
-  void NodeOpened() LOCKS_EXCLUDED(status_mutex_);
-
-  // Returns whether this is a GPU calculator node.
-  bool UsesGpu() const { return uses_gpu_; }
+  void NodeOpened() ABSL_LOCKS_EXCLUDED(status_mutex_);
 
   // Returns the scheduler queue the node is assigned to.
   internal::SchedulerQueue* GetSchedulerQueue() const {
@@ -218,9 +219,8 @@ class CalculatorNode {
   // Closes the node's calculator and input and output streams.
   // graph_status is the current status of the graph run. graph_run_ended
   // indicates whether the graph run has ended.
-  ::mediapipe::Status CloseNode(const ::mediapipe::Status& graph_status,
-                                bool graph_run_ended)
-      LOCKS_EXCLUDED(status_mutex_);
+  absl::Status CloseNode(const absl::Status& graph_status, bool graph_run_ended)
+      ABSL_LOCKS_EXCLUDED(status_mutex_);
 
   // Returns a pointer to the default calculator context that is used for
   // sequential execution. A source node should always reuse its default
@@ -233,37 +233,42 @@ class CalculatorNode {
     return *calculator_state_;
   }
 
+  // Returns the node's contract.
+  // Must not be called before the CalculatorNode is initialized.
+  const CalculatorContract& Contract() const {
+    return node_type_info_->Contract();
+  }
+
  private:
-  // Sets up the output side packets from the master flat array.
-  ::mediapipe::Status InitializeOutputSidePackets(
+  // Sets up the output side packets from the main flat array.
+  absl::Status InitializeOutputSidePackets(
       const PacketTypeSet& output_side_packet_types,
       OutputSidePacketImpl* output_side_packets);
   // Connects the input side packets as mirrors on the output side packets.
-  // Output side packets are looked up in the master flat array which is
+  // Output side packets are looked up in the main flat array which is
   // provided.
-  ::mediapipe::Status InitializeInputSidePackets(
+  absl::Status InitializeInputSidePackets(
       OutputSidePacketImpl* output_side_packets);
-  // Sets up the output streams from the master flat array.
-  ::mediapipe::Status InitializeOutputStreams(
+  // Sets up the output streams from the main flat array.
+  absl::Status InitializeOutputStreams(
       OutputStreamManager* output_stream_managers);
   // Sets up the input streams and connects them as mirrors on the
   // output streams.  Both input streams and output streams are looked
-  // up in the master flat arrays which are provided.
-  ::mediapipe::Status InitializeInputStreams(
+  // up in the main flat arrays which are provided.
+  absl::Status InitializeInputStreams(
       InputStreamManager* input_stream_managers,
       OutputStreamManager* output_stream_managers);
 
-  ::mediapipe::Status InitializeInputStreamHandler(
+  absl::Status InitializeInputStreamHandler(
       const InputStreamHandlerConfig& handler_config,
       const PacketTypeSet& input_stream_types);
-  ::mediapipe::Status InitializeOutputStreamHandler(
+  absl::Status InitializeOutputStreamHandler(
       const OutputStreamHandlerConfig& handler_config,
       const PacketTypeSet& output_stream_types);
 
   // Connects the input/output stream shards in the given calculator context to
   // the input/output streams of the node.
-  ::mediapipe::Status ConnectShardsToStreams(
-      CalculatorContext* calculator_context);
+  absl::Status ConnectShardsToStreams(CalculatorContext* calculator_context);
 
   // The general scheduling logic shared by EndScheduling() and
   // CheckIfBecameReady().
@@ -274,18 +279,20 @@ class CalculatorNode {
   void SchedulingLoop();
 
   // Closes the input and output streams.
-  void CloseInputStreams() LOCKS_EXCLUDED(status_mutex_);
+  void CloseInputStreams() ABSL_LOCKS_EXCLUDED(status_mutex_);
   void CloseOutputStreams(OutputStreamShardSet* outputs)
-      LOCKS_EXCLUDED(status_mutex_);
-  // Get a std::string describing the input streams.
+      ABSL_LOCKS_EXCLUDED(status_mutex_);
+  // Get a string describing the input streams.
   std::string DebugInputStreamNames() const;
+
+  // Returns true if all outputs will be identical to the previous graph run.
+  bool OutputsAreConstant(CalculatorContext* cc);
 
   // The calculator.
   std::unique_ptr<CalculatorBase> calculator_;
   // Keeps data which a Calculator subclass needs access to.
   std::unique_ptr<CalculatorState> calculator_state_;
 
-  int node_id_ = -1;
   std::string name_;  // Optional user-defined name
   // Name of the executor which the node will execute on. If empty, the node
   // will execute on the default executor.
@@ -301,7 +308,7 @@ class CalculatorNode {
     kStateActive = 3,
     kStateClosed = 4
   };
-  NodeStatus status_ GUARDED_BY(status_mutex_){kStateUninitialized};
+  NodeStatus status_ ABSL_GUARDED_BY(status_mutex_){kStateUninitialized};
 
   // The max number of invocations that can be scheduled in parallel.
   int max_in_flight_ = 1;
@@ -309,7 +316,7 @@ class CalculatorNode {
   // scheduling.
   //
   // The number of invocations that are scheduled but not finished.
-  int current_in_flight_ GUARDED_BY(status_mutex_) = 0;
+  int current_in_flight_ ABSL_GUARDED_BY(status_mutex_) = 0;
   // SchedulingState incidates the current state of the node scheduling process.
   // There are four possible transitions:
   // (a) From kIdle to kScheduling.
@@ -330,14 +337,15 @@ class CalculatorNode {
     kScheduling = 1,  //
     kSchedulingPending = 2
   };
-  SchedulingState scheduling_state_ GUARDED_BY(status_mutex_) = kIdle;
+  SchedulingState scheduling_state_ ABSL_GUARDED_BY(status_mutex_) = kIdle;
 
   std::function<void()> ready_for_open_callback_;
   std::function<void()> source_node_opened_callback_;
-  bool input_stream_headers_ready_called_ GUARDED_BY(status_mutex_) = false;
-  bool input_side_packets_ready_called_ GUARDED_BY(status_mutex_) = false;
-  bool input_stream_headers_ready_ GUARDED_BY(status_mutex_) = false;
-  bool input_side_packets_ready_ GUARDED_BY(status_mutex_) = false;
+  bool input_stream_headers_ready_called_ ABSL_GUARDED_BY(status_mutex_) =
+      false;
+  bool input_side_packets_ready_called_ ABSL_GUARDED_BY(status_mutex_) = false;
+  bool input_stream_headers_ready_ ABSL_GUARDED_BY(status_mutex_) = false;
+  bool input_side_packets_ready_ ABSL_GUARDED_BY(status_mutex_) = false;
 
   // Owns and manages all CalculatorContext objects.
   CalculatorContextManager calculator_context_manager_;
@@ -346,6 +354,9 @@ class CalculatorNode {
 
   // Mutex for node status.
   mutable absl::Mutex status_mutex_;
+
+  // Describes the input side packets required to run this node.
+  std::unique_ptr<PacketTypeSet> input_side_packet_types_;
 
   // Manages the set of input side packets.
   InputSidePacketHandler input_side_packet_handler_;
@@ -357,15 +368,14 @@ class CalculatorNode {
 
   std::unique_ptr<OutputStreamHandler> output_stream_handler_;
 
-  // Whether this is a GPU calculator.
-  bool uses_gpu_ = false;
-
   // True if CleanupAfterRun() needs to call CloseNode().
   bool needs_to_close_ = false;
 
   internal::SchedulerQueue* scheduler_queue_ = nullptr;
 
   const ValidatedGraphConfig* validated_graph_ = nullptr;
+
+  const NodeTypeInfo* node_type_info_ = nullptr;
 };
 
 }  // namespace mediapipe

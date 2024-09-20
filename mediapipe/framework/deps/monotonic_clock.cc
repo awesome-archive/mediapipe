@@ -16,9 +16,10 @@
 
 #include "absl/base/macros.h"
 #include "absl/base/thread_annotations.h"
+#include "absl/log/absl_check.h"
+#include "absl/log/absl_log.h"
 #include "absl/synchronization/mutex.h"
 #include "absl/time/time.h"
-#include "mediapipe/framework/port/logging.h"
 
 namespace mediapipe {
 
@@ -33,7 +34,7 @@ struct MonotonicClock::State {
   Clock* raw_clock;
   absl::Mutex lock;
   // The largest time ever returned by Now().
-  absl::Time max_time GUARDED_BY(lock);
+  absl::Time max_time ABSL_GUARDED_BY(lock);
   explicit State(Clock* clock)
       : raw_clock(clock), max_time(absl::UnixEpoch()) {}
 };
@@ -60,7 +61,7 @@ class MonotonicClockImpl : public MonotonicClock {
 
   // Absolve this object of responsibility for state_.
   void ReleaseState() {
-    CHECK(state_owned_);
+    ABSL_CHECK(state_owned_);
     state_owned_ = false;
   }
 
@@ -80,7 +81,7 @@ class MonotonicClockImpl : public MonotonicClock {
       absl::MutexLock m(&state_->lock);
 
       // Check consistency of internal data with state_.
-      CHECK_LE(last_raw_time_, state_->max_time)
+      ABSL_CHECK_LE(last_raw_time_, state_->max_time)
           << "non-monotonic behavior: last_raw_time_=" << last_raw_time_
           << ", max_time=" << state_->max_time;
 
@@ -107,7 +108,7 @@ class MonotonicClockImpl : public MonotonicClock {
       // First, update correction metrics.
       ++correction_count_;
       absl::Duration delta = state_->max_time - raw_time;
-      CHECK_LT(absl::ZeroDuration(), delta);
+      ABSL_CHECK_LT(absl::ZeroDuration(), delta);
       if (delta > max_correction_) {
         max_correction_ = delta;
       }
@@ -171,13 +172,13 @@ class MonotonicClockImpl : public MonotonicClock {
   // last_raw_time_ remembers the last value obtained from raw_clock_.
   // It prevents spurious calls to ReportCorrection when time moves
   // forward by a smaller amount than a prior backward jump.
-  absl::Time last_raw_time_ GUARDED_BY(state_->lock);
+  absl::Time last_raw_time_ ABSL_GUARDED_BY(state_->lock);
 
   // Variables that keep track of time corrections made by this instance of
   // MonotonicClock.  (All such metrics are instance-local for reasons
   // described earlier.)
-  int correction_count_ GUARDED_BY(state_->lock);
-  absl::Duration max_correction_ GUARDED_BY(state_->lock);
+  int correction_count_ ABSL_GUARDED_BY(state_->lock);
+  absl::Duration max_correction_ ABSL_GUARDED_BY(state_->lock);
 };
 
 // Factory methods.
@@ -205,7 +206,7 @@ MonotonicClock* MonotonicClock::CreateSynchronizedMonotonicClock() {
 
 // Test access methods.
 void MonotonicClockAccess::SynchronizedMonotonicClockReset() {
-  LOG(INFO) << "Resetting SynchronizedMonotonicClock";
+  ABSL_LOG(INFO) << "Resetting SynchronizedMonotonicClock";
   State* sync_state = GlobalSyncState();
   absl::MutexLock m(&sync_state->lock);
   sync_state->max_time = absl::UnixEpoch();

@@ -20,15 +20,19 @@
 #include <string>
 #include <utility>
 
+#include "absl/log/absl_check.h"
+#include "absl/status/status.h"
 #include "mediapipe/framework/calculator_state.h"
 #include "mediapipe/framework/counter.h"
 #include "mediapipe/framework/graph_service.h"
+#include "mediapipe/framework/graph_service_manager.h"
 #include "mediapipe/framework/input_stream_shard.h"
 #include "mediapipe/framework/output_stream_shard.h"
 #include "mediapipe/framework/packet_set.h"
 #include "mediapipe/framework/port.h"
 #include "mediapipe/framework/port/any_proto.h"
 #include "mediapipe/framework/port/status.h"
+#include "mediapipe/framework/resources.h"
 #include "mediapipe/framework/timestamp.h"
 
 namespace mediapipe {
@@ -69,10 +73,19 @@ class CalculatorContext {
     return calculator_state_->Options<T>();
   }
 
+  template <class T>
+  bool HasOptions() const {
+    return calculator_state_->HasOptions<T>();
+  }
+
   // Returns a counter using the graph's counter factory. The counter's name is
   // the passed-in name, prefixed by the calculator node's name (if present) or
   // the calculator's type (if not).
   Counter* GetCounter(const std::string& name);
+
+  // Returns the counter set, which can be used to create new counters.
+  // No prefix is added to counters created in this way.
+  CounterFactory* GetCounterFactory();
 
   // Returns the current input timestamp, or Timestamp::Unset if there are
   // no input packets.
@@ -100,38 +113,56 @@ class CalculatorContext {
   // use OutputStream::SetOffset() directly.
   void SetOffset(TimestampDiff offset);
 
-  // Returns the status of the graph run.
+  // DEPRECATED: This was intended to get graph run status during
+  // `CalculatorBase::Close` call. However, `Close` can run simultaneously with
+  // other calculators `CalculatorBase::Process`, hence the actual graph
+  // status may change any time and returned graph status here does not
+  // necessarily reflect the actual graph status.
   //
-  // NOTE: This method should only be called during CalculatorBase::Close().
-  ::mediapipe::Status GraphStatus() const { return graph_status_; }
+  // As an alternative, instead of checking graph status in `Close` and doing
+  // work for "done" state, you can enable timestamp bound processing for your
+  // calculator (`CalculatorContract::SetProcessTimestampBounds`) to trigger
+  // `Process` on timestamp bound updates and handle "done" state there.
+  // Check examples in:
+  // mediapipe/framework/calculator_graph_summary_packet_test.cc.
+  //
+  ABSL_DEPRECATED("Does not reflect the actual graph status.")
+  absl::Status GraphStatus() const { return graph_status_; }
 
   ProfilingContext* GetProfilingContext() const {
     return calculator_state_->GetSharedProfilingContext().get();
   }
 
   template <typename T>
-  class ServiceBinding {
-   public:
-    bool IsAvailable() {
-      return calculator_state_->IsServiceAvailable(service_);
-    }
-    T& GetObject() { return calculator_state_->GetServiceObject(service_); }
-
-    ServiceBinding(CalculatorState* calculator_state,
-                   const GraphService<T>& service)
-        : calculator_state_(calculator_state), service_(service) {}
-
-   private:
-    CalculatorState* calculator_state_;
-    const GraphService<T>& service_;
-  };
-
-  template <typename T>
   ServiceBinding<T> Service(const GraphService<T>& service) {
-    return ServiceBinding<T>(calculator_state_, service);
+    return ServiceBinding<T>(calculator_state_->GetServiceObject(service));
   }
 
+  // Gets interface to access resources (file system, assets, etc.) from
+  // calculators.
+  //
+  // NOTE: this is the preferred way to access resources from subgraphs and
+  // calculators as it allows for fine grained per graph configuration.
+  //
+  // Resources can be configured by setting a custom `kResourcesService` graph
+  // service on `CalculatorGraph`. The default resources service can be created
+  // and reused through `CreateDefaultResources`.
+  const Resources& GetResources() const {
+    return calculator_state_->GetResources();
+  }
+
+  // Enables access to private GetGraphServiceManager() method.
+  friend class CalculatorGraph;
+
  private:
+  // Returns the graph-level service manager for sharing its services with
+  // calculator-nested MP graphs.
+  // Note: For accessing MP services from a calculator, use the
+  // ServiceBinding<T> Service(kService) method above.
+  const GraphServiceManager* GetGraphServiceManager() const {
+    return calculator_state_->GetGraphServiceManager();
+  }
+
   int NumberOfTimestamps() const {
     return static_cast<int>(input_timestamps_.size());
   }
@@ -144,13 +175,11 @@ class CalculatorContext {
   }
 
   void PopInputTimestamp() {
-    CHECK(!input_timestamps_.empty());
+    ABSL_CHECK(!input_timestamps_.empty());
     input_timestamps_.pop();
   }
 
-  void SetGraphStatus(const ::mediapipe::Status& status) {
-    graph_status_ = status;
-  }
+  void SetGraphStatus(const absl::Status& status) { graph_status_ = status; }
 
   // Interface for the friend class Calculator.
   const InputStreamSet& InputStreams() const;
@@ -161,13 +190,18 @@ class CalculatorContext {
   // TODO: Removes unnecessary fields from CalculatorState after
   // migrating all clients to CalculatorContext.
   CalculatorState* calculator_state_;
+
   InputStreamShardSet inputs_;
   OutputStreamShardSet outputs_;
+  // Created on-demand when needed by legacy APIs. No synchronization needed
+  // because all possible callers are already serialized.
+  mutable std::unique_ptr<InputStreamSet> input_streams_;
+  mutable std::unique_ptr<OutputStreamSet> output_streams_;
   // The queue of timestamp values to Process() in this calculator context.
   std::queue<Timestamp> input_timestamps_;
 
   // The status of the graph run. Only used when Close() is called.
-  ::mediapipe::Status graph_status_;
+  absl::Status graph_status_;
 
   // Accesses CalculatorContext for setting input timestamp.
   friend class CalculatorContextManager;

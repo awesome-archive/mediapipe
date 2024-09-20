@@ -40,13 +40,13 @@ class OutputStreamManager {
   OutputStreamManager() = default;
 
   // Initializes the OutputStreamManager.
-  ::mediapipe::Status Initialize(const std::string& name,
-                                 const PacketType* packet_type);
+  absl::Status Initialize(const std::string& name,
+                          const PacketType* packet_type);
 
   // Prepares this for processing. If an error occurs in a user called function
   // (such as AddPacket()) then error_callback will be called before returning
   // control to the user.
-  void PrepareForRun(std::function<void(::mediapipe::Status)> error_callback);
+  void PrepareForRun(std::function<void(absl::Status)> error_callback);
 
   // Gets the stream name.
   const std::string& Name() const { return output_stream_spec_.name; }
@@ -85,8 +85,7 @@ class OutputStreamManager {
 
   // Computes the output timestamp bound based on the input timestamp, the
   // timestamp of the last added packet, and the next timestamp bound from
-  // the OutputStreamShard. See the timestamp mapping section in
-  // go/mediapipe-bounds for details.
+  // the OutputStreamShard.
   // The function is invoked by OutputStreamHandler after the calculator node
   // finishes a call to Calculator::Process().
   Timestamp ComputeOutputTimestampBound(
@@ -101,6 +100,7 @@ class OutputStreamManager {
   void ResetShard(OutputStreamShard* output_stream_shard);
 
   OutputStreamSpec* Spec() { return &output_stream_spec_; }
+  const OutputStreamSpec* Spec() const { return &output_stream_spec_; }
 
  private:
   // The necessary information to locate an InputStreamImpl.
@@ -118,8 +118,8 @@ class OutputStreamManager {
   std::vector<Mirror> mirrors_;
 
   mutable absl::Mutex stream_mutex_;
-  Timestamp next_timestamp_bound_ GUARDED_BY(stream_mutex_);
-  bool closed_ GUARDED_BY(stream_mutex_);
+  Timestamp next_timestamp_bound_ ABSL_GUARDED_BY(stream_mutex_);
+  bool closed_ ABSL_GUARDED_BY(stream_mutex_);
 };
 
 }  // namespace mediapipe

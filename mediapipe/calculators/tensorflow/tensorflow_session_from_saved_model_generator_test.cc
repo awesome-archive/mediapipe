@@ -12,7 +12,10 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
-#include "absl/strings/substitute.h"
+#include <cstdint>
+
+#include "absl/strings/str_replace.h"
+#include "google/protobuf/text_format.h"
 #include "mediapipe/calculators/tensorflow/tensorflow_session.h"
 #include "mediapipe/calculators/tensorflow/tensorflow_session_from_saved_model_generator.pb.h"
 #include "mediapipe/framework/calculator_framework.h"
@@ -25,29 +28,43 @@
 #include "mediapipe/framework/port/status_matchers.h"
 #include "mediapipe/framework/tool/tag_map_helper.h"
 #include "mediapipe/framework/tool/validate_type.h"
+#include "tensorflow/core/framework/device_attributes.pb.h"
+#include "testing/base/public/gunit.h"
 
 namespace mediapipe {
 
+using ::testing::status::StatusIs;
 namespace {
 
 namespace tf = ::tensorflow;
 
+constexpr char kStringSavedModelPathTag[] = "STRING_SAVED_MODEL_PATH";
+constexpr char kStringSignatureNameTag[] = "STRING_SIGNATURE_NAME";
+constexpr char kSessionTag[] = "SESSION";
+
 std::string GetSavedModelDir() {
-  std::string out_path =
-      file::JoinPath("./", "mediapipe/calculators/tensorflow/testdata/",
-                     "tensorflow_saved_model/00000000");
+  std::string out_path = file::JoinPath(
+      ::testing::SrcDir(), "mediapipe/calculators/tensorflow/testdata/",
+      "tensorflow_saved_model/00000000");
   return out_path;
 }
 
 // Helper function that creates Tensor INT32 matrix with size 1x3.
 tf::Tensor TensorMatrix1x3(const int v1, const int v2, const int v3) {
   tf::Tensor tensor(tf::DT_INT32,
-                    tf::TensorShape(std::vector<tf::int64>({1, 3})));
-  auto matrix = tensor.matrix<int32>();
+                    tf::TensorShape(std::vector<int64_t>({1, 3})));
+  auto matrix = tensor.matrix<int32_t>();
   matrix(0, 0) = v1;
   matrix(0, 1) = v2;
   matrix(0, 2) = v3;
   return tensor;
+}
+
+std::string PrintOptionsAsTextProto(
+    const TensorFlowSessionFromSavedModelGeneratorOptions& options) {
+  std::string text_proto;
+  google::protobuf::TextFormat::PrintToString(options, &text_proto);
+  return text_proto;
 }
 
 class TensorFlowSessionFromSavedModelGeneratorTest : public ::testing::Test {
@@ -65,15 +82,15 @@ class TensorFlowSessionFromSavedModelGeneratorTest : public ::testing::Test {
 
 TEST_F(TensorFlowSessionFromSavedModelGeneratorTest,
        CreatesPacketWithGraphAndBindings) {
-  PacketSet input_side_packets(tool::CreateTagMap({}).ValueOrDie());
+  PacketSet input_side_packets(tool::CreateTagMap({}).value());
   PacketSet output_side_packets(
-      tool::CreateTagMap({"SESSION:session"}).ValueOrDie());
-  ::mediapipe::Status run_status = tool::RunGenerateAndValidateTypes(
+      tool::CreateTagMap({"SESSION:session"}).value());
+  absl::Status run_status = tool::RunGenerateAndValidateTypes(
       "TensorFlowSessionFromSavedModelGenerator", extendable_options_,
       input_side_packets, &output_side_packets);
-  MEDIAPIPE_EXPECT_OK(run_status) << run_status.message();
+  MP_EXPECT_OK(run_status) << run_status.message();
   const TensorFlowSession& session =
-      output_side_packets.Tag("SESSION").Get<TensorFlowSession>();
+      output_side_packets.Tag(kSessionTag).Get<TensorFlowSession>();
   // Session must be set.
   ASSERT_NE(session.session, nullptr);
 
@@ -104,20 +121,61 @@ TEST_F(TensorFlowSessionFromSavedModelGeneratorTest,
        CreateSessionFromSidePacket) {
   generator_options_->clear_saved_model_path();
   PacketSet input_side_packets(
-      tool::CreateTagMap({"STRING_SAVED_MODEL_PATH:saved_model_dir"})
-          .ValueOrDie());
-  input_side_packets.Tag("STRING_SAVED_MODEL_PATH") =
+      tool::CreateTagMap({"STRING_SAVED_MODEL_PATH:saved_model_dir"}).value());
+  input_side_packets.Tag(kStringSavedModelPathTag) =
       Adopt(new std::string(GetSavedModelDir()));
   PacketSet output_side_packets(
-      tool::CreateTagMap({"SESSION:session"}).ValueOrDie());
-  ::mediapipe::Status run_status = tool::RunGenerateAndValidateTypes(
+      tool::CreateTagMap({"SESSION:session"}).value());
+  absl::Status run_status = tool::RunGenerateAndValidateTypes(
       "TensorFlowSessionFromSavedModelGenerator", extendable_options_,
       input_side_packets, &output_side_packets);
-  MEDIAPIPE_EXPECT_OK(run_status) << run_status.message();
+  MP_EXPECT_OK(run_status) << run_status.message();
   const TensorFlowSession& session =
-      output_side_packets.Tag("SESSION").Get<TensorFlowSession>();
+      output_side_packets.Tag(kSessionTag).Get<TensorFlowSession>();
   // Session must be set.
   ASSERT_NE(session.session, nullptr);
+}
+
+TEST_F(TensorFlowSessionFromSavedModelGeneratorTest,
+       CreateSessionFromSidePacketWithCorrectSignatureName) {
+  generator_options_->clear_saved_model_path();
+  PacketSet input_side_packets(
+      tool::CreateTagMap({"STRING_SAVED_MODEL_PATH:saved_model_dir",
+                          "STRING_SIGNATURE_NAME:signature_name"})
+          .value());
+  input_side_packets.Tag(kStringSavedModelPathTag) =
+      Adopt(new std::string(GetSavedModelDir()));
+  input_side_packets.Tag(kStringSignatureNameTag) =
+      Adopt(new std::string("serving_default"));
+  PacketSet output_side_packets(
+      tool::CreateTagMap({"SESSION:session"}).value());
+  absl::Status run_status = tool::RunGenerateAndValidateTypes(
+      "TensorFlowSessionFromSavedModelGenerator", extendable_options_,
+      input_side_packets, &output_side_packets);
+  MP_EXPECT_OK(run_status) << run_status.message();
+  const TensorFlowSession& session =
+      output_side_packets.Tag(kSessionTag).Get<TensorFlowSession>();
+  // Session must be set.
+  ASSERT_NE(session.session, nullptr);
+}
+
+TEST_F(TensorFlowSessionFromSavedModelGeneratorTest,
+       CreateSessionFromSidePacketWithWrongSignatureName) {
+  generator_options_->clear_saved_model_path();
+  PacketSet input_side_packets(
+      tool::CreateTagMap({"STRING_SAVED_MODEL_PATH:saved_model_dir",
+                          "STRING_SIGNATURE_NAME:signature_name"})
+          .value());
+  input_side_packets.Tag(kStringSavedModelPathTag) =
+      Adopt(new std::string(GetSavedModelDir()));
+  input_side_packets.Tag(kStringSignatureNameTag) =
+      Adopt(new std::string("wrong_signature_name"));
+  PacketSet output_side_packets(
+      tool::CreateTagMap({"SESSION:session"}).value());
+  absl::Status run_status = tool::RunGenerateAndValidateTypes(
+      "TensorFlowSessionFromSavedModelGenerator", extendable_options_,
+      input_side_packets, &output_side_packets);
+  EXPECT_THAT(run_status, StatusIs(absl::StatusCode::kNotFound));
 }
 
 // Integration test. Verifies that TensorFlowInferenceCalculator correctly
@@ -125,7 +183,7 @@ TEST_F(TensorFlowSessionFromSavedModelGeneratorTest,
 TEST_F(TensorFlowSessionFromSavedModelGeneratorTest,
        ProducesPacketUsableByTensorFlowInferenceCalculator) {
   CalculatorGraphConfig graph_config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(
           absl::Substitute(R"(
       node {
         calculator: "TensorFlowInferenceCalculator"
@@ -151,20 +209,20 @@ TEST_F(TensorFlowSessionFromSavedModelGeneratorTest,
       }
       input_stream: "a_tensor"
   )",
-                           generator_options_->DebugString()));
+                           PrintOptionsAsTextProto(*generator_options_)));
 
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(graph_config));
+  MP_ASSERT_OK(graph.Initialize(graph_config));
   StatusOrPoller status_or_poller =
       graph.AddOutputStreamPoller("multiplied_tensor");
   ASSERT_TRUE(status_or_poller.ok());
-  OutputStreamPoller poller = std::move(status_or_poller.ValueOrDie());
+  OutputStreamPoller poller = std::move(status_or_poller.value());
 
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
-  MEDIAPIPE_ASSERT_OK(graph.AddPacketToInputStream(
+  MP_ASSERT_OK(graph.StartRun({}));
+  MP_ASSERT_OK(graph.AddPacketToInputStream(
       "a_tensor",
       Adopt(new auto(TensorMatrix1x3(1, -1, 10))).At(Timestamp(0))));
-  MEDIAPIPE_ASSERT_OK(graph.CloseInputStream("a_tensor"));
+  MP_ASSERT_OK(graph.CloseInputStream("a_tensor"));
 
   Packet packet;
   ASSERT_TRUE(poller.Next(&packet));
@@ -174,7 +232,7 @@ TEST_F(TensorFlowSessionFromSavedModelGeneratorTest,
             packet.Get<tf::Tensor>().DebugString());
 
   ASSERT_FALSE(poller.Next(&packet));
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
+  MP_ASSERT_OK(graph.WaitUntilDone());
 }
 
 TEST_F(TensorFlowSessionFromSavedModelGeneratorTest,
@@ -183,17 +241,41 @@ TEST_F(TensorFlowSessionFromSavedModelGeneratorTest,
       std::string(file::SplitPath(GetSavedModelDir()).first));
   generator_options_->set_load_latest_model(true);
 
-  PacketSet input_side_packets(tool::CreateTagMap({}).ValueOrDie());
+  PacketSet input_side_packets(tool::CreateTagMap({}).value());
   PacketSet output_side_packets(
-      tool::CreateTagMap({"SESSION:session"}).ValueOrDie());
-  ::mediapipe::Status run_status = tool::RunGenerateAndValidateTypes(
+      tool::CreateTagMap({"SESSION:session"}).value());
+  absl::Status run_status = tool::RunGenerateAndValidateTypes(
       "TensorFlowSessionFromSavedModelGenerator", extendable_options_,
       input_side_packets, &output_side_packets);
-  MEDIAPIPE_EXPECT_OK(run_status) << run_status.message();
+  MP_EXPECT_OK(run_status) << run_status.message();
   const TensorFlowSession& session =
-      output_side_packets.Tag("SESSION").Get<TensorFlowSession>();
+      output_side_packets.Tag(kSessionTag).Get<TensorFlowSession>();
   // Session must be set.
   ASSERT_NE(session.session, nullptr);
+}
+
+TEST_F(TensorFlowSessionFromSavedModelGeneratorTest,
+       ConfiguresSessionGivenConfig) {
+  generator_options_->set_saved_model_path(
+      std::string(file::SplitPath(GetSavedModelDir()).first));
+  generator_options_->set_load_latest_model(true);
+  generator_options_->mutable_session_config()->mutable_device_count()->insert(
+      {"CPU", 10});
+
+  PacketSet input_side_packets(tool::CreateTagMap({}).value());
+  PacketSet output_side_packets(
+      tool::CreateTagMap({"SESSION:session"}).value());
+  absl::Status run_status = tool::RunGenerateAndValidateTypes(
+      "TensorFlowSessionFromSavedModelGenerator", extendable_options_,
+      input_side_packets, &output_side_packets);
+  MP_EXPECT_OK(run_status) << run_status.message();
+  const TensorFlowSession& session =
+      output_side_packets.Tag(kSessionTag).Get<TensorFlowSession>();
+  // Session must be set.
+  ASSERT_NE(session.session, nullptr);
+  std::vector<tensorflow::DeviceAttributes> devices;
+  ASSERT_EQ(session.session->ListDevices(&devices), absl::OkStatus());
+  EXPECT_THAT(devices.size(), 10);
 }
 
 }  // namespace

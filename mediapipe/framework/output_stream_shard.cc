@@ -14,6 +14,7 @@
 
 #include "mediapipe/framework/output_stream_shard.h"
 
+#include "absl/log/absl_check.h"
 #include "mediapipe/framework/port/source_location.h"
 #include "mediapipe/framework/port/status.h"
 #include "mediapipe/framework/port/status_builder.h"
@@ -23,7 +24,7 @@ namespace mediapipe {
 OutputStreamShard::OutputStreamShard() : closed_(false) {}
 
 void OutputStreamShard::SetSpec(OutputStreamSpec* output_stream_spec) {
-  CHECK(output_stream_spec);
+  ABSL_CHECK(output_stream_spec);
   output_stream_spec_ = output_stream_spec;
 }
 
@@ -34,17 +35,19 @@ const std::string& OutputStreamShard::Name() const {
 void OutputStreamShard::SetNextTimestampBound(Timestamp bound) {
   if (!bound.IsAllowedInStream() && bound != Timestamp::OneOverPostStream()) {
     output_stream_spec_->TriggerErrorCallback(
-        ::mediapipe::InvalidArgumentErrorBuilder(MEDIAPIPE_LOC)
+        mediapipe::InvalidArgumentErrorBuilder(MEDIAPIPE_LOC)
         << "In stream \"" << Name()
         << "\", timestamp bound set to illegal value: " << bound.DebugString());
     return;
   }
   next_timestamp_bound_ = bound;
+  updated_next_timestamp_bound_ = next_timestamp_bound_;
 }
 
 void OutputStreamShard::Close() {
   closed_ = true;
   next_timestamp_bound_ = Timestamp::Done();
+  updated_next_timestamp_bound_ = next_timestamp_bound_;
 }
 
 bool OutputStreamShard::IsClosed() const { return closed_; }
@@ -52,7 +55,7 @@ bool OutputStreamShard::IsClosed() const { return closed_; }
 void OutputStreamShard::SetOffset(TimestampDiff offset) {
   if (output_stream_spec_->locked_intro_data) {
     output_stream_spec_->TriggerErrorCallback(
-        ::mediapipe::FailedPreconditionErrorBuilder(MEDIAPIPE_LOC)
+        mediapipe::FailedPreconditionErrorBuilder(MEDIAPIPE_LOC)
         << "SetOffset must be called from Calculator::Open(). Stream: \""
         << output_stream_spec_->name << "\".");
     return;
@@ -64,7 +67,7 @@ void OutputStreamShard::SetOffset(TimestampDiff offset) {
 void OutputStreamShard::SetHeader(const Packet& header) {
   if (closed_) {
     output_stream_spec_->TriggerErrorCallback(
-        ::mediapipe::FailedPreconditionErrorBuilder(MEDIAPIPE_LOC)
+        mediapipe::FailedPreconditionErrorBuilder(MEDIAPIPE_LOC)
         << "SetHeader must be called before the stream is closed. Stream: \""
         << output_stream_spec_->name << "\".");
     return;
@@ -72,7 +75,7 @@ void OutputStreamShard::SetHeader(const Packet& header) {
 
   if (output_stream_spec_->locked_intro_data) {
     output_stream_spec_->TriggerErrorCallback(
-        ::mediapipe::FailedPreconditionErrorBuilder(MEDIAPIPE_LOC)
+        mediapipe::FailedPreconditionErrorBuilder(MEDIAPIPE_LOC)
         << "SetHeader must be called from Calculator::Open(). Stream: \""
         << output_stream_spec_->name << "\".");
     return;
@@ -92,26 +95,26 @@ const Packet& OutputStreamShard::Header() const {
 // binary.  This function can be defined in the .cc file because only two
 // versions are ever instantiated, and all call sites are within this .cc file.
 template <typename T>
-Status OutputStreamShard::AddPacketInternal(T&& packet) {
+absl::Status OutputStreamShard::AddPacketInternal(T&& packet) {
   if (IsClosed()) {
-    return ::mediapipe::FailedPreconditionErrorBuilder(MEDIAPIPE_LOC)
+    return mediapipe::FailedPreconditionErrorBuilder(MEDIAPIPE_LOC)
            << "Packet sent to closed stream \"" << Name() << "\".";
   }
 
   if (packet.IsEmpty()) {
-    return ::mediapipe::InvalidArgumentErrorBuilder(MEDIAPIPE_LOC)
-           << "Empty packet sent to stream \"" << Name() << "\".";
+    SetNextTimestampBound(packet.Timestamp().NextAllowedInStream());
+    return absl::OkStatus();
   }
 
   const Timestamp timestamp = packet.Timestamp();
   if (!timestamp.IsAllowedInStream()) {
-    return ::mediapipe::InvalidArgumentErrorBuilder(MEDIAPIPE_LOC)
+    return mediapipe::InvalidArgumentErrorBuilder(MEDIAPIPE_LOC)
            << "In stream \"" << Name()
            << "\", timestamp not specified or set to illegal value: "
            << timestamp.DebugString();
   }
 
-  Status result = output_stream_spec_->packet_type->Validate(packet);
+  absl::Status result = output_stream_spec_->packet_type->Validate(packet);
   if (!result.ok()) {
     return StatusBuilder(result, MEDIAPIPE_LOC).SetPrepend() << absl::StrCat(
                "Packet type mismatch on calculator outputting to stream \"",
@@ -122,21 +125,22 @@ Status OutputStreamShard::AddPacketInternal(T&& packet) {
   // Otherwise, moves the packet into output_queue_.
   output_queue_.push_back(std::forward<T>(packet));
   next_timestamp_bound_ = timestamp.NextAllowedInStream();
+  updated_next_timestamp_bound_ = next_timestamp_bound_;
 
   // TODO debug log?
 
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 void OutputStreamShard::AddPacket(const Packet& packet) {
-  Status status = AddPacketInternal(packet);
+  absl::Status status = AddPacketInternal(packet);
   if (!status.ok()) {
     output_stream_spec_->TriggerErrorCallback(status);
   }
 }
 
 void OutputStreamShard::AddPacket(Packet&& packet) {
-  Status status = AddPacketInternal(std::move(packet));
+  absl::Status status = AddPacketInternal(std::move(packet));
   if (!status.ok()) {
     output_stream_spec_->TriggerErrorCallback(status);
   }
@@ -152,6 +156,7 @@ Timestamp OutputStreamShard::LastAddedPacketTimestamp() const {
 void OutputStreamShard::Reset(Timestamp next_timestamp_bound, bool close) {
   output_queue_.clear();
   next_timestamp_bound_ = next_timestamp_bound;
+  updated_next_timestamp_bound_ = Timestamp::Unset();
   closed_ = close;
 }
 

@@ -14,12 +14,16 @@
 
 #include "mediapipe/framework/calculator_node.h"
 
+#include <memory>
 #include <set>
 #include <string>
 #include <unordered_map>
 #include <utility>
 
+#include "absl/log/absl_check.h"
+#include "absl/log/absl_log.h"
 #include "absl/memory/memory.h"
+#include "absl/status/status.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
 #include "absl/strings/string_view.h"
@@ -27,8 +31,9 @@
 #include "absl/synchronization/mutex.h"
 #include "mediapipe/framework/calculator.pb.h"
 #include "mediapipe/framework/calculator_base.h"
-#include "mediapipe/framework/calculator_registry_util.h"
+#include "mediapipe/framework/calculator_state.h"
 #include "mediapipe/framework/counter_factory.h"
+#include "mediapipe/framework/graph_service_manager.h"
 #include "mediapipe/framework/input_stream_manager.h"
 #include "mediapipe/framework/mediapipe_profiling.h"
 #include "mediapipe/framework/output_stream_manager.h"
@@ -42,10 +47,10 @@
 #include "mediapipe/framework/port/source_location.h"
 #include "mediapipe/framework/port/status_builder.h"
 #include "mediapipe/framework/timestamp.h"
+#include "mediapipe/framework/tool/name_util.h"
 #include "mediapipe/framework/tool/status_util.h"
 #include "mediapipe/framework/tool/tag_map.h"
 #include "mediapipe/framework/tool/validate_name.h"
-#include "mediapipe/gpu/graph_support.h"
 
 namespace mediapipe {
 
@@ -59,8 +64,54 @@ const PacketType* GetPacketType(const PacketTypeSet& packet_type_set,
   } else {
     id = packet_type_set.GetId(tag, 0);
   }
-  CHECK(id.IsValid()) << "Internal mediapipe error.";
+  ABSL_CHECK(id.IsValid()) << "Internal mediapipe error.";
   return &packet_type_set.Get(id);
+}
+
+// Copies a TagMap omitting entries with certain names.
+std::shared_ptr<tool::TagMap> RemoveNames(const tool::TagMap& tag_map,
+                                          std::set<std::string> names) {
+  auto tag_index_names = tag_map.CanonicalEntries();
+  for (auto id = tag_map.EndId() - 1; id >= tag_map.BeginId(); --id) {
+    std::string name = tag_map.Names()[id.value()];
+    if (names.count(name) > 0) {
+      tag_index_names.erase(tag_index_names.begin() + id.value());
+    }
+  }
+  return tool::TagMap::Create(tag_index_names).value();
+}
+
+// Copies matching entries from another Collection.
+template <class CollectionType>
+void CopyCollection(const CollectionType& other, CollectionType* result) {
+  auto tag_map = result->TagMap();
+  for (auto id = tag_map->BeginId(); id != tag_map->EndId(); ++id) {
+    auto tag_index = tag_map->TagAndIndexFromId(id);
+    auto other_id = other.GetId(tag_index.first, tag_index.second);
+    if (other_id.IsValid()) {
+      result->Get(id) = other.Get(other_id);
+    }
+  }
+}
+
+// Copies packet types omitting entries that are optional and not provided.
+std::unique_ptr<PacketTypeSet> RemoveOmittedPacketTypes(
+    const PacketTypeSet& packet_types,
+    const std::map<std::string, Packet>& all_side_packets,
+    const ValidatedGraphConfig* validated_graph) {
+  std::set<std::string> omitted_names;
+  for (auto id = packet_types.BeginId(); id != packet_types.EndId(); ++id) {
+    std::string name = packet_types.TagMap()->Names()[id.value()];
+    if (packet_types.Get(id).IsOptional() &&
+        validated_graph->IsExternalSidePacket(name) &&
+        all_side_packets.count(name) == 0) {
+      omitted_names.insert(name);
+    }
+  }
+  auto tag_map = RemoveNames(*packet_types.TagMap(), omitted_names);
+  auto result = std::make_unique<PacketTypeSet>(tag_map);
+  CopyCollection(packet_types, result.get());
+  return result;
 }
 
 }  // namespace
@@ -72,109 +123,123 @@ Timestamp CalculatorNode::SourceProcessOrder(
   return calculator_->SourceProcessOrder(cc);
 }
 
-::mediapipe::Status CalculatorNode::Initialize(
-    const ValidatedGraphConfig* validated_graph, int node_id,
+absl::Status CalculatorNode::Initialize(
+    const ValidatedGraphConfig* validated_graph, NodeTypeInfo::NodeRef node_ref,
     InputStreamManager* input_stream_managers,
     OutputStreamManager* output_stream_managers,
     OutputSidePacketImpl* output_side_packets, int* buffer_size_hint,
-    std::shared_ptr<ProfilingContext> profiling_context) {
+    std::shared_ptr<ProfilingContext> profiling_context,
+    const GraphServiceManager* graph_service_manager) {
   RET_CHECK(buffer_size_hint) << "buffer_size_hint is NULL";
-  node_id_ = node_id;
   validated_graph_ = validated_graph;
   profiling_context_ = profiling_context;
 
-  const CalculatorGraphConfig::Node& node_config =
-      validated_graph_->Config().node(node_id_);
-  name_ = CanonicalNodeName(validated_graph_->Config(), node_id_);
-
-  max_in_flight_ = node_config.max_in_flight();
-  max_in_flight_ = max_in_flight_ ? max_in_flight_ : 1;
-  if (!node_config.executor().empty()) {
-    executor_ = node_config.executor();
+  const CalculatorGraphConfig::Node* node_config;
+  if (node_ref.type == NodeTypeInfo::NodeType::CALCULATOR) {
+    node_config = &validated_graph_->Config().node(node_ref.index);
+    name_ = tool::CanonicalNodeName(validated_graph_->Config(), node_ref.index);
+    node_type_info_ = &validated_graph_->CalculatorInfos()[node_ref.index];
+  } else if (node_ref.type == NodeTypeInfo::NodeType::PACKET_GENERATOR) {
+    const PacketGeneratorConfig& pg_config =
+        validated_graph_->Config().packet_generator(node_ref.index);
+    name_ = absl::StrCat("__pg_", node_ref.index, "_",
+                         pg_config.packet_generator());
+    node_type_info_ = &validated_graph_->GeneratorInfos()[node_ref.index];
+    node_config = &node_type_info_->Contract().GetWrapperConfig();
+  } else {
+    return absl::InvalidArgumentError(
+        "node_ref is not a calculator or packet generator");
   }
-  source_layer_ = node_config.source_layer();
 
-  const NodeTypeInfo& node_type_info =
-      validated_graph_->CalculatorInfos()[node_id_];
+  max_in_flight_ = node_config->max_in_flight();
+  max_in_flight_ = max_in_flight_ ? max_in_flight_ : 1;
+  if (!node_config->executor().empty()) {
+    executor_ = node_config->executor();
+  }
+  source_layer_ = node_config->source_layer();
 
-  uses_gpu_ =
-      node_type_info.InputSidePacketTypes().HasTag(kGpuSharedTagName) ||
-      ContainsKey(node_type_info.Contract().ServiceRequests(), kGpuService.key);
+  const CalculatorContract& contract = node_type_info_->Contract();
 
   // TODO Propagate types between calculators when SetAny is used.
 
-  RETURN_IF_ERROR(InitializeOutputSidePackets(
-      node_type_info.OutputSidePacketTypes(), output_side_packets));
+  MP_RETURN_IF_ERROR(InitializeOutputSidePackets(
+      node_type_info_->OutputSidePacketTypes(), output_side_packets));
 
-  RETURN_IF_ERROR(InitializeInputSidePackets(output_side_packets));
+  MP_RETURN_IF_ERROR(InitializeInputSidePackets(output_side_packets));
 
-  RETURN_IF_ERROR(InitializeOutputStreamHandler(
-      node_config.output_stream_handler(), node_type_info.OutputStreamTypes()));
-  RETURN_IF_ERROR(InitializeOutputStreams(output_stream_managers));
+  MP_RETURN_IF_ERROR(
+      InitializeOutputStreamHandler(node_config->output_stream_handler(),
+                                    node_type_info_->OutputStreamTypes()));
+  MP_RETURN_IF_ERROR(InitializeOutputStreams(output_stream_managers));
 
-  calculator_state_ = absl::make_unique<CalculatorState>(
-      name_, node_id_, node_config.calculator(), node_config,
-      profiling_context_);
+  calculator_state_ = std::make_unique<CalculatorState>(
+      name_, node_ref.index, node_config->calculator(), *node_config,
+      profiling_context_, graph_service_manager);
 
   // Inform the scheduler that this node has buffering behavior and that the
   // maximum input queue size should be adjusted accordingly.
-  *buffer_size_hint = node_config.buffer_size_hint();
+  *buffer_size_hint = node_config->buffer_size_hint();
 
   calculator_context_manager_.Initialize(
-      calculator_state_.get(), node_type_info.InputStreamTypes().TagMap(),
-      node_type_info.OutputStreamTypes().TagMap(),
+      calculator_state_.get(), node_type_info_->InputStreamTypes().TagMap(),
+      node_type_info_->OutputStreamTypes().TagMap(),
       /*calculator_run_in_parallel=*/max_in_flight_ > 1);
 
   // The graph specified InputStreamHandler takes priority.
   const bool graph_specified =
-      node_config.input_stream_handler().has_input_stream_handler();
-  const bool calc_specified = !(node_type_info.GetInputStreamHandler().empty());
+      node_config->input_stream_handler().has_input_stream_handler();
+  const bool calc_specified =
+      !(node_type_info_->GetInputStreamHandler().empty());
 
   // Only use calculator ISH if available, and if the graph ISH is not set.
   InputStreamHandlerConfig handler_config;
   const bool use_calc_specified = calc_specified && !graph_specified;
   if (use_calc_specified) {
     *(handler_config.mutable_input_stream_handler()) =
-        node_type_info.GetInputStreamHandler();
+        node_type_info_->GetInputStreamHandler();
     *(handler_config.mutable_options()) =
-        node_type_info.GetInputStreamHandlerOptions();
+        node_type_info_->GetInputStreamHandlerOptions();
   }
 
   // Use calculator or graph specified InputStreamHandler, or the default ISH
   // already set from graph.
-  RETURN_IF_ERROR(InitializeInputStreamHandler(
-      use_calc_specified ? handler_config : node_config.input_stream_handler(),
-      node_type_info.InputStreamTypes()));
+  MP_RETURN_IF_ERROR(InitializeInputStreamHandler(
+      use_calc_specified ? handler_config : node_config->input_stream_handler(),
+      node_type_info_->InputStreamTypes()));
+
+  for (auto& stream : output_stream_handler_->OutputStreams()) {
+    stream->Spec()->offset_enabled =
+        (contract.GetTimestampOffset() != TimestampDiff::Unset());
+    stream->Spec()->offset = contract.GetTimestampOffset();
+  }
+  input_stream_handler_->SetProcessTimestampBounds(
+      contract.GetProcessTimestampBounds());
 
   return InitializeInputStreams(input_stream_managers, output_stream_managers);
 }
 
-::mediapipe::Status CalculatorNode::InitializeOutputSidePackets(
+absl::Status CalculatorNode::InitializeOutputSidePackets(
     const PacketTypeSet& output_side_packet_types,
     OutputSidePacketImpl* output_side_packets) {
   output_side_packets_ =
       absl::make_unique<OutputSidePacketSet>(output_side_packet_types.TagMap());
-  const NodeTypeInfo& node_type_info =
-      validated_graph_->CalculatorInfos()[node_id_];
-  int base_index = node_type_info.OutputSidePacketBaseIndex();
+  int base_index = node_type_info_->OutputSidePacketBaseIndex();
   RET_CHECK_LE(0, base_index);
   for (CollectionItemId id = output_side_packets_->BeginId();
        id < output_side_packets_->EndId(); ++id) {
     output_side_packets_->GetPtr(id) =
         &output_side_packets[base_index + id.value()];
   }
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-::mediapipe::Status CalculatorNode::InitializeInputSidePackets(
+absl::Status CalculatorNode::InitializeInputSidePackets(
     OutputSidePacketImpl* output_side_packets) {
-  const NodeTypeInfo& node_type_info =
-      validated_graph_->CalculatorInfos()[node_id_];
-  int base_index = node_type_info.InputSidePacketBaseIndex();
+  int base_index = node_type_info_->InputSidePacketBaseIndex();
   RET_CHECK_LE(0, base_index);
   // Set all the mirrors.
-  for (CollectionItemId id = node_type_info.InputSidePacketTypes().BeginId();
-       id < node_type_info.InputSidePacketTypes().EndId(); ++id) {
+  for (CollectionItemId id = node_type_info_->InputSidePacketTypes().BeginId();
+       id < node_type_info_->InputSidePacketTypes().EndId(); ++id) {
     int output_side_packet_index =
         validated_graph_->InputSidePacketInfos()[base_index + id.value()]
             .upstream;
@@ -191,40 +256,36 @@ Timestamp CalculatorNode::SourceProcessOrder(
             << output_side_packet_index;
     origin_output_side_packet->AddMirror(&input_side_packet_handler_, id);
   }
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-::mediapipe::Status CalculatorNode::InitializeOutputStreams(
+absl::Status CalculatorNode::InitializeOutputStreams(
     OutputStreamManager* output_stream_managers) {
   RET_CHECK(output_stream_managers) << "output_stream_managers is NULL";
-  const NodeTypeInfo& node_type_info =
-      validated_graph_->CalculatorInfos()[node_id_];
-  RET_CHECK_LE(0, node_type_info.OutputStreamBaseIndex());
+  RET_CHECK_LE(0, node_type_info_->OutputStreamBaseIndex());
   OutputStreamManager* current_output_stream_managers =
-      &output_stream_managers[node_type_info.OutputStreamBaseIndex()];
+      &output_stream_managers[node_type_info_->OutputStreamBaseIndex()];
   return output_stream_handler_->InitializeOutputStreamManagers(
       current_output_stream_managers);
 }
 
-::mediapipe::Status CalculatorNode::InitializeInputStreams(
+absl::Status CalculatorNode::InitializeInputStreams(
     InputStreamManager* input_stream_managers,
     OutputStreamManager* output_stream_managers) {
   RET_CHECK(input_stream_managers) << "input_stream_managers is NULL";
   RET_CHECK(output_stream_managers) << "output_stream_managers is NULL";
-  const NodeTypeInfo& node_type_info =
-      validated_graph_->CalculatorInfos()[node_id_];
-  RET_CHECK_LE(0, node_type_info.InputStreamBaseIndex());
+  RET_CHECK_LE(0, node_type_info_->InputStreamBaseIndex());
   InputStreamManager* current_input_stream_managers =
-      &input_stream_managers[node_type_info.InputStreamBaseIndex()];
-  RETURN_IF_ERROR(input_stream_handler_->InitializeInputStreamManagers(
+      &input_stream_managers[node_type_info_->InputStreamBaseIndex()];
+  MP_RETURN_IF_ERROR(input_stream_handler_->InitializeInputStreamManagers(
       current_input_stream_managers));
 
   // Set all the mirrors.
-  for (CollectionItemId id = node_type_info.InputStreamTypes().BeginId();
-       id < node_type_info.InputStreamTypes().EndId(); ++id) {
+  for (CollectionItemId id = node_type_info_->InputStreamTypes().BeginId();
+       id < node_type_info_->InputStreamTypes().EndId(); ++id) {
     int output_stream_index =
         validated_graph_
-            ->InputStreamInfos()[node_type_info.InputStreamBaseIndex() +
+            ->InputStreamInfos()[node_type_info_->InputStreamBaseIndex() +
                                  id.value()]
             .upstream;
     RET_CHECK_LE(0, output_stream_index);
@@ -232,53 +293,55 @@ Timestamp CalculatorNode::SourceProcessOrder(
         &output_stream_managers[output_stream_index];
     VLOG(2) << "Adding mirror for input stream with id " << id.value()
             << " and flat index "
-            << node_type_info.InputStreamBaseIndex() + id.value()
+            << node_type_info_->InputStreamBaseIndex() + id.value()
             << " which will be connected to output stream with flat index "
             << output_stream_index;
     origin_output_stream_manager->AddMirror(input_stream_handler_.get(), id);
   }
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-::mediapipe::Status CalculatorNode::InitializeInputStreamHandler(
+absl::Status CalculatorNode::InitializeInputStreamHandler(
     const InputStreamHandlerConfig& handler_config,
     const PacketTypeSet& input_stream_types) {
   const ProtoString& input_stream_handler_name =
       handler_config.input_stream_handler();
   RET_CHECK(!input_stream_handler_name.empty());
-  ASSIGN_OR_RETURN(input_stream_handler_,
-                   InputStreamHandlerRegistry::CreateByNameInNamespace(
-                       validated_graph_->Package(), input_stream_handler_name,
-                       input_stream_types.TagMap(),
-                       &calculator_context_manager_, handler_config.options(),
-                       /*calculator_run_in_parallel=*/max_in_flight_ > 1),
-                   _ << "\"" << input_stream_handler_name
-                     << "\" is not a registered input stream handler.");
+  MP_ASSIGN_OR_RETURN(
+      input_stream_handler_,
+      InputStreamHandlerRegistry::CreateByNameInNamespace(
+          validated_graph_->Package(), input_stream_handler_name,
+          input_stream_types.TagMap(), &calculator_context_manager_,
+          handler_config.options(),
+          /*calculator_run_in_parallel=*/max_in_flight_ > 1),
+      _ << "\"" << input_stream_handler_name
+        << "\" is not a registered input stream handler.");
 
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-::mediapipe::Status CalculatorNode::InitializeOutputStreamHandler(
+absl::Status CalculatorNode::InitializeOutputStreamHandler(
     const OutputStreamHandlerConfig& handler_config,
     const PacketTypeSet& output_stream_types) {
   const ProtoString& output_stream_handler_name =
       handler_config.output_stream_handler();
   RET_CHECK(!output_stream_handler_name.empty());
-  ASSIGN_OR_RETURN(output_stream_handler_,
-                   OutputStreamHandlerRegistry::CreateByNameInNamespace(
-                       validated_graph_->Package(), output_stream_handler_name,
-                       output_stream_types.TagMap(),
-                       &calculator_context_manager_, handler_config.options(),
-                       /*calculator_run_in_parallel=*/max_in_flight_ > 1),
-                   _ << "\"" << output_stream_handler_name
-                     << "\" is not a registered output stream handler.");
-  return ::mediapipe::OkStatus();
+  MP_ASSIGN_OR_RETURN(
+      output_stream_handler_,
+      OutputStreamHandlerRegistry::CreateByNameInNamespace(
+          validated_graph_->Package(), output_stream_handler_name,
+          output_stream_types.TagMap(), &calculator_context_manager_,
+          handler_config.options(),
+          /*calculator_run_in_parallel=*/max_in_flight_ > 1),
+      _ << "\"" << output_stream_handler_name
+        << "\" is not a registered output stream handler.");
+  return absl::OkStatus();
 }
 
-::mediapipe::Status CalculatorNode::ConnectShardsToStreams(
+absl::Status CalculatorNode::ConnectShardsToStreams(
     CalculatorContext* calculator_context) {
   RET_CHECK(calculator_context);
-  RETURN_IF_ERROR(
+  MP_RETURN_IF_ERROR(
       input_stream_handler_->SetupInputShards(&calculator_context->Inputs()));
   return output_stream_handler_->SetupOutputShards(
       &calculator_context->Outputs());
@@ -286,7 +349,7 @@ Timestamp CalculatorNode::SourceProcessOrder(
 
 void CalculatorNode::SetExecutor(const std::string& executor) {
   absl::MutexLock status_lock(&status_mutex_);
-  CHECK_LT(status_, kStateOpened);
+  ABSL_CHECK_LT(status_, kStateOpened);
   executor_ = executor;
 }
 
@@ -311,17 +374,17 @@ bool CalculatorNode::Closed() const {
 }
 
 void CalculatorNode::SetMaxInputStreamQueueSize(int max_queue_size) {
-  CHECK(input_stream_handler_);
+  ABSL_CHECK(input_stream_handler_);
   input_stream_handler_->SetMaxQueueSize(max_queue_size);
 }
 
-::mediapipe::Status CalculatorNode::PrepareForRun(
+absl::Status CalculatorNode::PrepareForRun(
     const std::map<std::string, Packet>& all_side_packets,
     const std::map<std::string, Packet>& service_packets,
     std::function<void()> ready_for_open_callback,
     std::function<void()> source_node_opened_callback,
     std::function<void(CalculatorContext*)> schedule_callback,
-    std::function<void(::mediapipe::Status)> error_callback,
+    std::function<void(absl::Status)> error_callback,
     CounterFactory* counter_factory) {
   RET_CHECK(ready_for_open_callback) << "ready_for_open_callback is NULL";
   RET_CHECK(schedule_callback) << "schedule_callback is NULL";
@@ -336,10 +399,11 @@ void CalculatorNode::SetMaxInputStreamQueueSize(int max_queue_size) {
       std::move(schedule_callback), error_callback);
   output_stream_handler_->PrepareForRun(error_callback);
 
-  const PacketTypeSet* input_side_packet_types =
-      &validated_graph_->CalculatorInfos()[node_id_].InputSidePacketTypes();
-  RETURN_IF_ERROR(input_side_packet_handler_.PrepareForRun(
-      input_side_packet_types, all_side_packets,
+  const auto& contract = Contract();
+  input_side_packet_types_ = RemoveOmittedPacketTypes(
+      contract.InputSidePackets(), all_side_packets, validated_graph_);
+  MP_RETURN_IF_ERROR(input_side_packet_handler_.PrepareForRun(
+      input_side_packet_types_.get(), all_side_packets,
       [this]() { CalculatorNode::InputSidePacketsReady(); },
       std::move(error_callback)));
   calculator_state_->SetInputSidePackets(
@@ -347,32 +411,27 @@ void CalculatorNode::SetMaxInputStreamQueueSize(int max_queue_size) {
   calculator_state_->SetOutputSidePackets(output_side_packets_.get());
   calculator_state_->SetCounterFactory(counter_factory);
 
-  const auto& contract =
-      validated_graph_->CalculatorInfos()[node_id_].Contract();
   for (const auto& svc_req : contract.ServiceRequests()) {
     const auto& req = svc_req.second;
-    std::string key{req.Service().key};
-    auto it = service_packets.find(key);
+    auto it = service_packets.find(req.Service().key);
     if (it == service_packets.end()) {
       RET_CHECK(req.IsOptional())
-          << "required service '" << key << "' was not provided";
+          << "required service '" << req.Service().key << "' was not provided";
     } else {
-      calculator_state_->SetServicePacket(key, it->second);
+      MP_RETURN_IF_ERROR(
+          calculator_state_->SetServicePacket(req.Service(), it->second));
     }
   }
 
-  RETURN_IF_ERROR(calculator_context_manager_.PrepareForRun(std::bind(
+  MP_RETURN_IF_ERROR(calculator_context_manager_.PrepareForRun(std::bind(
       &CalculatorNode::ConnectShardsToStreams, this, std::placeholders::_1)));
 
-  auto calculator_statusor = CreateCalculator(
-      input_stream_handler_->InputTagMap(),
-      output_stream_handler_->OutputTagMap(), validated_graph_->Package(),
-      calculator_state_.get(),
+  MP_ASSIGN_OR_RETURN(
+      auto calculator_factory,
+      CalculatorBaseRegistry::CreateByNameInNamespace(
+          validated_graph_->Package(), calculator_state_->CalculatorType()));
+  calculator_ = calculator_factory->CreateCalculator(
       calculator_context_manager_.GetDefaultCalculatorContext());
-  if (!calculator_statusor.ok()) {
-    return calculator_statusor.status();
-  }
-  calculator_ = std::move(calculator_statusor).ValueOrDie();
 
   needs_to_close_ = false;
 
@@ -388,10 +447,42 @@ void CalculatorNode::SetMaxInputStreamQueueSize(int max_queue_size) {
     input_side_packets_ready_ =
         (input_side_packet_handler_.MissingInputSidePacketCount() == 0);
   }
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-::mediapipe::Status CalculatorNode::OpenNode() {
+namespace {
+// Returns the Packet sent to an OutputSidePacket, or an empty packet
+// if none available.
+const Packet GetPacket(const OutputSidePacket& out) {
+  auto impl = static_cast<const OutputSidePacketImpl*>(&out);
+  return (impl == nullptr) ? Packet() : impl->GetPacket();
+}
+
+// Resends the output-side-packets from the previous graph run.
+absl::Status ResendSidePackets(CalculatorContext* cc) {
+  auto& outs = cc->OutputSidePackets();
+  for (CollectionItemId id = outs.BeginId(); id < outs.EndId(); ++id) {
+    Packet packet = GetPacket(outs.Get(id));
+    if (!packet.IsEmpty()) {
+      // OutputSidePacket::Set re-announces the side-packet to its mirrors.
+      outs.Get(id).Set(packet);
+    }
+  }
+  return absl::OkStatus();
+}
+}  // namespace
+
+bool CalculatorNode::OutputsAreConstant(CalculatorContext* cc) {
+  if (cc->Inputs().NumEntries() > 0 || cc->Outputs().NumEntries() > 0) {
+    return false;
+  }
+  if (input_side_packet_handler_.InputSidePacketsChanged()) {
+    return false;
+  }
+  return true;
+}
+
+absl::Status CalculatorNode::OpenNode() {
   VLOG(2) << "CalculatorNode::OpenNode() for " << DebugName();
 
   CalculatorContext* default_context =
@@ -406,9 +497,10 @@ void CalculatorNode::SetMaxInputStreamQueueSize(int max_queue_size) {
   calculator_context_manager_.PushInputTimestampToContext(
       default_context, Timestamp::Unstarted());
 
-  ::mediapipe::Status result;
-
-  {
+  absl::Status result;
+  if (OutputsAreConstant(default_context)) {
+    result = ResendSidePackets(default_context);
+  } else {
     MEDIAPIPE_PROFILING(OPEN, default_context);
     LegacyCalculatorSupport::Scoped<CalculatorContext> s(default_context);
     result = calculator_->Open(default_context);
@@ -422,13 +514,26 @@ void CalculatorNode::SetMaxInputStreamQueueSize(int max_queue_size) {
                                                             Timestamp(0));
   }
 
-  LOG_IF(FATAL, result == tool::StatusStop()) << absl::Substitute(
+  ABSL_LOG_IF(FATAL, result == tool::StatusStop()) << absl::Substitute(
       "Open() on node \"$0\" returned tool::StatusStop() which should only be "
       "used to signal that a source node is done producing data.",
       DebugName());
-  RETURN_IF_ERROR(result).SetPrepend() << absl::Substitute(
+  MP_RETURN_IF_ERROR(result).SetPrepend() << absl::Substitute(
       "Calculator::Open() for node \"$0\" failed: ", DebugName());
   needs_to_close_ = true;
+
+  bool offset_enabled = false;
+  for (auto& stream : output_stream_handler_->OutputStreams()) {
+    offset_enabled = offset_enabled || stream->Spec()->offset_enabled;
+  }
+  if (offset_enabled && input_stream_handler_->SyncSetCount() > 1) {
+    ABSL_LOG(WARNING) << absl::Substitute(
+        "Calculator node \"$0\" is configured with multiple input sync-sets "
+        "and an output timestamp-offset, which will often conflict due to "
+        "the order of packet arrival.  With multiple input sync-sets, use "
+        "SetProcessTimestampBounds in place of SetTimestampOffset.",
+        DebugName());
+  }
 
   output_stream_handler_->Open(outputs);
 
@@ -437,12 +542,12 @@ void CalculatorNode::SetMaxInputStreamQueueSize(int max_queue_size) {
     status_ = kStateOpened;
   }
 
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 void CalculatorNode::ActivateNode() {
   absl::MutexLock status_lock(&status_mutex_);
-  CHECK_EQ(status_, kStateOpened) << DebugName();
+  ABSL_CHECK_EQ(status_, kStateOpened) << DebugName();
   status_ = kStateActive;
 }
 
@@ -471,8 +576,8 @@ void CalculatorNode::CloseOutputStreams(OutputStreamShardSet* outputs) {
   output_stream_handler_->Close(outputs);
 }
 
-::mediapipe::Status CalculatorNode::CloseNode(
-    const ::mediapipe::Status& graph_status, bool graph_run_ended) {
+absl::Status CalculatorNode::CloseNode(const absl::Status& graph_status,
+                                       bool graph_run_ended) {
   {
     absl::MutexLock status_lock(&status_mutex_);
     RET_CHECK_NE(status_, kStateClosed)
@@ -492,16 +597,19 @@ void CalculatorNode::CloseOutputStreams(OutputStreamShardSet* outputs) {
   calculator_context_manager_.SetGraphStatusInContext(default_context,
                                                       graph_status);
 
-  ::mediapipe::Status result;
+  absl::Status result;
 
-  {
+  if (OutputsAreConstant(default_context)) {
+    // Do nothing.
+    result = absl::OkStatus();
+  } else {
     MEDIAPIPE_PROFILING(CLOSE, default_context);
     LegacyCalculatorSupport::Scoped<CalculatorContext> s(default_context);
     result = calculator_->Close(default_context);
   }
   needs_to_close_ = false;
 
-  LOG_IF(FATAL, result == tool::StatusStop()) << absl::Substitute(
+  ABSL_LOG_IF(FATAL, result == tool::StatusStop()) << absl::Substitute(
       "Close() on node \"$0\" returned tool::StatusStop() which should only be "
       "used to signal that a source node is done producing data.",
       DebugName());
@@ -519,14 +627,14 @@ void CalculatorNode::CloseOutputStreams(OutputStreamShardSet* outputs) {
     status_ = kStateClosed;
   }
 
-  RETURN_IF_ERROR(result).SetPrepend() << absl::Substitute(
+  MP_RETURN_IF_ERROR(result).SetPrepend() << absl::Substitute(
       "Calculator::Close() for node \"$0\" failed: ", DebugName());
 
   VLOG(2) << "Closed node " << DebugName();
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-void CalculatorNode::CleanupAfterRun(const ::mediapipe::Status& graph_status) {
+void CalculatorNode::CleanupAfterRun(const absl::Status& graph_status) {
   if (needs_to_close_) {
     calculator_context_manager_.PushInputTimestampToContext(
         calculator_context_manager_.GetDefaultCalculatorContext(),
@@ -594,8 +702,8 @@ void CalculatorNode::InputStreamHeadersReady() {
   bool ready_for_open = false;
   {
     absl::MutexLock lock(&status_mutex_);
-    CHECK_EQ(status_, kStatePrepared) << DebugName();
-    CHECK(!input_stream_headers_ready_called_);
+    ABSL_CHECK_EQ(status_, kStatePrepared) << DebugName();
+    ABSL_CHECK(!input_stream_headers_ready_called_);
     input_stream_headers_ready_called_ = true;
     input_stream_headers_ready_ = true;
     ready_for_open = input_side_packets_ready_;
@@ -609,8 +717,8 @@ void CalculatorNode::InputSidePacketsReady() {
   bool ready_for_open = false;
   {
     absl::MutexLock lock(&status_mutex_);
-    CHECK_EQ(status_, kStatePrepared) << DebugName();
-    CHECK(!input_side_packets_ready_called_);
+    ABSL_CHECK_EQ(status_, kStatePrepared) << DebugName();
+    ABSL_CHECK(!input_side_packets_ready_called_);
     input_side_packets_ready_called_ = true;
     input_side_packets_ready_ = true;
     ready_for_open = input_stream_headers_ready_;
@@ -660,7 +768,7 @@ void CalculatorNode::EndScheduling() {
       return;
     }
     --current_in_flight_;
-    CHECK_GE(current_in_flight_, 0);
+    ABSL_CHECK_GE(current_in_flight_, 0);
 
     if (scheduling_state_ == kScheduling) {
       // Changes the state to scheduling pending if another thread is doing the
@@ -690,31 +798,17 @@ std::string CalculatorNode::DebugInputStreamNames() const {
 }
 
 std::string CalculatorNode::DebugName() const {
-  DCHECK(calculator_state_);
-
-  const std::string first_output_stream_name =
-      output_stream_handler_->FirstStreamName();
-  if (!first_output_stream_name.empty()) {
-    // A calculator is unique by its output streams (one of them is
-    // sufficient) unless it is a sink.  For readability, its type name is
-    // included.
-    return absl::Substitute(
-        "[$0, $1 with output stream: $2]", calculator_state_->NodeName(),
-        calculator_state_->CalculatorType(), first_output_stream_name);
-  }
-  // If it is a sink, its full node spec is returned.
-  return absl::Substitute(
-      "[$0, $1 with node ID: $2 and $3]", calculator_state_->NodeName(),
-      calculator_state_->CalculatorType(), node_id_, DebugInputStreamNames());
+  ABSL_DCHECK(calculator_state_);
+  return calculator_state_->NodeName();
 }
 
 // TODO: Split this function.
-::mediapipe::Status CalculatorNode::ProcessNode(
+absl::Status CalculatorNode::ProcessNode(
     CalculatorContext* calculator_context) {
   if (IsSource()) {
     // This is a source Calculator.
     if (Closed()) {
-      return ::mediapipe::OkStatus();
+      return absl::OkStatus();
     }
 
     const Timestamp input_timestamp = calculator_context->InputTimestamp();
@@ -723,7 +817,7 @@ std::string CalculatorNode::DebugName() const {
     output_stream_handler_->PrepareOutputs(input_timestamp, outputs);
 
     VLOG(2) << "Calling Calculator::Process() for node: " << DebugName();
-    ::mediapipe::Status result;
+    absl::Status result;
 
     {
       MEDIAPIPE_PROFILING(PROCESS, calculator_context);
@@ -737,7 +831,7 @@ std::string CalculatorNode::DebugName() const {
         // Needs to call CloseNode().
         node_stopped = true;
       } else {
-        return ::mediapipe::StatusBuilder(result, MEDIAPIPE_LOC).SetPrepend()
+        return mediapipe::StatusBuilder(result, MEDIAPIPE_LOC).SetPrepend()
                << absl::Substitute(
                       "Calculator::Process() for node \"$0\" failed: ",
                       DebugName());
@@ -745,16 +839,16 @@ std::string CalculatorNode::DebugName() const {
     }
     output_stream_handler_->PostProcess(input_timestamp);
     if (node_stopped) {
-      RETURN_IF_ERROR(
-          CloseNode(::mediapipe::OkStatus(), /*graph_run_ended=*/false));
+      MP_RETURN_IF_ERROR(
+          CloseNode(absl::OkStatus(), /*graph_run_ended=*/false));
     }
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   } else {
     // This is not a source Calculator.
     InputStreamShardSet* const inputs = &calculator_context->Inputs();
     OutputStreamShardSet* const outputs = &calculator_context->Outputs();
-    ::mediapipe::Status result =
-        ::mediapipe::InternalError("Calculator context has no input packets.");
+    absl::Status result =
+        absl::InternalError("Calculator context has no input packets.");
 
     int num_invocations = calculator_context_manager_.NumberOfContextTimestamps(
         *calculator_context);
@@ -768,14 +862,21 @@ std::string CalculatorNode::DebugName() const {
         input_stream_handler_->FinalizeInputSet(input_timestamp, inputs);
         output_stream_handler_->PrepareOutputs(input_timestamp, outputs);
 
-        VLOG(2) << "Calling Calculator::Process() for node: " << DebugName();
+        VLOG(2) << "Calling Calculator::Process() for node: " << DebugName()
+                << " timestamp: " << input_timestamp;
 
-        {
+        if (OutputsAreConstant(calculator_context)) {
+          // Do nothing.
+          result = absl::OkStatus();
+        } else {
           MEDIAPIPE_PROFILING(PROCESS, calculator_context);
           LegacyCalculatorSupport::Scoped<CalculatorContext> s(
               calculator_context);
           result = calculator_->Process(calculator_context);
         }
+
+        VLOG(2) << "Called Calculator::Process() for node: " << DebugName()
+                << " timestamp: " << input_timestamp;
 
         // Removes one packet from each shard and progresses to the next input
         // timestamp.
@@ -786,7 +887,7 @@ std::string CalculatorNode::DebugName() const {
         // ensure that all sources will be closed and that packets in input
         // streams will be processed before the graph is terminated.
         if (!result.ok() && result != tool::StatusStop()) {
-          return ::mediapipe::StatusBuilder(result, MEDIAPIPE_LOC).SetPrepend()
+          return mediapipe::StatusBuilder(result, MEDIAPIPE_LOC).SetPrepend()
                  << absl::Substitute(
                         "Calculator::Process() for node \"$0\" failed: ",
                         DebugName());
@@ -800,10 +901,10 @@ std::string CalculatorNode::DebugName() const {
         // open input streams for Process(). So this node needs to be closed
         // too.
         // If the streams are closed, there shouldn't be more input.
-        CHECK_EQ(calculator_context_manager_.NumberOfContextTimestamps(
-                     *calculator_context),
-                 1);
-        return CloseNode(::mediapipe::OkStatus(), /*graph_run_ended=*/false);
+        ABSL_CHECK_EQ(calculator_context_manager_.NumberOfContextTimestamps(
+                          *calculator_context),
+                      1);
+        return CloseNode(absl::OkStatus(), /*graph_run_ended=*/false);
       } else {
         RET_CHECK_FAIL()
             << "Invalid input timestamp in ProcessNode(). timestamp: "
@@ -817,7 +918,7 @@ std::string CalculatorNode::DebugName() const {
 void CalculatorNode::SetQueueSizeCallbacks(
     InputStreamManager::QueueSizeCallback becomes_full_callback,
     InputStreamManager::QueueSizeCallback becomes_not_full_callback) {
-  CHECK(input_stream_handler_);
+  ABSL_CHECK(input_stream_handler_);
   input_stream_handler_->SetQueueSizeCallbacks(
       std::move(becomes_full_callback), std::move(becomes_not_full_callback));
 }

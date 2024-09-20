@@ -70,10 +70,10 @@ const int kNumCoordsPerBox = 4;
 //   image/understanding/object_detection/export_inference_graph.py
 //
 // By default, the output Detections store label ids (integers) for each
-// detection.  Optionally, a label map (of the form std::map<int, std::string>
+// detection.  Optionally, a label map (of the form std::map<int, string>
 // mapping label ids to label names as strings) can be made available as an
 // input side packet, in which case the output Detections store
-// labels as their associated std::string provided by the label map.
+// labels as their associated string provided by the label map.
 //
 // Usage example:
 // node {
@@ -93,7 +93,7 @@ class ObjectDetectionTensorsToDetectionsCalculator : public CalculatorBase {
  public:
   ObjectDetectionTensorsToDetectionsCalculator() = default;
 
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Inputs().Tag(kBoxes).Set<tf::Tensor>();
     cc->Inputs().Tag(kScores).Set<tf::Tensor>();
 
@@ -114,7 +114,7 @@ class ObjectDetectionTensorsToDetectionsCalculator : public CalculatorBase {
           cc->Options<ObjectDetectionsTensorToDetectionsCalculatorOptions>();
       float mask_threshold = calculator_options.mask_threshold();
       if (!(mask_threshold >= 0.0 && mask_threshold <= 1.0)) {
-        return ::mediapipe::InvalidArgumentErrorBuilder(MEDIAPIPE_LOC)
+        return mediapipe::InvalidArgumentErrorBuilder(MEDIAPIPE_LOC)
                << "mask_threshold must be in range [0.0, 1.0]";
       }
     }
@@ -126,10 +126,10 @@ class ObjectDetectionTensorsToDetectionsCalculator : public CalculatorBase {
           .Tag(kLabelMap)
           .Set<std::unique_ptr<std::map<int, std::string>>>();
     }
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) override {
+  absl::Status Open(CalculatorContext* cc) override {
     if (cc->InputSidePackets().HasTag(kLabelMap)) {
       label_map_ = GetFromUniquePtr<std::map<int, std::string>>(
           cc->InputSidePackets().Tag(kLabelMap));
@@ -137,21 +137,21 @@ class ObjectDetectionTensorsToDetectionsCalculator : public CalculatorBase {
     const auto& tensor_dim_to_squeeze_field =
         cc->Options<ObjectDetectionsTensorToDetectionsCalculatorOptions>()
             .tensor_dim_to_squeeze();
-    tensor_dims_to_squeeze_ = std::vector<int32>(
+    tensor_dims_to_squeeze_ = std::vector<int32_t>(
         tensor_dim_to_squeeze_field.begin(), tensor_dim_to_squeeze_field.end());
     std::sort(tensor_dims_to_squeeze_.rbegin(), tensor_dims_to_squeeze_.rend());
     cc->SetOffset(0);
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
+  absl::Status Process(CalculatorContext* cc) override {
     const auto& options =
         cc->Options<ObjectDetectionsTensorToDetectionsCalculatorOptions>();
 
     tf::Tensor input_num_detections_tensor =
         tf::Tensor(tf::DT_FLOAT, tf::TensorShape({0}));
     if (cc->Inputs().HasTag(kClasses)) {
-      ASSIGN_OR_RETURN(
+      MP_ASSIGN_OR_RETURN(
           input_num_detections_tensor,
           MaybeSqueezeDims(kNumDetections,
                            cc->Inputs().Tag(kNumDetections).Get<tf::Tensor>()));
@@ -160,12 +160,12 @@ class ObjectDetectionTensorsToDetectionsCalculator : public CalculatorBase {
       RET_CHECK_EQ(input_num_detections_tensor.dtype(), tf::DT_FLOAT);
     }
 
-    ASSIGN_OR_RETURN(
+    MP_ASSIGN_OR_RETURN(
         auto input_boxes_tensor,
         MaybeSqueezeDims(kBoxes, cc->Inputs().Tag(kBoxes).Get<tf::Tensor>()));
     RET_CHECK_EQ(input_boxes_tensor.dtype(), tf::DT_FLOAT);
 
-    ASSIGN_OR_RETURN(
+    MP_ASSIGN_OR_RETURN(
         auto input_scores_tensor,
         MaybeSqueezeDims(kScores, cc->Inputs().Tag(kScores).Get<tf::Tensor>()));
     RET_CHECK_EQ(input_scores_tensor.dtype(), tf::DT_FLOAT);
@@ -173,7 +173,7 @@ class ObjectDetectionTensorsToDetectionsCalculator : public CalculatorBase {
     tf::Tensor input_classes_tensor =
         tf::Tensor(tf::DT_FLOAT, tf::TensorShape({0}));
     if (cc->Inputs().HasTag(kClasses)) {
-      ASSIGN_OR_RETURN(
+      MP_ASSIGN_OR_RETURN(
           input_classes_tensor,
           MaybeSqueezeDims(kClasses,
                            cc->Inputs().Tag(kClasses).Get<tf::Tensor>()));
@@ -205,15 +205,15 @@ class ObjectDetectionTensorsToDetectionsCalculator : public CalculatorBase {
         .Tag(kDetections)
         .Add(output_detections.release(), cc->InputTimestamp());
 
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
  private:
   std::map<int, std::string>* label_map_;
-  std::vector<int32> tensor_dims_to_squeeze_;
+  std::vector<int32_t> tensor_dims_to_squeeze_;
 
-  ::mediapipe::StatusOr<tf::Tensor> MaybeSqueezeDims(
-      const std::string& tensor_tag, const tf::Tensor& input_tensor) {
+  absl::StatusOr<tf::Tensor> MaybeSqueezeDims(const std::string& tensor_tag,
+                                              const tf::Tensor& input_tensor) {
     if (tensor_dims_to_squeeze_.empty()) {
       return input_tensor;
     }

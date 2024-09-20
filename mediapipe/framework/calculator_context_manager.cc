@@ -16,6 +16,7 @@
 
 #include <utility>
 
+#include "absl/log/absl_check.h"
 #include "absl/memory/memory.h"
 #include "absl/synchronization/mutex.h"
 #include "mediapipe/framework/port/logging.h"
@@ -27,16 +28,15 @@ void CalculatorContextManager::Initialize(
     std::shared_ptr<tool::TagMap> input_tag_map,
     std::shared_ptr<tool::TagMap> output_tag_map,
     bool calculator_run_in_parallel) {
-  CHECK(calculator_state);
+  ABSL_CHECK(calculator_state);
   calculator_state_ = calculator_state;
   input_tag_map_ = std::move(input_tag_map);
   output_tag_map_ = std::move(output_tag_map);
   calculator_run_in_parallel_ = calculator_run_in_parallel;
 }
 
-::mediapipe::Status CalculatorContextManager::PrepareForRun(
-    std::function<::mediapipe::Status(CalculatorContext*)>
-        setup_shards_callback) {
+absl::Status CalculatorContextManager::PrepareForRun(
+    std::function<absl::Status(CalculatorContext*)> setup_shards_callback) {
   setup_shards_callback_ = std::move(setup_shards_callback);
   default_context_ = absl::make_unique<CalculatorContext>(
       calculator_state_, input_tag_map_, output_tag_map_);
@@ -52,15 +52,15 @@ void CalculatorContextManager::CleanupAfterRun() {
 
 CalculatorContext* CalculatorContextManager::GetDefaultCalculatorContext()
     const {
-  CHECK(default_context_.get());
+  ABSL_CHECK(default_context_.get());
   return default_context_.get();
 }
 
 CalculatorContext* CalculatorContextManager::GetFrontCalculatorContext(
     Timestamp* context_input_timestamp) {
-  CHECK(calculator_run_in_parallel_);
+  ABSL_CHECK(calculator_run_in_parallel_);
   absl::MutexLock lock(&contexts_mutex_);
-  CHECK(!active_contexts_.empty());
+  ABSL_CHECK(!active_contexts_.empty());
   *context_input_timestamp = active_contexts_.begin()->first;
   return active_contexts_.begin()->second.get();
 }
@@ -71,7 +71,7 @@ CalculatorContext* CalculatorContextManager::PrepareCalculatorContext(
     return GetDefaultCalculatorContext();
   }
   absl::MutexLock lock(&contexts_mutex_);
-  CHECK(!::mediapipe::ContainsKey(active_contexts_, input_timestamp))
+  ABSL_CHECK(!mediapipe::ContainsKey(active_contexts_, input_timestamp))
       << "Multiple invocations with the same timestamps are not allowed with "
          "parallel execution, input_timestamp = "
       << input_timestamp;

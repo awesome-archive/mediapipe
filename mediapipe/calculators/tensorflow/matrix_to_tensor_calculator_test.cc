@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cstdint>
 #include <vector>
 
 #include "mediapipe/calculators/tensorflow/matrix_to_tensor_calculator_options.pb.h"
@@ -19,14 +20,12 @@
 #include "mediapipe/framework/calculator_runner.h"
 #include "mediapipe/framework/formats/matrix.h"
 #include "mediapipe/framework/port/gtest.h"
-#include "mediapipe/framework/port/integral_types.h"
 #include "mediapipe/framework/port/status_matchers.h"
 #include "tensorflow/core/framework/tensor.h"
 #include "tensorflow/core/framework/tensor_shape.h"
 #include "tensorflow/core/framework/types.h"
 
 namespace mediapipe {
-
 namespace {
 
 constexpr char kTransposeOptionsString[] =
@@ -40,7 +39,7 @@ constexpr char kAddDimensionOptionsString[] =
 
 namespace tf = tensorflow;
 using RandomEngine = std::mt19937_64;
-const uint32 kSeed = 1234;
+const uint32_t kSeed = 1234;
 const int kNumSizes = 8;
 const int sizes[kNumSizes][2] = {{1, 1}, {12, 1}, {1, 9},   {2, 2},
                                  {5, 3}, {7, 13}, {16, 32}, {101, 2}};
@@ -48,7 +47,7 @@ const int sizes[kNumSizes][2] = {{1, 1}, {12, 1}, {1, 9},   {2, 2},
 class MatrixToTensorCalculatorTest : public ::testing::Test {
  protected:
   // Adds a packet with a matrix filled with random values in [0,1].
-  void AddRandomMatrix(int num_rows, int num_columns, uint32 seed) {
+  void AddRandomMatrix(int num_rows, int num_columns, uint32_t seed) {
     RandomEngine random(kSeed);
     std::uniform_real_distribution<> uniform_dist(0, 1.0);
     auto matrix = ::absl::make_unique<Matrix>();
@@ -74,7 +73,7 @@ TEST_F(MatrixToTensorCalculatorTest, RandomMatrix) {
     runner_ = ::absl::make_unique<CalculatorRunner>("MatrixToTensorCalculator",
                                                     "", 1, 1, 0);
     AddRandomMatrix(num_rows, num_columns, kSeed);
-    MEDIAPIPE_ASSERT_OK(runner_->Run());
+    MP_ASSERT_OK(runner_->Run());
     const std::vector<Packet>& output_packets =
         runner_->Outputs().Index(0).packets;
     ASSERT_EQ(1, output_packets.size());
@@ -106,7 +105,7 @@ TEST_F(MatrixToTensorCalculatorTest, RandomMatrixTranspose) {
     runner_ = ::absl::make_unique<CalculatorRunner>(
         "MatrixToTensorCalculator", kTransposeOptionsString, 1, 1, 0);
     AddRandomMatrix(num_rows, num_columns, kSeed);
-    MEDIAPIPE_ASSERT_OK(runner_->Run());
+    MP_ASSERT_OK(runner_->Run());
     const std::vector<Packet>& output_packets =
         runner_->Outputs().Index(0).packets;
     ASSERT_EQ(1, output_packets.size());
@@ -138,7 +137,7 @@ TEST_F(MatrixToTensorCalculatorTest, RandomMatrixAddDimension) {
     runner_ = ::absl::make_unique<CalculatorRunner>(
         "MatrixToTensorCalculator", kAddDimensionOptionsString, 1, 1, 0);
     AddRandomMatrix(num_rows, num_columns, kSeed);
-    MEDIAPIPE_ASSERT_OK(runner_->Run());
+    MP_ASSERT_OK(runner_->Run());
     const std::vector<Packet>& output_packets =
         runner_->Outputs().Index(0).packets;
     ASSERT_EQ(1, output_packets.size());

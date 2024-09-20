@@ -15,8 +15,11 @@
 #ifndef MEDIAPIPE_GPU_EGL_SURFACE_HOLDER_H_
 #define MEDIAPIPE_GPU_EGL_SURFACE_HOLDER_H_
 
+#include "absl/base/thread_annotations.h"
 #include "absl/synchronization/mutex.h"
 #include "mediapipe/gpu/gl_base.h"
+
+#if HAS_EGL
 
 namespace mediapipe {
 
@@ -29,11 +32,30 @@ struct EglSurfaceHolder {
   // GlCalculatorHelper::RunInGlContext while holding this mutex, but instead
   // grab this inside the callable passed to them.
   absl::Mutex mutex;
-  EGLSurface surface GUARDED_BY(mutex) = EGL_NO_SURFACE;
+  EGLSurface surface ABSL_GUARDED_BY(mutex) = EGL_NO_SURFACE;
   // True if MediaPipe created the surface and is responsible for destroying it.
-  bool owned GUARDED_BY(mutex) = false;
+  bool owned ABSL_GUARDED_BY(mutex) = false;
+  // Vertical flip of the surface, useful for conversion between coordinate
+  // systems with top-left v.s. bottom-left origins.
+  bool flip_y = false;
+  // If true, update the surface presentation timestamp from the MediaPipe
+  // packet on Android. It is set to 1000 times the packet timestamp to convert
+  // from microseconds (packet) to nanoseconds (surface).
+  //
+  // This enables consumers to control the presentation time on a SurfaceView or
+  // to recover the timestamp with ImageReader or SurfaceTexture.
+  //
+  // See
+  // https://registry.khronos.org/EGL/extensions/ANDROID/EGL_ANDROID_presentation_time.txt
+  // for details about the meaning of the presentation time.
+  //
+  // See also
+  //  * https://developer.android.com/reference/android/media/Image#getTimestamp()
+  //  * https://developer.android.com/reference/android/graphics/SurfaceTexture#getTimestamp()
+  bool update_presentation_time = false;
 };
 
 }  // namespace mediapipe
 
+#endif  // HAS_EGL
 #endif  // MEDIAPIPE_GPU_EGL_SURFACE_HOLDER_H_

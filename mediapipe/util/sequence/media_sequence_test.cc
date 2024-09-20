@@ -15,6 +15,8 @@
 #include "mediapipe/util/sequence/media_sequence.h"
 
 #include <algorithm>
+#include <string>
+#include <vector>
 
 #include "mediapipe/framework/formats/location.h"
 #include "mediapipe/framework/port/gmock.h"
@@ -22,6 +24,7 @@
 #include "mediapipe/framework/port/opencv_imgcodecs_inc.h"
 #include "mediapipe/framework/port/status_matchers.h"
 #include "tensorflow/core/example/example.pb.h"
+#include "tensorflow/core/example/feature.pb.h"
 
 namespace mediapipe {
 namespace mediasequence {
@@ -32,6 +35,14 @@ TEST(MediaSequenceTest, RoundTripDatasetName) {
   std::string name = "test";
   SetExampleDatasetName(name, &sequence);
   ASSERT_EQ(GetExampleDatasetName(sequence), name);
+}
+
+TEST(MediaSequenceTest, RoundTripDatasetFlagString) {
+  tensorflow::SequenceExample sequence;
+  std::vector<std::string> flags = {"test", "overall", "special"};
+  SetExampleDatasetFlagString(flags, &sequence);
+  ASSERT_THAT(GetExampleDatasetFlagString(sequence),
+              testing::ElementsAreArray(flags));
 }
 
 TEST(MediaSequenceTest, RoundTripMediaId) {
@@ -57,7 +68,7 @@ TEST(MediaSequenceTest, RoundTripEncodedMediaBytes) {
 
 TEST(MediaSequenceTest, RoundTripEncodedVideoStartTimestamp) {
   tensorflow::SequenceExample sequence;
-  int64 data = 47;
+  int64_t data = 47;
   SetClipEncodedMediaStartTimestamp(data, &sequence);
   ASSERT_EQ(GetClipEncodedMediaStartTimestamp(sequence), data);
 }
@@ -82,7 +93,7 @@ TEST(MediaSequenceTest, RoundTripClipEndTimestamp) {
 
 TEST(MediaSequenceTest, RoundTripClipLabelIndex) {
   tensorflow::SequenceExample sequence;
-  std::vector<int64> label = {5, 3};
+  std::vector<int64_t> label = {5, 3};
   SetClipLabelIndex(label, &sequence);
   ASSERT_THAT(GetClipLabelIndex(sequence), testing::ElementsAreArray(label));
 }
@@ -105,46 +116,46 @@ TEST(MediaSequenceTest, RoundTripFloatListFrameRate) {
 TEST(MediaSequenceTest, RoundTripSegmentStartTimestamp) {
   tensorflow::SequenceExample sequence;
   EXPECT_FALSE(HasContext(sequence, kSegmentStartTimestampKey));
-  SetSegmentStartTimestamp(::std::vector<int64>({123, 456}), &sequence);
+  SetSegmentStartTimestamp(::std::vector<int64_t>({123, 456}), &sequence);
   ASSERT_EQ(2, GetSegmentStartTimestampSize(sequence));
   ASSERT_THAT(GetSegmentStartTimestamp(sequence),
-              testing::ElementsAreArray(::std::vector<int64>({123, 456})));
+              testing::ElementsAreArray(::std::vector<int64_t>({123, 456})));
 }
 
 TEST(MediaSequenceTest, RoundTripSegmentEndTimestamp) {
   tensorflow::SequenceExample sequence;
   EXPECT_FALSE(HasContext(sequence, kSegmentEndTimestampKey));
-  SetSegmentEndTimestamp(::std::vector<int64>({123, 456}), &sequence);
+  SetSegmentEndTimestamp(::std::vector<int64_t>({123, 456}), &sequence);
   ASSERT_EQ(2, GetSegmentEndTimestampSize(sequence));
   ASSERT_THAT(GetSegmentEndTimestamp(sequence),
-              testing::ElementsAreArray(::std::vector<int64>({123, 456})));
+              testing::ElementsAreArray(::std::vector<int64_t>({123, 456})));
 }
 
 TEST(MediaSequenceTest, RoundTripSegmentStartIndex) {
   tensorflow::SequenceExample sequence;
   EXPECT_FALSE(HasContext(sequence, kSegmentStartIndexKey));
-  SetSegmentStartIndex(::std::vector<int64>({123, 456}), &sequence);
+  SetSegmentStartIndex(::std::vector<int64_t>({123, 456}), &sequence);
   ASSERT_EQ(2, GetSegmentStartIndexSize(sequence));
   ASSERT_THAT(GetSegmentStartIndex(sequence),
-              testing::ElementsAreArray(::std::vector<int64>({123, 456})));
+              testing::ElementsAreArray(::std::vector<int64_t>({123, 456})));
 }
 
 TEST(MediaSequenceTest, RoundTripSegmentEndIndex) {
   tensorflow::SequenceExample sequence;
   EXPECT_FALSE(HasContext(sequence, kSegmentEndIndexKey));
-  SetSegmentEndIndex(::std::vector<int64>({123, 456}), &sequence);
+  SetSegmentEndIndex(::std::vector<int64_t>({123, 456}), &sequence);
   ASSERT_EQ(2, GetSegmentEndIndexSize(sequence));
   ASSERT_THAT(GetSegmentEndIndex(sequence),
-              testing::ElementsAreArray(::std::vector<int64>({123, 456})));
+              testing::ElementsAreArray(::std::vector<int64_t>({123, 456})));
 }
 
 TEST(MediaSequenceTest, RoundTripSegmentLabelIndex) {
   tensorflow::SequenceExample sequence;
   EXPECT_FALSE(HasContext(sequence, kSegmentLabelIndexKey));
-  SetSegmentLabelIndex(::std::vector<int64>({5, 7}), &sequence);
+  SetSegmentLabelIndex(::std::vector<int64_t>({5, 7}), &sequence);
   ASSERT_EQ(2, GetSegmentLabelIndexSize(sequence));
   ASSERT_THAT(GetSegmentLabelIndex(sequence),
-              testing::ElementsAreArray(::std::vector<int64>({5, 7})));
+              testing::ElementsAreArray(::std::vector<int64_t>({5, 7})));
 }
 
 TEST(MediaSequenceTest, RoundTripSegmentLabelString) {
@@ -170,8 +181,8 @@ TEST(MediaSequenceTest, RoundTripSegmentLabelConfidence) {
 
 TEST(MediaSequenceTest, RoundTripImageWidthHeight) {
   tensorflow::SequenceExample sequence;
-  int64 height = 2;
-  int64 width = 3;
+  int64_t height = 2;
+  int64_t width = 3;
   SetImageHeight(height, &sequence);
   ASSERT_EQ(GetImageHeight(sequence), height);
   SetImageWidth(width, &sequence);
@@ -180,8 +191,8 @@ TEST(MediaSequenceTest, RoundTripImageWidthHeight) {
 
 TEST(MediaSequenceTest, RoundTripForwardFlowWidthHeight) {
   tensorflow::SequenceExample sequence;
-  int64 height = 2;
-  int64 width = 3;
+  int64_t height = 2;
+  int64_t width = 3;
   SetForwardFlowHeight(height, &sequence);
   ASSERT_EQ(GetForwardFlowHeight(sequence), height);
   SetForwardFlowWidth(width, &sequence);
@@ -190,8 +201,8 @@ TEST(MediaSequenceTest, RoundTripForwardFlowWidthHeight) {
 
 TEST(MediaSequenceTest, RoundTripClassSegmentationWidthHeightFormat) {
   tensorflow::SequenceExample sequence;
-  int64 height = 2;
-  int64 width = 3;
+  int64_t height = 2;
+  int64_t width = 3;
   std::string format = "JPEG";
   SetClassSegmentationHeight(height, &sequence);
   EXPECT_EQ(GetClassSegmentationHeight(sequence), height);
@@ -203,7 +214,7 @@ TEST(MediaSequenceTest, RoundTripClassSegmentationWidthHeightFormat) {
 
 TEST(MediaSequenceTest, RoundTripClassSegmentationLabelIndex) {
   tensorflow::SequenceExample sequence;
-  std::vector<int64> classes = {5, 3};
+  std::vector<int64_t> classes = {5, 3};
   SetClassSegmentationClassLabelIndex(classes, &sequence);
   ASSERT_THAT(GetClassSegmentationClassLabelIndex(sequence),
               testing::ElementsAreArray({5, 3}));
@@ -223,8 +234,8 @@ TEST(MediaSequenceTest, RoundTripClassSegmentationLabelString) {
 
 TEST(MediaSequenceTest, RoundTripInstanceSegmentationWidthHeightFormat) {
   tensorflow::SequenceExample sequence;
-  int64 height = 2;
-  int64 width = 3;
+  int64_t height = 2;
+  int64_t width = 3;
   std::string format = "JPEG";
   SetInstanceSegmentationHeight(height, &sequence);
   EXPECT_EQ(GetInstanceSegmentationHeight(sequence), height);
@@ -236,7 +247,7 @@ TEST(MediaSequenceTest, RoundTripInstanceSegmentationWidthHeightFormat) {
 
 TEST(MediaSequenceTest, RoundTripInstanceSegmentationClass) {
   tensorflow::SequenceExample sequence;
-  std::vector<int64> classes = {5, 3};
+  std::vector<int64_t> classes = {5, 3};
   SetInstanceSegmentationObjectClassIndex(classes, &sequence);
   ASSERT_THAT(GetInstanceSegmentationObjectClassIndex(sequence),
               testing::ElementsAreArray({5, 3}));
@@ -276,7 +287,7 @@ TEST(MediaSequenceTest, RoundTripBBoxNumRegions) {
 
 TEST(MediaSequenceTest, RoundTripBBoxLabelIndex) {
   tensorflow::SequenceExample sequence;
-  std::vector<std::vector<int64>> labels = {{5, 3}, {1, 2}};
+  std::vector<std::vector<int64_t>> labels = {{5, 3}, {1, 2}};
   for (int i = 0; i < labels.size(); ++i) {
     AddBBoxLabelIndex(labels[i], &sequence);
     ASSERT_EQ(GetBBoxLabelIndexSize(sequence), i + 1);
@@ -302,7 +313,7 @@ TEST(MediaSequenceTest, RoundTripBBoxLabelString) {
 
 TEST(MediaSequenceTest, RoundTripBBoxClassIndex) {
   tensorflow::SequenceExample sequence;
-  std::vector<std::vector<int64>> classes = {{5, 3}, {1, 2}};
+  std::vector<std::vector<int64_t>> classes = {{5, 3}, {1, 2}};
   for (int i = 0; i < classes.size(); ++i) {
     AddBBoxClassIndex(classes[i], &sequence);
     ASSERT_EQ(GetBBoxClassIndexSize(sequence), i + 1);
@@ -328,7 +339,7 @@ TEST(MediaSequenceTest, RoundTripBBoxClassString) {
 
 TEST(MediaSequenceTest, RoundTripBBoxTrackIndex) {
   tensorflow::SequenceExample sequence;
-  std::vector<std::vector<int64>> tracks = {{5, 3}, {1, 2}};
+  std::vector<std::vector<int64_t>> tracks = {{5, 3}, {1, 2}};
   for (int i = 0; i < tracks.size(); ++i) {
     AddBBoxTrackIndex(tracks[i], &sequence);
     ASSERT_EQ(GetBBoxTrackIndexSize(sequence), i + 1);
@@ -348,6 +359,19 @@ TEST(MediaSequenceTest, RoundTripBBoxTrackString) {
     const auto& sequence_track = GetBBoxTrackStringAt(sequence, i);
     for (int j = 0; j < sequence_track.size(); ++j) {
       ASSERT_EQ(sequence_track[j], tracks[i][j]);
+    }
+  }
+}
+
+TEST(MediaSequenceTest, RoundTripBBoxTrackConfidence) {
+  tensorflow::SequenceExample sequence;
+  std::vector<std::vector<float>> confidences = {{0.5, 0.3}, {0.1, 0.2}};
+  for (int i = 0; i < confidences.size(); ++i) {
+    AddBBoxTrackConfidence(confidences[i], &sequence);
+    ASSERT_EQ(GetBBoxTrackConfidenceSize(sequence), i + 1);
+    const auto& sequence_confidences = GetBBoxTrackConfidenceAt(sequence, i);
+    for (int j = 0; j < sequence_confidences.size(); ++j) {
+      ASSERT_EQ(sequence_confidences[j], confidences[i][j]);
     }
   }
 }
@@ -386,12 +410,20 @@ TEST(MediaSequenceTest, RoundTripBBoxEmbedding) {
   tensorflow::SequenceExample sequence;
   std::vector<std::vector<std::string>> embeddings = {
       {"embedding00", "embedding01"}, {"embedding10", "embedding11"}};
+  std::vector<std::vector<float>> confidences = {{0.7, 0.8}, {0.9, 0.95}};
   for (int i = 0; i < embeddings.size(); ++i) {
     AddBBoxEmbeddingEncoded("GT_KEY", embeddings[i], &sequence);
     ASSERT_EQ(GetBBoxEmbeddingEncodedSize("GT_KEY", sequence), i + 1);
     const auto& sequence_embeddings =
         GetBBoxEmbeddingEncodedAt("GT_KEY", sequence, i);
     EXPECT_THAT(sequence_embeddings, testing::ElementsAreArray(embeddings[i]));
+
+    AddBBoxEmbeddingConfidence("GT_KEY", confidences[i], &sequence);
+    ASSERT_EQ(GetBBoxEmbeddingConfidenceSize("GT_KEY", sequence), i + 1);
+    const auto& sequence_confidences =
+        GetBBoxEmbeddingConfidenceAt("GT_KEY", sequence, i);
+    EXPECT_THAT(sequence_confidences,
+                testing::ElementsAreArray(confidences[i]));
   }
 }
 
@@ -407,6 +439,44 @@ TEST(MediaSequenceTest, RoundTripBBoxPoint) {
       EXPECT_EQ(sequence_points[j], points[i][j]);
     }
   }
+}
+
+TEST(MediaSequenceTest, RoundTripBBoxPointPrefixed) {
+  tensorflow::SequenceExample sequence;
+  std::vector<std::vector<std::pair<float, float>>> points = {
+      {{0.3, 0.5}, {0.4, 0.7}}, {{0.7, 0.5}, {0.3, 0.4}}};
+  for (int i = 0; i < points.size(); ++i) {
+    AddBBoxPoint("TEST", points[i], &sequence);
+    ASSERT_EQ(GetBBoxPointSize("TEST", sequence), i + 1);
+    const auto& sequence_points = GetBBoxPointAt("TEST", sequence, i);
+    for (int j = 0; j < sequence_points.size(); ++j) {
+      EXPECT_EQ(sequence_points[j], points[i][j]);
+    }
+  }
+}
+
+TEST(MediaSequenceTest, RoundTripBBox3dPoint) {
+  tensorflow::SequenceExample sequence;
+  std::vector<std::vector<std::tuple<float, float, float>>> points = {
+      {std::make_tuple(0.3, 0.5, 0.1), std::make_tuple(0.4, 0.7, 0.2)},
+      {std::make_tuple(0.7, 0.5, 0.3), std::make_tuple(0.3, 0.4, 0.4)}};
+  for (int i = 0; i < points.size(); ++i) {
+    AddBBox3dPoint(points[i], &sequence);
+    ASSERT_EQ(GetBBox3dPointSize(sequence), i + 1);
+    const auto& sequence_points = GetBBox3dPointAt(sequence, i);
+    for (int j = 0; j < sequence_points.size(); ++j) {
+      EXPECT_EQ(sequence_points[j], points[i][j]);
+    }
+  }
+}
+
+TEST(MediaSequenceTest, RoundTripRegionParts) {
+  tensorflow::SequenceExample sequence;
+  std::vector<std::string> parts = {"HEAD", "FEET"};
+  SetBBoxParts(parts, &sequence);
+  ASSERT_THAT(GetBBoxParts(sequence), testing::ElementsAreArray(parts));
+  ClearBBoxParts(&sequence);
+  EXPECT_EQ(GetBBoxPartsSize(sequence), 0);
 }
 
 TEST(MediaSequenceTest, RoundTripPredictedBBox) {
@@ -430,7 +500,7 @@ TEST(MediaSequenceTest, RoundTripPredictedBBox) {
 
 TEST(MediaSequenceTest, RoundTripPredictedBBoxTimestamp) {
   tensorflow::SequenceExample sequence;
-  std::vector<int64> timestamps = {3, 6};
+  std::vector<int64_t> timestamps = {3, 6};
   for (int i = 0; i < timestamps.size(); ++i) {
     AddPredictedBBoxTimestamp(timestamps[i], &sequence);
     ASSERT_EQ(GetPredictedBBoxTimestampSize(sequence), i + 1);
@@ -528,6 +598,13 @@ TEST(MediaSequenceTest, RoundTripImageFrameRate) {
   ASSERT_EQ(GetImageFrameRate(sequence), frame_rate);
 }
 
+TEST(MediaSequenceTest, RoundTripImageDataPath) {
+  tensorflow::SequenceExample sequence;
+  std::string data_path = "test";
+  SetImageDataPath(data_path, &sequence);
+  ASSERT_EQ(data_path, GetImageDataPath(sequence));
+}
+
 TEST(MediaSequenceTest, RoundTripFeatureFloats) {
   tensorflow::SequenceExample sequence;
   int num_features = 3;
@@ -558,6 +635,39 @@ TEST(MediaSequenceTest, RoundTripFeatureTimestamp) {
   ASSERT_EQ(GetFeatureTimestampSize(feature_key, sequence), 0);
 }
 
+TEST(MediaSequenceTest, RoundTripContextFeatureFloats) {
+  tensorflow::SequenceExample sequence;
+  std::string feature_key = "TEST";
+  std::vector<float> vf = {0., 1., 2., 4.};
+  SetContextFeatureFloats(feature_key, vf, &sequence);
+  ASSERT_EQ(GetContextFeatureFloats(feature_key, sequence).size(), vf.size());
+  ASSERT_EQ(GetContextFeatureFloats(feature_key, sequence)[3], vf[3]);
+  ClearContextFeatureFloats(feature_key, &sequence);
+  ASSERT_FALSE(HasFeatureFloats(feature_key, sequence));
+}
+
+TEST(MediaSequenceTest, RoundTripContextFeatureBytes) {
+  tensorflow::SequenceExample sequence;
+  std::string feature_key = "TEST";
+  std::vector<std::string> vs = {"0", "1", "2", "4"};
+  SetContextFeatureBytes(feature_key, vs, &sequence);
+  ASSERT_EQ(GetContextFeatureBytes(feature_key, sequence).size(), vs.size());
+  ASSERT_EQ(GetContextFeatureBytes(feature_key, sequence)[3], vs[3]);
+  ClearContextFeatureBytes(feature_key, &sequence);
+  ASSERT_FALSE(HasFeatureBytes(feature_key, sequence));
+}
+
+TEST(MediaSequenceTest, RoundTripContextFeatureInts) {
+  tensorflow::SequenceExample sequence;
+  std::string feature_key = "TEST";
+  std::vector<int64_t> vi = {0, 1, 2, 4};
+  SetContextFeatureInts(feature_key, vi, &sequence);
+  ASSERT_EQ(GetContextFeatureInts(feature_key, sequence).size(), vi.size());
+  ASSERT_EQ(GetContextFeatureInts(feature_key, sequence)[3], vi[3]);
+  ClearContextFeatureInts(feature_key, &sequence);
+  ASSERT_FALSE(HasFeatureInts(feature_key, sequence));
+}
+
 TEST(MediaSequenceTest, RoundTripOpticalFlowEncoded) {
   tensorflow::SequenceExample sequence;
   std::vector<std::string> flow = {"test", "again"};
@@ -582,16 +692,124 @@ TEST(MediaSequenceTest, RoundTripOpticalFlowTimestamp) {
   ASSERT_EQ(GetForwardFlowTimestampSize(sequence), 0);
 }
 
+TEST(MediaSequenceTest, RoundTripTextLanguage) {
+  tensorflow::SequenceExample sequence;
+  ASSERT_FALSE(HasTextLanguage(sequence));
+  SetTextLanguage("test", &sequence);
+  ASSERT_TRUE(HasTextLanguage(sequence));
+  ASSERT_EQ("test", GetTextLanguage(sequence));
+  ClearTextLanguage(&sequence);
+  ASSERT_FALSE(HasTextLanguage(sequence));
+}
+
+TEST(MediaSequenceTest, RoundTripTextContextContent) {
+  tensorflow::SequenceExample sequence;
+  ASSERT_FALSE(HasTextContextContent(sequence));
+  SetTextContextContent("test", &sequence);
+  ASSERT_TRUE(HasTextContextContent(sequence));
+  ASSERT_EQ("test", GetTextContextContent(sequence));
+  ClearTextContextContent(&sequence);
+  ASSERT_FALSE(HasTextContextContent(sequence));
+}
+
+TEST(MediaSequenceTest, RoundTripTextContextTokenId) {
+  tensorflow::SequenceExample sequence;
+  ASSERT_FALSE(HasTextContextTokenId(sequence));
+  std::vector<int64_t> vi = {47, 35};
+  SetTextContextTokenId(vi, &sequence);
+  ASSERT_TRUE(HasTextContextTokenId(sequence));
+  ASSERT_EQ(GetTextContextTokenId(sequence).size(), vi.size());
+  ASSERT_EQ(GetTextContextTokenId(sequence)[1], vi[1]);
+  ClearTextContextTokenId(&sequence);
+  ASSERT_FALSE(HasTextContextTokenId(sequence));
+}
+
+TEST(MediaSequenceTest, RoundTripTextContextEmbedding) {
+  tensorflow::SequenceExample sequence;
+  ASSERT_FALSE(HasTextContextEmbedding(sequence));
+  std::vector<float> vi = {47., 35.};
+  SetTextContextEmbedding(vi, &sequence);
+  ASSERT_TRUE(HasTextContextEmbedding(sequence));
+  ASSERT_EQ(GetTextContextEmbedding(sequence).size(), vi.size());
+  ASSERT_EQ(GetTextContextEmbedding(sequence)[1], vi[1]);
+  ClearTextContextEmbedding(&sequence);
+  ASSERT_FALSE(HasTextContextEmbedding(sequence));
+}
+
+TEST(MediaSequenceTest, RoundTripTextContent) {
+  tensorflow::SequenceExample sequence;
+  std::vector<std::string> text = {"test", "again"};
+  for (int i = 0; i < text.size(); ++i) {
+    AddTextContent(text[i], &sequence);
+    ASSERT_EQ(GetTextContentSize(sequence), i + 1);
+    ASSERT_EQ(GetTextContentAt(sequence, i), text[i]);
+  }
+  ClearTextContent(&sequence);
+  ASSERT_EQ(GetTextContentSize(sequence), 0);
+}
+
+TEST(MediaSequenceTest, RoundTripTextDuration) {
+  tensorflow::SequenceExample sequence;
+  std::vector<int64_t> timestamps = {4, 7};
+  for (int i = 0; i < timestamps.size(); ++i) {
+    AddTextTimestamp(timestamps[i], &sequence);
+    ASSERT_EQ(GetTextTimestampSize(sequence), i + 1);
+    ASSERT_EQ(GetTextTimestampAt(sequence, i), timestamps[i]);
+  }
+  ClearTextTimestamp(&sequence);
+  ASSERT_EQ(GetTextTimestampSize(sequence), 0);
+}
+
+TEST(MediaSequenceTest, RoundTripTextConfidence) {
+  tensorflow::SequenceExample sequence;
+  std::vector<float> confidence = {0.25, 1.0};
+  for (int i = 0; i < confidence.size(); ++i) {
+    AddTextConfidence(confidence[i], &sequence);
+    ASSERT_EQ(GetTextConfidenceSize(sequence), i + 1);
+    ASSERT_EQ(GetTextConfidenceAt(sequence, i), confidence[i]);
+  }
+  ClearTextConfidence(&sequence);
+  ASSERT_EQ(GetTextConfidenceSize(sequence), 0);
+}
+
+TEST(MediaSequenceTest, RoundTripTextEmbedding) {
+  tensorflow::SequenceExample sequence;
+  int num_features = 3;
+  int num_floats_in_feature = 4;
+  for (int i = 0; i < num_features; ++i) {
+    std::vector<float> vf(num_floats_in_feature, 2 << i);
+    AddTextEmbedding(vf, &sequence);
+    ASSERT_EQ(GetTextEmbeddingSize(sequence), i + 1);
+    for (float value : GetTextEmbeddingAt(sequence, i)) {
+      ASSERT_EQ(value, 2 << i);
+    }
+  }
+  ClearTextEmbedding(&sequence);
+  ASSERT_EQ(GetTextEmbeddingSize(sequence), 0);
+}
+
+TEST(MediaSequenceTest, RoundTripTextTokenId) {
+  tensorflow::SequenceExample sequence;
+  std::vector<int64_t> ids = {4, 7};
+  for (int i = 0; i < ids.size(); ++i) {
+    AddTextTokenId(ids[i], &sequence);
+    ASSERT_EQ(GetTextTokenIdSize(sequence), i + 1);
+    ASSERT_EQ(GetTextTokenIdAt(sequence, i), ids[i]);
+  }
+  ClearTextTokenId(&sequence);
+  ASSERT_EQ(GetTextTokenIdSize(sequence), 0);
+}
+
 TEST(MediaSequenceTest, ReconcileMetadataOnEmptySequence) {
   tensorflow::SequenceExample sequence;
-  MEDIAPIPE_ASSERT_OK(ReconcileMetadata(true, &sequence));
+  MP_ASSERT_OK(ReconcileMetadata(true, false, &sequence));
 }
 
 TEST(MediaSequenceTest, ReconcileMetadataImagestoLabels) {
   // Need image timestamps and label timestamps.
   tensorflow::SequenceExample sequence;
-  SetSegmentStartTimestamp(::std::vector<int64>({3, 4}), &sequence);
-  SetSegmentEndTimestamp(::std::vector<int64>({4, 5}), &sequence);
+  SetSegmentStartTimestamp(::std::vector<int64_t>({3, 4}), &sequence);
+  SetSegmentEndTimestamp(::std::vector<int64_t>({4, 5}), &sequence);
 
   // Skip 0, so the indices are the timestamp - 1
   AddImageTimestamp(1, &sequence);
@@ -600,7 +818,7 @@ TEST(MediaSequenceTest, ReconcileMetadataImagestoLabels) {
   AddImageTimestamp(4, &sequence);
   AddImageTimestamp(5, &sequence);
 
-  MEDIAPIPE_ASSERT_OK(ReconcileMetadata(true, &sequence));
+  MP_ASSERT_OK(ReconcileMetadata(true, false, &sequence));
   ASSERT_THAT(GetSegmentStartIndex(sequence),
               testing::ElementsAreArray({2, 3}));
   ASSERT_THAT(GetSegmentEndIndex(sequence), testing::ElementsAreArray({3, 4}));
@@ -610,14 +828,14 @@ TEST(MediaSequenceTest, ReconcileMetadataImages) {
   tensorflow::SequenceExample sequence;
   cv::Mat image(2, 3, CV_8UC3, cv::Scalar(0, 0, 255));
   std::vector<uchar> bytes;
-  ASSERT_TRUE(cv::imencode(".jpg", image, bytes, {80}));
+  ASSERT_TRUE(cv::imencode(".jpg", image, bytes, {}));
   std::string encoded_image(bytes.begin(), bytes.end());
   AddImageEncoded(encoded_image, &sequence);
   AddImageEncoded(encoded_image, &sequence);
   AddImageTimestamp(1000000, &sequence);
   AddImageTimestamp(2000000, &sequence);
 
-  MEDIAPIPE_ASSERT_OK(ReconcileMetadata(true, &sequence));
+  MP_ASSERT_OK(ReconcileMetadata(true, false, &sequence));
   ASSERT_EQ(GetContext(sequence, kImageFormatKey).bytes_list().value(0),
             "JPEG");
   ASSERT_EQ(GetContext(sequence, kImageChannelsKey).int64_list().value(0), 3);
@@ -638,7 +856,7 @@ TEST(MediaSequenceTest, ReconcileMetadataImagesPNG) {
   AddImageTimestamp(1000000, &sequence);
   AddImageTimestamp(2000000, &sequence);
 
-  MEDIAPIPE_ASSERT_OK(ReconcileMetadata(true, &sequence));
+  MP_ASSERT_OK(ReconcileMetadata(true, false, &sequence));
   ASSERT_EQ(GetContext(sequence, kImageFormatKey).bytes_list().value(0), "PNG");
   ASSERT_EQ(GetContext(sequence, kImageChannelsKey).int64_list().value(0), 3);
   ASSERT_EQ(GetContext(sequence, kImageWidthKey).int64_list().value(0), 3);
@@ -651,7 +869,7 @@ TEST(MediaSequenceTest, ReconcileMetadataFlowEncoded) {
   tensorflow::SequenceExample sequence;
   cv::Mat image(2, 3, CV_8UC3, cv::Scalar(0, 0, 255));
   std::vector<uchar> bytes;
-  ASSERT_TRUE(cv::imencode(".jpg", image, bytes, {80}));
+  ASSERT_TRUE(cv::imencode(".jpg", image, bytes, {}));
   std::string encoded_flow(bytes.begin(), bytes.end());
 
   AddForwardFlowEncoded(encoded_flow, &sequence);
@@ -659,7 +877,7 @@ TEST(MediaSequenceTest, ReconcileMetadataFlowEncoded) {
   AddForwardFlowTimestamp(1000000, &sequence);
   AddForwardFlowTimestamp(2000000, &sequence);
 
-  MEDIAPIPE_ASSERT_OK(ReconcileMetadata(true, &sequence));
+  MP_ASSERT_OK(ReconcileMetadata(true, false, &sequence));
   ASSERT_EQ(GetForwardFlowFormat(sequence), "JPEG");
   ASSERT_EQ(GetForwardFlowChannels(sequence), 3);
   ASSERT_EQ(GetForwardFlowWidth(sequence), 3);
@@ -675,8 +893,10 @@ TEST(MediaSequenceTest, ReconcileMetadataFloats) {
   AddFeatureFloats(feature_name, vf, &sequence);
   AddFeatureTimestamp(feature_name, 1000000, &sequence);
   AddFeatureTimestamp(feature_name, 2000000, &sequence);
+  sequence.mutable_feature_lists()->mutable_feature_list()->insert(
+      {"EMPTY/feature/floats", tensorflow::FeatureList()});
 
-  MEDIAPIPE_ASSERT_OK(ReconcileMetadata(true, &sequence));
+  MP_ASSERT_OK(ReconcileMetadata(true, false, &sequence));
   ASSERT_EQ(GetFeatureDimensions(feature_name, sequence).size(), 1);
   ASSERT_EQ(GetFeatureDimensions(feature_name, sequence)[0], 3);
   ASSERT_EQ(GetFeatureRate(feature_name, sequence), 1.0);
@@ -692,7 +912,7 @@ TEST(MediaSequenceTest, ReconcileMetadataFloatsDoesntOverwrite) {
   AddFeatureTimestamp(feature_name, 1000000, &sequence);
   AddFeatureTimestamp(feature_name, 2000000, &sequence);
 
-  MEDIAPIPE_ASSERT_OK(ReconcileMetadata(true, &sequence));
+  MP_ASSERT_OK(ReconcileMetadata(true, false, &sequence));
   ASSERT_EQ(GetFeatureDimensions(feature_name, sequence).size(), 3);
   ASSERT_EQ(GetFeatureDimensions(feature_name, sequence)[0], 1);
   ASSERT_EQ(GetFeatureDimensions(feature_name, sequence)[1], 3);
@@ -710,7 +930,7 @@ TEST(MediaSequenceTest, ReconcileMetadataFloatsFindsMismatch) {
   AddFeatureTimestamp(feature_name, 1000000, &sequence);
   AddFeatureTimestamp(feature_name, 2000000, &sequence);
 
-  ASSERT_FALSE(ReconcileMetadata(true, &sequence).ok());
+  ASSERT_FALSE(ReconcileMetadata(true, false, &sequence).ok());
 }
 
 TEST(MediaSequenceTest,
@@ -722,10 +942,11 @@ TEST(MediaSequenceTest,
   AddImageTimestamp(10, &sequence);
   AddImageTimestamp(20, &sequence);
   AddImageTimestamp(30, &sequence);
+  AddImageTimestamp(40, &sequence);
 
-  AddBBoxTimestamp(9, &sequence);
-  AddBBoxTimestamp(21, &sequence);
-  AddBBoxTimestamp(22, &sequence);  // Will be dropped in the output.
+  AddBBoxTimestamp(11, &sequence);
+  AddBBoxTimestamp(12, &sequence);  // Will be dropped in the output.
+  AddBBoxTimestamp(39, &sequence);
 
   std::vector<std::vector<Location>> bboxes = {
       {Location::CreateRelativeBBoxLocation(0.1, 0.2, 0.7, 0.7)},
@@ -735,34 +956,37 @@ TEST(MediaSequenceTest,
   AddBBox(bboxes[1], &sequence);
   AddBBox(bboxes[2], &sequence);
 
-  MEDIAPIPE_ASSERT_OK(ReconcileMetadata(true, &sequence));
+  MP_ASSERT_OK(ReconcileMetadata(true, false, &sequence));
 
-  ASSERT_EQ(GetBBoxTimestampSize(sequence), 3);
+  ASSERT_EQ(GetBBoxTimestampSize(sequence), 4);
   ASSERT_EQ(GetBBoxTimestampAt(sequence, 0), 10);
   ASSERT_EQ(GetBBoxTimestampAt(sequence, 1), 20);
   ASSERT_EQ(GetBBoxTimestampAt(sequence, 2), 30);
+  ASSERT_EQ(GetBBoxTimestampAt(sequence, 3), 40);
 
-  ASSERT_EQ(GetBBoxIsAnnotatedSize(sequence), 3);
+  ASSERT_EQ(GetBBoxIsAnnotatedSize(sequence), 4);
   ASSERT_EQ(GetBBoxIsAnnotatedAt(sequence, 0), true);
-  ASSERT_EQ(GetBBoxIsAnnotatedAt(sequence, 1), true);
+  ASSERT_EQ(GetBBoxIsAnnotatedAt(sequence, 1), false);
   ASSERT_EQ(GetBBoxIsAnnotatedAt(sequence, 2), false);
+  ASSERT_EQ(GetBBoxIsAnnotatedAt(sequence, 3), true);
 
   // Unmodified timestamp is only stored for is_annotated == true.
   ASSERT_EQ(GetUnmodifiedBBoxTimestampSize(sequence), 2);
-  ASSERT_EQ(GetUnmodifiedBBoxTimestampAt(sequence, 0), 9);
-  ASSERT_EQ(GetUnmodifiedBBoxTimestampAt(sequence, 1), 21);
+  ASSERT_EQ(GetUnmodifiedBBoxTimestampAt(sequence, 0), 11);
+  ASSERT_EQ(GetUnmodifiedBBoxTimestampAt(sequence, 1), 39);
 
   // A second reconciliation should not corrupt unmodified bbox timestamps.
-  MEDIAPIPE_ASSERT_OK(ReconcileMetadata(true, &sequence));
+  MP_ASSERT_OK(ReconcileMetadata(true, false, &sequence));
 
-  ASSERT_EQ(GetBBoxTimestampSize(sequence), 3);
+  ASSERT_EQ(GetBBoxTimestampSize(sequence), 4);
   ASSERT_EQ(GetBBoxTimestampAt(sequence, 0), 10);
   ASSERT_EQ(GetBBoxTimestampAt(sequence, 1), 20);
   ASSERT_EQ(GetBBoxTimestampAt(sequence, 2), 30);
+  ASSERT_EQ(GetBBoxTimestampAt(sequence, 3), 40);
 
   ASSERT_EQ(GetUnmodifiedBBoxTimestampSize(sequence), 2);
-  ASSERT_EQ(GetUnmodifiedBBoxTimestampAt(sequence, 0), 9);
-  ASSERT_EQ(GetUnmodifiedBBoxTimestampAt(sequence, 1), 21);
+  ASSERT_EQ(GetUnmodifiedBBoxTimestampAt(sequence, 0), 11);
+  ASSERT_EQ(GetUnmodifiedBBoxTimestampAt(sequence, 1), 39);
 }
 
 TEST(MediaSequenceTest, ReconcileMetadataBoxAnnotationsFillsMissing) {
@@ -788,7 +1012,7 @@ TEST(MediaSequenceTest, ReconcileMetadataBoxAnnotationsFillsMissing) {
   AddBBox(bboxes[1], &sequence);
   AddBBox(bboxes[2], &sequence);
 
-  MEDIAPIPE_ASSERT_OK(ReconcileMetadata(true, &sequence));
+  MP_ASSERT_OK(ReconcileMetadata(true, false, &sequence));
   ASSERT_EQ(GetBBoxTimestampSize(sequence), 5);
   ASSERT_EQ(GetBBoxIsAnnotatedSize(sequence), 5);
 
@@ -828,20 +1052,20 @@ TEST(MediaSequenceTest, ReconcileMetadataBoxAnnotationsUpdatesAllFeatures) {
   AddBBoxNumRegions(1, &sequence);
   AddBBoxNumRegions(1, &sequence);
 
-  AddBBoxLabelIndex(::std::vector<int64>({1}), &sequence);
-  AddBBoxLabelIndex(::std::vector<int64>({2}), &sequence);
+  AddBBoxLabelIndex(::std::vector<int64_t>({1}), &sequence);
+  AddBBoxLabelIndex(::std::vector<int64_t>({2}), &sequence);
 
   AddBBoxLabelString(::std::vector<std::string>({"one"}), &sequence);
   AddBBoxLabelString(::std::vector<std::string>({"two"}), &sequence);
 
-  AddBBoxClassIndex(::std::vector<int64>({1}), &sequence);
-  AddBBoxClassIndex(::std::vector<int64>({2}), &sequence);
+  AddBBoxClassIndex(::std::vector<int64_t>({1}), &sequence);
+  AddBBoxClassIndex(::std::vector<int64_t>({2}), &sequence);
 
   AddBBoxClassString(::std::vector<std::string>({"one"}), &sequence);
   AddBBoxClassString(::std::vector<std::string>({"two"}), &sequence);
 
-  AddBBoxTrackIndex(::std::vector<int64>({1}), &sequence);
-  AddBBoxTrackIndex(::std::vector<int64>({2}), &sequence);
+  AddBBoxTrackIndex(::std::vector<int64_t>({1}), &sequence);
+  AddBBoxTrackIndex(::std::vector<int64_t>({2}), &sequence);
 
   AddBBoxTrackString(::std::vector<std::string>({"one"}), &sequence);
   AddBBoxTrackString(::std::vector<std::string>({"two"}), &sequence);
@@ -857,7 +1081,7 @@ TEST(MediaSequenceTest, ReconcileMetadataBoxAnnotationsUpdatesAllFeatures) {
   AddBBox(bboxes[0], &sequence);
   AddBBox(bboxes[1], &sequence);
 
-  MEDIAPIPE_ASSERT_OK(ReconcileMetadata(true, &sequence));
+  MP_ASSERT_OK(ReconcileMetadata(true, false, &sequence));
   ASSERT_EQ(GetBBoxTimestampSize(sequence), 5);
   ASSERT_EQ(GetBBoxIsAnnotatedSize(sequence), 5);
 
@@ -884,11 +1108,11 @@ TEST(MediaSequenceTest, ReconcileMetadataBoxAnnotationsUpdatesAllFeatures) {
   ASSERT_THAT(GetBBoxLabelIndexAt(sequence, 1),
               ::testing::ElementsAreArray({2}));
   ASSERT_THAT(GetBBoxLabelIndexAt(sequence, 2),
-              ::testing::ElementsAreArray(::std::vector<int64>()));
+              ::testing::ElementsAreArray(::std::vector<int64_t>()));
   ASSERT_THAT(GetBBoxLabelIndexAt(sequence, 3),
-              ::testing::ElementsAreArray(::std::vector<int64>()));
+              ::testing::ElementsAreArray(::std::vector<int64_t>()));
   ASSERT_THAT(GetBBoxLabelIndexAt(sequence, 4),
-              ::testing::ElementsAreArray(::std::vector<int64>()));
+              ::testing::ElementsAreArray(::std::vector<int64_t>()));
 
   ASSERT_THAT(GetBBoxLabelStringAt(sequence, 0),
               ::testing::ElementsAreArray({"one"}));
@@ -906,11 +1130,11 @@ TEST(MediaSequenceTest, ReconcileMetadataBoxAnnotationsUpdatesAllFeatures) {
   ASSERT_THAT(GetBBoxClassIndexAt(sequence, 1),
               ::testing::ElementsAreArray({2}));
   ASSERT_THAT(GetBBoxClassIndexAt(sequence, 2),
-              ::testing::ElementsAreArray(::std::vector<int64>()));
+              ::testing::ElementsAreArray(::std::vector<int64_t>()));
   ASSERT_THAT(GetBBoxClassIndexAt(sequence, 3),
-              ::testing::ElementsAreArray(::std::vector<int64>()));
+              ::testing::ElementsAreArray(::std::vector<int64_t>()));
   ASSERT_THAT(GetBBoxClassIndexAt(sequence, 4),
-              ::testing::ElementsAreArray(::std::vector<int64>()));
+              ::testing::ElementsAreArray(::std::vector<int64_t>()));
 
   ASSERT_THAT(GetBBoxClassStringAt(sequence, 0),
               ::testing::ElementsAreArray({"one"}));
@@ -928,11 +1152,11 @@ TEST(MediaSequenceTest, ReconcileMetadataBoxAnnotationsUpdatesAllFeatures) {
   ASSERT_THAT(GetBBoxTrackIndexAt(sequence, 1),
               ::testing::ElementsAreArray({2}));
   ASSERT_THAT(GetBBoxTrackIndexAt(sequence, 2),
-              ::testing::ElementsAreArray(::std::vector<int64>()));
+              ::testing::ElementsAreArray(::std::vector<int64_t>()));
   ASSERT_THAT(GetBBoxTrackIndexAt(sequence, 3),
-              ::testing::ElementsAreArray(::std::vector<int64>()));
+              ::testing::ElementsAreArray(::std::vector<int64_t>()));
   ASSERT_THAT(GetBBoxTrackIndexAt(sequence, 4),
-              ::testing::ElementsAreArray(::std::vector<int64>()));
+              ::testing::ElementsAreArray(::std::vector<int64_t>()));
 
   ASSERT_THAT(GetBBoxTrackStringAt(sequence, 0),
               ::testing::ElementsAreArray({"one"}));
@@ -987,7 +1211,7 @@ TEST(MediaSequenceTest, ReconcileMetadataBoxAnnotationsDoesNotAddFields) {
   AddBBox(bboxes[1], &sequence);
   AddBBox(bboxes[2], &sequence);
 
-  MEDIAPIPE_ASSERT_OK(ReconcileMetadata(true, &sequence));
+  MP_ASSERT_OK(ReconcileMetadata(true, false, &sequence));
   ASSERT_EQ(GetBBoxTimestampSize(sequence), 5);
   ASSERT_EQ(GetBBoxIsAnnotatedSize(sequence), 5);
   ASSERT_FALSE(HasBBoxClassIndex(sequence));
@@ -995,6 +1219,45 @@ TEST(MediaSequenceTest, ReconcileMetadataBoxAnnotationsDoesNotAddFields) {
   ASSERT_FALSE(HasBBoxLabelString(sequence));
   ASSERT_FALSE(HasBBoxClassString(sequence));
   ASSERT_FALSE(HasBBoxTrackString(sequence));
+}
+
+TEST(MediaSequenceTest, ReconcileMetadataRegionAnnotations) {
+  // Need image timestamps and label timestamps.
+  tensorflow::SequenceExample sequence;
+
+  // Skip 0, so the indices are the (timestamp - 10) / 10
+  AddImageTimestamp(10, &sequence);
+  AddImageTimestamp(20, &sequence);
+  AddImageTimestamp(30, &sequence);
+
+  AddBBoxTimestamp(9, &sequence);
+  AddBBoxTimestamp(21, &sequence);
+  AddBBoxTimestamp(22, &sequence);  // Will be dropped in the output.
+
+  AddBBoxTimestamp("PREFIX", 8, &sequence);  // Will be dropped in the output.
+  AddBBoxTimestamp("PREFIX", 9, &sequence);
+  AddBBoxTimestamp("PREFIX", 22, &sequence);
+
+  // Expect both the default and "PREFIX"-ed keys to be reconciled.
+  MP_ASSERT_OK(ReconcileMetadata(false, true, &sequence));
+  ASSERT_EQ(GetBBoxTimestampSize(sequence), 3);
+  ASSERT_EQ(GetBBoxIsAnnotatedSize(sequence), 3);
+  ASSERT_EQ(GetBBoxTimestampSize("PREFIX", sequence), 3);
+  ASSERT_EQ(GetBBoxIsAnnotatedSize("PREFIX", sequence), 3);
+
+  ASSERT_EQ(GetBBoxTimestampAt(sequence, 0), 10);
+  ASSERT_EQ(GetBBoxTimestampAt(sequence, 1), 20);
+  ASSERT_EQ(GetBBoxTimestampAt(sequence, 2), 30);
+  ASSERT_EQ(GetUnmodifiedBBoxTimestampSize(sequence), 2);
+  ASSERT_EQ(GetUnmodifiedBBoxTimestampAt(sequence, 0), 9);
+  ASSERT_EQ(GetUnmodifiedBBoxTimestampAt(sequence, 1), 21);
+
+  ASSERT_EQ(GetBBoxTimestampAt("PREFIX", sequence, 0), 10);
+  ASSERT_EQ(GetBBoxTimestampAt("PREFIX", sequence, 1), 20);
+  ASSERT_EQ(GetBBoxTimestampAt("PREFIX", sequence, 2), 30);
+  ASSERT_EQ(GetUnmodifiedBBoxTimestampSize("PREFIX", sequence), 2);
+  ASSERT_EQ(GetUnmodifiedBBoxTimestampAt("PREFIX", sequence, 0), 9);
+  ASSERT_EQ(GetUnmodifiedBBoxTimestampAt("PREFIX", sequence, 1), 22);
 }
 }  // namespace
 }  // namespace mediasequence

@@ -15,6 +15,8 @@
 #ifndef MEDIAPIPE_FRAMEWORK_PROFILER_MEDIAPIPE_PROFILER_STUB_H_
 #define MEDIAPIPE_FRAMEWORK_PROFILER_MEDIAPIPE_PROFILER_STUB_H_
 
+#include <cstdint>
+
 #include "mediapipe/framework/port/status.h"
 #include "mediapipe/framework/timestamp.h"
 
@@ -53,6 +55,8 @@ class TraceEvent {
     GPU_TASK,
     DSP_TASK,
     TPU_TASK,
+    GPU_CALIBRATION,
+    PACKET_QUEUED,
   };
   TraceEvent(const EventType& event_type) {}
   TraceEvent() {}
@@ -69,7 +73,11 @@ class TraceEvent {
   inline TraceEvent& set_packet_data_id(const Packet* packet) { return *this; }
   inline TraceEvent& set_thread_id(int thread_id) { return *this; }
   inline TraceEvent& set_is_finish(bool is_finish) { return *this; }
+  inline TraceEvent& set_event_data(int64_t data) { return *this; }
 };
+
+// GraphProfiler::CaptureProfile option, see the method for details.
+enum class PopulateGraphConfig { kNo, kFull };
 
 // Empty implementation of ProfilingContext to be used in place of the
 // GraphProfiler when the main implementation is disabled.
@@ -78,17 +86,23 @@ class GraphProfilerStub {
   inline void Initialize(const ValidatedGraphConfig& validated_graph_config) {}
   inline void SetClock(const std::shared_ptr<mediapipe::Clock>& clock) {}
   inline void LogEvent(const TraceEvent& event) {}
-  inline ::mediapipe::Status GetCalculatorProfiles(
+  inline absl::Status GetCalculatorProfiles(
       std::vector<CalculatorProfile>*) const {
-    return mediapipe::OkStatus();
+    return absl::OkStatus();
   }
+  absl::Status CaptureProfile(
+      GraphProfile* result,
+      PopulateGraphConfig populate_config = PopulateGraphConfig::kNo) {
+    return absl::OkStatus();
+  }
+  inline absl::Status WriteProfile() { return absl::OkStatus(); }
   inline void Pause() {}
   inline void Resume() {}
   inline void Reset() {}
-  inline ::mediapipe::Status Start(::mediapipe::Executor* executor) {
-    return mediapipe::OkStatus();
+  inline absl::Status Start(mediapipe::Executor* executor) {
+    return absl::OkStatus();
   }
-  inline ::mediapipe::Status Stop() { return mediapipe::OkStatus(); }
+  inline absl::Status Stop() { return absl::OkStatus(); }
   inline GraphTracer* tracer() { return nullptr; }
   inline std::unique_ptr<GlProfilingHelper> CreateGlProfilingHelper() {
     return nullptr;

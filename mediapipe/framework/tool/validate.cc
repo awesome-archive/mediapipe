@@ -26,22 +26,22 @@ namespace mediapipe {
 
 namespace tool {
 
-::mediapipe::Status ValidateInput(const InputCollection& input_collection) {
+absl::Status ValidateInput(const InputCollection& input_collection) {
   if (!input_collection.name().empty()) {
-    RETURN_IF_ERROR(tool::ValidateName(input_collection.name())).SetPrepend()
+    MP_RETURN_IF_ERROR(tool::ValidateName(input_collection.name())).SetPrepend()
         << "InputCollection " << input_collection.name()
         << " has improperly specified name: ";
   }
   if (input_collection.input_type() <= InputCollection::UNKNOWN ||
       input_collection.input_type() >= InputCollection::INVALID_UPPER_BOUND) {
-    return ::mediapipe::InvalidArgumentError(
+    return absl::InvalidArgumentError(
         "InputCollection must specify a valid input_type.");
   }
   if (input_collection.file_name().empty()) {
-    return ::mediapipe::InvalidArgumentError(
+    return absl::InvalidArgumentError(
         "InputCollection must specify a file_name.");
   }
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace tool

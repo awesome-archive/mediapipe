@@ -16,6 +16,7 @@
 
 #include <algorithm>
 #include <cstddef>
+#include <cstdint>
 #include <functional>
 #include <memory>
 #include <type_traits>
@@ -24,9 +25,9 @@
 #include <utility>
 #include <vector>
 
+#include "absl/container/node_hash_map.h"
 #include "mediapipe/framework/calculator_profile.pb.h"
 #include "mediapipe/framework/packet.h"
-#include "mediapipe/framework/port/integral_types.h"
 #include "mediapipe/framework/timestamp.h"
 
 namespace mediapipe {
@@ -56,29 +57,53 @@ struct hash<mediapipe::TaskId> {
 namespace mediapipe {
 
 namespace {
+void BasicTraceEventTypes(TraceEventRegistry* result) {
+  // The initializer arguments below are: event_type, description,
+  // is_packet_event, is_stream_event, id_event_data.
+  std::vector<TraceEventType> basic_types = {
+      {TraceEvent::UNKNOWN, "An uninitialized trace-event."},
+      {TraceEvent::OPEN, "A call to Calculator::Open.", true, true},
+      {TraceEvent::PROCESS, "A call to Calculator::Process.", true, true},
+      {TraceEvent::CLOSE, "A call to Calculator::Close.", true, true},
 
-// For each event-type, whether packet details are logged.
-// The event-types are:
-//   UNKNOWN, OPEN, PROCESS, CLOSE,
-//   NOT_READY, READY_FOR_PROCESS, READY_FOR_CLOSE, THROTTLED, UNTHROTTLED
-//   CPU_TASK_USER, CPU_TASK_SYSTEM, GPU_TASK, DSP_TASK, TPU_TASK
-constexpr bool kProfilerPacketEvents[] = {  //
-    false, true,  true,  true,              //
-    false, false, false, false, false,      //
-    true,  true,  true,  true,  true};
+      {TraceEvent::NOT_READY, "A calculator cannot process packets yet."},
+      {TraceEvent::READY_FOR_PROCESS, "A calculator can process packets."},
+      {TraceEvent::READY_FOR_CLOSE, "A calculator is done processing packets."},
+      {TraceEvent::THROTTLED, "Input is disabled due to max_queue_size."},
+      {TraceEvent::UNTHROTTLED, "Input is enabled up to max_queue_size."},
 
-// For each calculator method, whether StreamTraces are desired.
-constexpr bool kProfilerStreamEvents[] = {  //
-    false, true,  true,  true,              //
-    false, false, false, false, false,      //
-    true,  true,  false, false, false};
+      {TraceEvent::CPU_TASK_USER, "User-time processing packets.", true, true},
+      {TraceEvent::CPU_TASK_SYSTEM, "System-time processing packets.", true,
+       true},
+      {TraceEvent::GPU_TASK, "GPU-time processing packets.", true, false},
+      {TraceEvent::DSP_TASK, "DSP-time processing packets.", true, false},
+      {TraceEvent::TPU_TASK, "TPU-time processing packets.", true, false},
 
-// A map defining int32 identifiers for std::string object pointers.
-// Lookup is fast when the same std::string object is used frequently.
+      {TraceEvent::GPU_CALIBRATION,
+       "A time measured by GPU clock and by CPU clock.", true, false},
+      {TraceEvent::PACKET_QUEUED, "An input queue size when a packet arrives.",
+       true, true, false},
+
+      {TraceEvent::GPU_TASK_INVOKE, "CPU timing for initiating a GPU task."},
+      {TraceEvent::TPU_TASK_INVOKE, "CPU timing for initiating a TPU task."},
+      {TraceEvent::CPU_TASK_INVOKE, "CPU timing for initiating a CPU task."},
+      {TraceEvent::GPU_TASK_INVOKE_ADVANCED,
+       "CPU timing for initiating a GPU task bypassing the TFLite "
+       "interpreter."},
+      {TraceEvent::TPU_TASK_INVOKE_ASYNC,
+       "CPU timing for async initiation of a TPU task."},
+  };
+  for (const TraceEventType& t : basic_types) {
+    (*result)[t.event_type()] = t;
+  }
+}
+
+// A map defining int32 identifiers for string object pointers.
+// Lookup is fast when the same string object is used frequently.
 class StringIdMap {
  public:
-  // Returns the int32 identifier for a std::string object pointer.
-  int32 operator[](const std::string* id) {
+  // Returns the int32 identifier for a string object pointer.
+  int32_t operator[](const std::string* id) {
     if (id == nullptr) {
       return 0;
     }
@@ -95,18 +120,20 @@ class StringIdMap {
     return string_id->second;
   }
   void clear() { pointer_id_map_.clear(), string_id_map_.clear(); }
-  const std::unordered_map<std::string, int32>& map() { return string_id_map_; }
+  const absl::node_hash_map<std::string, int32_t>& map() {
+    return string_id_map_;
+  }
 
  private:
-  std::unordered_map<const std::string*, int32> pointer_id_map_;
-  std::unordered_map<std::string, int32> string_id_map_;
-  int32 next_id = 0;
+  std::unordered_map<const std::string*, int32_t> pointer_id_map_;
+  absl::node_hash_map<std::string, int32_t> string_id_map_;
+  int32_t next_id = 0;
 };
 
 // A map defining int32 identifiers for object pointers.
 class AddressIdMap {
  public:
-  int32 operator[](const void* id) {
+  int32_t operator[](int64_t id) {
     auto pointer_id = pointer_id_map_.find(id);
     if (pointer_id != pointer_id_map_.end()) {
       return pointer_id->second;
@@ -114,13 +141,11 @@ class AddressIdMap {
     return pointer_id_map_[id] = next_id++;
   }
   void clear() { pointer_id_map_.clear(); }
-  const std::unordered_map<const void*, int32>& map() {
-    return pointer_id_map_;
-  }
+  const absl::node_hash_map<int64_t, int32_t>& map() { return pointer_id_map_; }
 
  private:
-  std::unordered_map<const void*, int32> pointer_id_map_;
-  int32 next_id = 0;
+  absl::node_hash_map<int64_t, int32_t> pointer_id_map_;
+  int32_t next_id = 0;
 };
 
 // Returns a vector of id names indexed by id.
@@ -147,7 +172,11 @@ class TraceBuilder::Impl {
     static std::string* empty_string = new std::string("");
     stream_id_map_[empty_string];
     packet_data_id_map_[0];
+    BasicTraceEventTypes(&trace_event_registry_);
   }
+
+  // Returns the registry of trace event types.
+  TraceEventRegistry* trace_event_registry() { return &trace_event_registry_; }
 
   static Timestamp TimestampAfter(const TraceBuffer& buffer,
                                   absl::Time begin_time) {
@@ -176,7 +205,7 @@ class TraceBuilder::Impl {
 
     // Index TraceEvents by task-id and stream-hop-id.
     for (const TraceEvent& event : snapshot) {
-      if (!kProfilerPacketEvents[static_cast<int>(event.event_type)]) {
+      if (!trace_event_registry_[event.event_type].is_packet_event()) {
         continue;
       }
       TaskId task_id{event.node_id, event.input_ts, event.event_type};
@@ -195,7 +224,7 @@ class TraceBuilder::Impl {
     result->set_base_timestamp(base_ts_);
     std::unordered_set<TaskId> task_ids;
     for (const TraceEvent& event : snapshot) {
-      if (!kProfilerPacketEvents[static_cast<int>(event.event_type)]) {
+      if (!trace_event_registry_[event.event_type].is_packet_event()) {
         BuildEventLog(event, result->add_calculator_trace());
         continue;
       }
@@ -245,7 +274,7 @@ class TraceBuilder::Impl {
  private:
   // Calculate the base timestamp and time.
   void SetBaseTime(const std::vector<TraceEvent>& snapshot) {
-    if (base_time_ == std::numeric_limits<int64>::max()) {
+    if (base_time_ == std::numeric_limits<int64_t>::max()) {
       for (const TraceEvent& event : snapshot) {
         if (!event.input_ts.IsSpecialValue()) {
           base_ts_ = std::min(base_ts_, event.input_ts.Value());
@@ -255,20 +284,20 @@ class TraceBuilder::Impl {
         }
         base_time_ = std::min(base_time_, ToUnixMicros(event.event_time));
       }
-      if (base_time_ == std::numeric_limits<int64>::max()) {
+      if (base_time_ == std::numeric_limits<int64_t>::max()) {
         base_time_ = 0;
       }
-      if (base_ts_ == std::numeric_limits<int64>::max()) {
+      if (base_ts_ == std::numeric_limits<int64_t>::max()) {
         base_ts_ = 0;
       }
     }
   }
 
   // Return a timestamp in micros relative to the base timetamp.
-  int64 LogTimestamp(Timestamp ts) { return ts.Value() - base_ts_; }
+  int64_t LogTimestamp(Timestamp ts) { return ts.Value() - base_ts_; }
 
   // Return a time in micros relative to the base time.
-  int64 LogTime(absl::Time time) { return ToUnixMicros(time) - base_time_; }
+  int64_t LogTime(absl::Time time) { return ToUnixMicros(time) - base_time_; }
 
   // Returns the output event that produced an input packet.
   const TraceEvent* FindOutputEvent(const TraceEvent& event) {
@@ -280,18 +309,12 @@ class TraceBuilder::Impl {
   // Construct the StreamTrace for a TraceEvent.
   void BuildStreamTrace(const TraceEvent& event,
                         GraphTrace::StreamTrace* result) {
-    if (event.is_finish) {
-      result->set_stream_id(stream_id_map_[event.stream_id]);
-      result->set_packet_timestamp(LogTimestamp(event.packet_ts));
-      return;
-    }
     result->set_stream_id(stream_id_map_[event.stream_id]);
     result->set_packet_timestamp(LogTimestamp(event.packet_ts));
-    result->set_finish_time(LogTime(event.event_time));
-    result->set_packet_id(packet_data_id_map_[event.packet_data_id]);
-    const TraceEvent* output_event = FindOutputEvent(event);
-    if (output_event) {
-      result->set_start_time(LogTime(output_event->event_time));
+    if (trace_event_registry_[event.event_type].id_event_data()) {
+      result->set_event_data(packet_data_id_map_[event.event_data]);
+    } else {
+      result->set_event_data(event.event_data);
     }
   }
 
@@ -301,10 +324,12 @@ class TraceBuilder::Impl {
     absl::Time start_time = absl::InfiniteFuture();
     absl::Time finish_time = absl::InfiniteFuture();
     for (const TraceEvent* event : task_events) {
-      if (result->input_trace().size() + result->output_trace().size() == 0) {
+      if (result->event_type() == TraceEvent::UNKNOWN) {
         result->set_node_id(event->node_id);
         result->set_event_type(event->event_type);
-        result->set_input_timestamp(LogTimestamp(event->input_ts));
+        if (event->input_ts != Timestamp::Unset()) {
+          result->set_input_timestamp(LogTimestamp(event->input_ts));
+        }
         result->set_thread_id(event->thread_id);
       }
       if (event->is_finish) {
@@ -312,12 +337,20 @@ class TraceBuilder::Impl {
       } else {
         start_time = std::min(start_time, event->event_time);
       }
-      if (kProfilerStreamEvents[static_cast<int>(event->event_type)]) {
-        if (event->is_finish) {
-          BuildStreamTrace(*event, result->add_output_trace());
-          auto s = result->output_trace(result->output_trace_size() - 1);
-        } else {
-          BuildStreamTrace(*event, result->add_input_trace());
+      if (trace_event_registry_[event->event_type].is_stream_event()) {
+        auto stream_trace = event->is_finish ? result->add_output_trace()
+                                             : result->add_input_trace();
+        BuildStreamTrace(*event, stream_trace);
+        if (!event->is_finish) {
+          // Note: is_finish is true for output events, false for input events.
+          // For input events, we log some additional timing information. The
+          // finish_time is the start_time of this Process call, the start_time
+          // is the finish_time of the Process call that output the packet.
+          stream_trace->set_finish_time(LogTime(event->event_time));
+          const TraceEvent* output_event = FindOutputEvent(*event);
+          if (output_event) {
+            stream_trace->set_start_time(LogTime(output_event->event_time));
+          }
         }
       }
     }
@@ -343,13 +376,11 @@ class TraceBuilder::Impl {
       result->set_input_timestamp(LogTimestamp(event.input_ts));
     }
     result->set_thread_id(event.thread_id);
-    if (kProfilerStreamEvents[static_cast<int>(event.event_type)]) {
+    if (trace_event_registry_[event.event_type].is_stream_event()) {
       if (event.stream_id) {
         auto stream_trace = event.is_finish ? result->add_output_trace()
                                             : result->add_input_trace();
-        stream_trace->set_stream_id(stream_id_map_[event.stream_id]);
-        stream_trace->set_packet_timestamp(LogTimestamp(event.packet_ts));
-        stream_trace->set_packet_id(packet_data_id_map_[event.packet_data_id]);
+        BuildStreamTrace(event, stream_trace);
       }
     }
   }
@@ -363,13 +394,19 @@ class TraceBuilder::Impl {
   // Map from packet data pointers to int32 identifiers.
   AddressIdMap packet_data_id_map_;
   // The timestamp represented as 0 in the trace.
-  int64 base_ts_ = std::numeric_limits<int64>::max();
+  int64_t base_ts_ = std::numeric_limits<int64_t>::max();
   // The time represented as 0 in the trace.
-  int64 base_time_ = std::numeric_limits<int64>::max();
+  int64_t base_time_ = std::numeric_limits<int64_t>::max();
+  // Indicates traits of each event type.
+  TraceEventRegistry trace_event_registry_;
 };
 
 TraceBuilder::TraceBuilder() : impl_(new Impl) {}
 TraceBuilder::~TraceBuilder() {}
+
+TraceEventRegistry* TraceBuilder::trace_event_registry() {
+  return impl_->trace_event_registry();
+}
 
 Timestamp TraceBuilder::TimestampAfter(const TraceBuffer& buffer,
                                        absl::Time begin_time) {
@@ -385,21 +422,23 @@ void TraceBuilder::CreateLog(const TraceBuffer& buffer, absl::Time begin_time,
 }
 void TraceBuilder::Clear() { impl_->Clear(); }
 
-// Defined here since inline constants fail to link in android builds.
-const TraceEvent::EventType  //
-    TraceEvent::UNKNOWN = GraphTrace::UNKNOWN,
-    TraceEvent::OPEN = GraphTrace::OPEN,
-    TraceEvent::PROCESS = GraphTrace::PROCESS,
-    TraceEvent::CLOSE = GraphTrace::CLOSE,
-    TraceEvent::NOT_READY = GraphTrace::NOT_READY,
-    TraceEvent::READY_FOR_PROCESS = GraphTrace::READY_FOR_PROCESS,
-    TraceEvent::READY_FOR_CLOSE = GraphTrace::READY_FOR_CLOSE,
-    TraceEvent::THROTTLED = GraphTrace::THROTTLED,
-    TraceEvent::UNTHROTTLED = GraphTrace::UNTHROTTLED,
-    TraceEvent::CPU_TASK_USER = GraphTrace::CPU_TASK_USER,
-    TraceEvent::CPU_TASK_SYSTEM = GraphTrace::CPU_TASK_SYSTEM,
-    TraceEvent::GPU_TASK = GraphTrace::GPU_TASK,
-    TraceEvent::DSP_TASK = GraphTrace::DSP_TASK,
-    TraceEvent::TPU_TASK = GraphTrace::TPU_TASK;
+// Defined here since constexpr requires out-of-class definition until C++17.
+const TraceEvent::EventType         //
+    TraceEvent::UNKNOWN,            //
+    TraceEvent::OPEN,               //
+    TraceEvent::PROCESS,            //
+    TraceEvent::CLOSE,              //
+    TraceEvent::NOT_READY,          //
+    TraceEvent::READY_FOR_PROCESS,  //
+    TraceEvent::READY_FOR_CLOSE,    //
+    TraceEvent::THROTTLED,          //
+    TraceEvent::UNTHROTTLED,        //
+    TraceEvent::CPU_TASK_USER,      //
+    TraceEvent::CPU_TASK_SYSTEM,    //
+    TraceEvent::GPU_TASK,           //
+    TraceEvent::DSP_TASK,           //
+    TraceEvent::TPU_TASK,           //
+    TraceEvent::GPU_CALIBRATION,    //
+    TraceEvent::PACKET_QUEUED;
 
 }  // namespace mediapipe

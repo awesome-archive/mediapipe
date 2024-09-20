@@ -12,7 +12,7 @@
 # See the License for the specific language governing permissions and
 # limitations under the License.
 
-licenses(["notice"])  # Apache 2.0
+licenses(["notice"])
 
 android_library(
     name = "android_components",
@@ -25,13 +25,16 @@ android_library(
     ),
     visibility = ["//visibility:public"],
     deps = [
+        "//mediapipe/framework:calculator_java_proto_lite",
+        "//mediapipe/framework:calculator_options_java_proto_lite",
         "//mediapipe/java/com/google/mediapipe/framework:android_framework",
         "//mediapipe/java/com/google/mediapipe/glutil",
         "//third_party:androidx_appcompat",
-        "@androidsdk//com.android.support:recyclerview-v7-25.0.0",
-        "@androidsdk//com.android.support:support-v4-25.0.0",
-        "@com_google_code_findbugs//jar",
-        "@com_google_guava_android//jar",
+        "//third_party:androidx_core",
+        "//third_party:androidx_legacy_support_v4",
+        "//third_party:androidx_recyclerview",
+        "@maven//:com_google_code_findbugs_jsr305",
+        "@maven//:com_google_guava_guava",
     ],
 )
 
@@ -45,13 +48,52 @@ android_library(
     ],
     visibility = ["//visibility:public"],
     deps = [
+        "//mediapipe/java/com/google/mediapipe/glutil",
         "//third_party:androidx_appcompat",
-        "//third_party:camera2",
+        "//third_party:androidx_core",
+        "//third_party:androidx_legacy_support_v4",
+        "//third_party:camerax_camera2",
         "//third_party:camerax_core",
-        "@androidsdk//com.android.support:support-v4-25.0.0",
-        "@androidx_concurrent_futures//jar",
-        "@androidx_lifecycle//jar",
-        "@com_google_code_findbugs//jar",
-        "@com_google_guava_android//jar",
+        "//third_party:camerax_lifecycle",
+        "@maven//:androidx_concurrent_concurrent_futures",
+        "@maven//:androidx_lifecycle_lifecycle_common",
+        "@maven//:com_google_code_findbugs_jsr305",
+        "@maven//:com_google_guava_guava",
+        "@maven//:com_google_guava_listenablefuture",
     ],
+)
+
+# Interfaces for common Audio Consumer and Producers in MediaPipe.
+android_library(
+    name = "android_audio_components",
+    srcs = [
+        "AudioDataConsumer.java",
+        "AudioDataProcessor.java",
+        "AudioDataProducer.java",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        "@maven//:com_google_code_findbugs_jsr305",
+        "@maven//:com_google_guava_guava",
+    ],
+)
+
+# MicrophoneHelper that provides access to audio data from a microphone
+android_library(
+    name = "android_microphone_helper",
+    srcs = [
+        "MicrophoneHelper.java",
+    ],
+    visibility = ["//visibility:public"],
+    deps = [
+        ":android_audio_components",
+        "@maven//:com_google_guava_guava",
+    ],
+)
+
+# Expose the java source files for building mediapipe AAR.
+filegroup(
+    name = "java_src",
+    srcs = glob(["*.java"]),
+    visibility = ["//mediapipe:__subpackages__"],
 )

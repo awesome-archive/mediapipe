@@ -17,8 +17,9 @@
 
 #include <string>
 
-#include "mediapipe/framework/port/status.h"
-#include "mediapipe/framework/port/statusor.h"
+#include "absl/base/attributes.h"
+#include "absl/status/status.h"
+#include "absl/status/statusor.h"
 
 namespace mediapipe {
 
@@ -39,13 +40,20 @@ namespace mediapipe {
 // accepts file paths. Code that can access data as a stream or as a buffer
 // should read from an asset directly on Android; an API for this will be
 // provided later. TODO.
-::mediapipe::StatusOr<std::string> PathToResourceAsFile(
-    const std::string& path);
+absl::StatusOr<std::string> PathToResourceAsFile(const std::string& path);
 
+// DEPRECATED: use `CalculatorContext::GetResources` and
+// `SubgraphContext::GetResources` which allow for fine grained per graph
+// resource loading configuration.
+//
 // Reads the entire contents of a resource. The search path is as in
 // PathToResourceAsFile.
-::mediapipe::Status GetResourceContents(const std::string& path,
-                                        std::string* output);
+ABSL_DEPRECATED(
+    "Use `CalculatorContext::GetResources` and "
+    "`SubgraphContext::GetResources` which allow for fine grained per graph "
+    "resource loading configuration.")
+absl::Status GetResourceContents(const std::string& path, std::string* output,
+                                 bool read_as_binary = true);
 
 }  // namespace mediapipe
 

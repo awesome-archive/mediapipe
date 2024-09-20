@@ -17,19 +17,26 @@
 
 #include <jni.h>
 
+#include <cstdint>
 #include <map>
 #include <memory>
-#include <queue>
 #include <string>
 #include <unordered_map>
 #include <vector>
 
-#include "mediapipe/framework/calculator_framework.h"
-#ifndef MEDIAPIPE_DISABLE_GPU
+#include "absl/status/status.h"
+#include "mediapipe/framework/graph_service.h"
+
+#ifdef MEDIAPIPE_PROFILER_AVAILABLE
+#include "mediapipe/framework/profiler/graph_profiler.h"
+#endif  // MEDIAPIPE_PROFILER_AVAILABLE
+
+#if !MEDIAPIPE_DISABLE_GPU
 #include "mediapipe/gpu/gl_calculator_helper.h"
-#endif  // !defined(MEDIAPIPE_DISABLE_GPU)
-#include "absl/synchronization/mutex.h"
 #include "mediapipe/gpu/gpu_shared_data_internal.h"
+#endif  // !MEDIAPIPE_DISABLE_GPU
+#include "absl/synchronization/mutex.h"
+#include "mediapipe/framework/calculator_framework.h"
 
 namespace mediapipe {
 namespace android {
@@ -43,33 +50,36 @@ class PacketWithContext;
 // so that we can clean up or query later.
 class Graph {
  public:
-  // The Packet java class name.
-  static constexpr char const* kJavaPacketClassName =
-      "com/google/mediapipe/framework/Packet";
-
   Graph();
   Graph(const Graph&) = delete;
   Graph& operator=(const Graph&) = delete;
   ~Graph();
 
   // Adds a callback for a given stream name.
-  ::mediapipe::Status AddCallbackHandler(std::string output_stream_name,
-                                         jobject java_callback);
-
-  // Adds a packet with header callback for a given stream name.
-  ::mediapipe::Status AddCallbackWithHeaderHandler(
-      std::string output_stream_name, jobject java_callback);
+  absl::Status AddCallbackHandler(std::string output_stream_name,
+                                  jobject java_callback);
+  // Adds a callback for multiple output streams.
+  absl::Status AddMultiStreamCallbackHandler(
+      std::vector<std::string> output_stream_names, jobject java_callback,
+      bool observe_timestamp_bounds);
 
   // Loads a binary graph from a file.
-  ::mediapipe::Status LoadBinaryGraph(std::string path_to_graph);
+  absl::Status LoadBinaryGraph(std::string path_to_graph);
   // Loads a binary graph from a buffer.
-  ::mediapipe::Status LoadBinaryGraph(const char* data, int size);
-  // Gets the calculator graph config.
-  const CalculatorGraphConfig& GetCalculatorGraphConfig();
+  absl::Status LoadBinaryGraph(const char* data, int size);
+  // Loads a binary graph template from a buffer.
+  absl::Status LoadBinaryGraphTemplate(const char* data, int size);
+  // Specifies the CalculatorGraphConfig::type of the top level graph.
+  absl::Status SetGraphType(std::string graph_type);
+  // Specifies options such as template arguments for the graph.
+  absl::Status SetGraphOptions(const char* data, int size);
+
+  // Returns the expanded calculator graph config.
+  CalculatorGraphConfig GetCalculatorGraphConfig();
 
   // Runs the graph until it closes.
   // Mainly is used for writing tests.
-  ::mediapipe::Status RunGraphUntilClose(JNIEnv* env);
+  absl::Status RunGraphUntilClose(JNIEnv* env);
 
   // The following 4 functions are used to run the graph in
   // step by step mode, the usual call sequence is like this:
@@ -82,26 +92,26 @@ class Graph {
   // wait until nothing is running and nothing can be scheduled.
   //
   // Starts running the graph.
-  ::mediapipe::Status StartRunningGraph(JNIEnv* env);
+  absl::Status StartRunningGraph(JNIEnv* env);
   // Closes one input stream.
-  ::mediapipe::Status CloseInputStream(std::string stream_name);
+  absl::Status CloseInputStream(std::string stream_name);
   // Closes all the graph input streams.
-  ::mediapipe::Status CloseAllInputStreams();
+  absl::Status CloseAllInputStreams();
   // Closes all the graph packet sources.
-  ::mediapipe::Status CloseAllPacketSources();
+  absl::Status CloseAllPacketSources();
   // Waits util graph is done.
-  ::mediapipe::Status WaitUntilDone(JNIEnv* env);
+  absl::Status WaitUntilDone(JNIEnv* env);
   // Waits util graph is idle.
-  ::mediapipe::Status WaitUntilIdle(JNIEnv* env);
+  absl::Status WaitUntilIdle(JNIEnv* env);
   // Adds a packet to an input stream.
-  ::mediapipe::Status AddPacketToInputStream(const std::string& stream_name,
-                                             const Packet& packet);
+  absl::Status AddPacketToInputStream(const std::string& stream_name,
+                                      const Packet& packet);
   // Moves a packet into an input stream.
-  ::mediapipe::Status AddPacketToInputStream(const std::string& stream_name,
-                                             Packet&& packet);
+  absl::Status AddPacketToInputStream(const std::string& stream_name,
+                                      Packet&& packet);
   // Takes the MediaPipe Packet referenced by the handle, sets its timestamp,
   // and then tries to move the Packet into the given input stream.
-  ::mediapipe::Status SetTimestampAndMovePacketToInputStream(
+  absl::Status SetTimestampAndMovePacketToInputStream(
       const std::string& stream_name, int64_t packet_handle, int64_t timestamp);
 
   // Sets the mode for adding packets to a graph input stream.
@@ -116,11 +126,11 @@ class Graph {
   // Puts a mediapipe packet into the context for management.
   // Returns the handle to the internal PacketWithContext object.
   int64_t WrapPacketIntoContext(const Packet& packet);
-
+#if !MEDIAPIPE_DISABLE_GPU
   // Gets the shared mediapipe::GpuResources. Only valid once the graph is
   // running.
   mediapipe::GpuResources* GetGpuResources() const;
-
+#endif  // !MEDIAPIPE_DISABLE_GPU
   // Adds a surface output for a given stream name.
   // Multiple outputs can be attached to the same stream.
   // Returns a native packet handle for the mediapipe::EglSurfaceHolder, or 0 in
@@ -128,7 +138,7 @@ class Graph {
   int64_t AddSurfaceOutput(const std::string& stream_name);
 
   // Sets a parent GL context to use for texture sharing.
-  ::mediapipe::Status SetParentGlContext(int64 java_gl_context);
+  absl::Status SetParentGlContext(int64_t java_gl_context);
 
   // Sets the object for a service.
   template <typename T>
@@ -159,7 +169,13 @@ class Graph {
   void CallbackToJava(JNIEnv* env, jobject java_callback_obj,
                       const Packet& packet, const Packet& header_packet);
 
+  // Invokes a Java packet list callback.
+  void CallbackToJava(JNIEnv* env, jobject java_callback_obj,
+                      const std::vector<Packet>& packets);
+
+#ifdef MEDIAPIPE_PROFILER_AVAILABLE
   ProfilingContext* GetProfilingContext();
+#endif
 
  private:
   // Increase the graph's default executor's worker thread stack size to run
@@ -170,9 +186,24 @@ class Graph {
   void EnsureMinimumExecutorStackSizeForJava();
   void SetPacketJavaClass(JNIEnv* env);
   std::map<std::string, Packet> CreateCombinedSidePackets();
+  // Returns the top-level CalculatorGraphConfig, or nullptr if the top-level
+  // CalculatorGraphConfig is not yet defined.
+  CalculatorGraphConfig* graph_config();
+  // Returns the top-level CalculatorGraphConfig::type, or "" if the top-level
+  // CalculatorGraphConfig::type is not yet defined.
+  std::string graph_type();
+  // Initializes CalculatorGraph |graph| using the loaded graph-configs.
+  absl::Status InitializeGraph(CalculatorGraph* graph);
 
-  CalculatorGraphConfig graph_;
-  bool graph_loaded_;
+  // CalculatorGraphConfigs for the calculator graph and subgraphs.
+  std::vector<CalculatorGraphConfig> graph_configs_;
+  // CalculatorGraphTemplates for the calculator graph and subgraphs.
+  std::vector<CalculatorGraphTemplate> graph_templates_;
+  // Options such as template arguments for the top-level calculator graph.
+  Subgraph::SubgraphOptions graph_options_;
+  // The CalculatorGraphConfig::type of the top-level calculator graph.
+  std::string graph_type_ = "<none>";
+
   // Used by EnsureMinimumExecutorStackSizeForJava() to ensure that the
   // default executor's stack size is increased only once.
   bool executor_stack_size_increased_;
@@ -190,12 +221,13 @@ class Graph {
   // All callback handlers managed by the context.
   std::vector<std::unique_ptr<internal::CallbackHandler>> callback_handlers_;
 
+#if !MEDIAPIPE_DISABLE_GPU
   // mediapipe::GpuResources used by the graph.
   // Note: this class does not create a CalculatorGraph until StartRunningGraph
   // is called, and we may have to create the mediapipe::GpuResources before
   // that time, e.g. before a SurfaceOutput is associated with a Surface.
   std::shared_ptr<mediapipe::GpuResources> gpu_resources_;
-
+#endif  // !MEDIAPIPE_DISABLE_GPU
   // Maps surface output names to the side packet used for the associated
   // surface.
   std::unordered_map<std::string, Packet> output_surface_side_packets_;

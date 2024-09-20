@@ -114,6 +114,16 @@ public class EglManager {
     }
   }
 
+  /** Returns the managed {@link EGLDisplay}. */
+  public EGLDisplay getEglDisplay() {
+    return eglDisplay;
+  }
+
+  /** Returns the {@link EGL10}. */
+  public EGL10 getEgl() {
+    return egl;
+  }
+
   /** Returns the managed {@link EGLContext} */
   public EGLContext getContext() {
     return eglContext;
@@ -230,7 +240,7 @@ public class EglManager {
     // Try to create an OpenGL ES 3 context first.
     int[] contextAttrs = {EGL_CONTEXT_CLIENT_VERSION, glVersion, EGL10.EGL_NONE};
     eglContext = egl.eglCreateContext(eglDisplay, eglConfig, parentContext, contextAttrs);
-    if (eglContext == null) {
+    if (eglContext == null || eglContext == EGL10.EGL_NO_CONTEXT) {
       int error = egl.eglGetError();
       throw new RuntimeException(
           "Could not create GL context: EGL error: 0x"

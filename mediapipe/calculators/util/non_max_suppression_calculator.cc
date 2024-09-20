@@ -18,12 +18,13 @@
 #include <utility>
 #include <vector>
 
+#include "absl/log/absl_check.h"
+#include "absl/log/absl_log.h"
 #include "mediapipe/calculators/util/non_max_suppression_calculator.pb.h"
 #include "mediapipe/framework/calculator_framework.h"
 #include "mediapipe/framework/formats/detection.pb.h"
 #include "mediapipe/framework/formats/image_frame.h"
 #include "mediapipe/framework/formats/location.h"
-#include "mediapipe/framework/port/logging.h"
 #include "mediapipe/framework/port/rectangle.h"
 #include "mediapipe/framework/port/status.h"
 
@@ -47,11 +48,12 @@ bool RetainMaxScoringLabelOnly(Detection* detection) {
   if (detection->label_id_size() == 0 && detection->label_size() == 0) {
     return false;
   }
-  CHECK(detection->label_id_size() == detection->score_size() ||
-        detection->label_size() == detection->score_size())
+  ABSL_CHECK(detection->label_id_size() == detection->score_size() ||
+             detection->label_size() == detection->score_size())
       << "Number of scores must be equal to number of detections.";
 
   std::vector<std::pair<int, float>> indexed_scores;
+  indexed_scores.reserve(detection->score_size());
   for (int k = 0; k < detection->score_size(); ++k) {
     indexed_scores.push_back(std::make_pair(k, detection->score(k)));
   }
@@ -91,7 +93,7 @@ float OverlapSimilarity(
       normalization = rect1.Area() + rect2.Area() - intersection_area;
       break;
     default:
-      LOG(FATAL) << "Unrecognized overlap type: " << overlap_type;
+      ABSL_LOG(FATAL) << "Unrecognized overlap type: " << overlap_type;
   }
   return normalization > 0.0f ? intersection_area / normalization : 0.0f;
 }
@@ -154,7 +156,7 @@ class NonMaxSuppressionCalculator : public CalculatorBase {
   NonMaxSuppressionCalculator() = default;
   ~NonMaxSuppressionCalculator() override = default;
 
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     const auto& options = cc->Options<NonMaxSuppressionCalculatorOptions>();
     if (cc->Inputs().HasTag(kImageTag)) {
       cc->Inputs().Tag(kImageTag).Set<ImageFrame>();
@@ -163,21 +165,23 @@ class NonMaxSuppressionCalculator : public CalculatorBase {
       cc->Inputs().Index(k).Set<Detections>();
     }
     cc->Outputs().Index(0).Set<Detections>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) override {
+  absl::Status Open(CalculatorContext* cc) override {
+    cc->SetOffset(TimestampDiff(0));
+
     options_ = cc->Options<NonMaxSuppressionCalculatorOptions>();
-    CHECK_GT(options_.num_detection_streams(), 0)
+    ABSL_CHECK_GT(options_.num_detection_streams(), 0)
         << "At least one detection stream need to be specified.";
-    CHECK_NE(options_.max_num_detections(), 0)
+    ABSL_CHECK_NE(options_.max_num_detections(), 0)
         << "max_num_detections=0 is not a valid value. Please choose a "
         << "positive number of you want to limit the number of output "
         << "detections, or set -1 if you do not want any limit.";
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
+  absl::Status Process(CalculatorContext* cc) override {
     // Add all input detections to the same vector.
     Detections input_detections;
     for (int i = 0; i < options_.num_detection_streams(); ++i) {
@@ -197,7 +201,7 @@ class NonMaxSuppressionCalculator : public CalculatorBase {
       if (options_.return_empty_detections()) {
         cc->Outputs().Index(0).Add(new Detections(), cc->InputTimestamp());
       }
-      return ::mediapipe::OkStatus();
+      return absl::OkStatus();
     }
 
     // Remove all but the maximum scoring label from each input detection. This
@@ -242,7 +246,7 @@ class NonMaxSuppressionCalculator : public CalculatorBase {
 
     cc->Outputs().Index(0).Add(retained_detections, cc->InputTimestamp());
 
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
  private:
@@ -301,12 +305,12 @@ class NonMaxSuppressionCalculator : public CalculatorBase {
     IndexedScores candidates;
     output_detections->clear();
     while (!remained_indexed_scores.empty()) {
+      const int original_indexed_scores_size = remained_indexed_scores.size();
       const auto& detection = detections[remained_indexed_scores[0].first];
       if (options_.min_score_threshold() > 0 &&
           detection.score(0) < options_.min_score_threshold()) {
         break;
       }
-
       remained.clear();
       candidates.clear();
       const Location location(detection.location_data());
@@ -323,6 +327,9 @@ class NonMaxSuppressionCalculator : public CalculatorBase {
       }
       auto weighted_detection = detection;
       if (!candidates.empty()) {
+        const int num_keypoints =
+            detection.location_data().relative_keypoints_size();
+        std::vector<float> keypoints(num_keypoints * 2);
         float w_xmin = 0.0f;
         float w_ymin = 0.0f;
         float w_xmax = 0.0f;
@@ -330,13 +337,20 @@ class NonMaxSuppressionCalculator : public CalculatorBase {
         float total_score = 0.0f;
         for (const auto& candidate : candidates) {
           total_score += candidate.second;
-          const auto& bbox = detections[candidate.first]
-                                 .location_data()
-                                 .relative_bounding_box();
+          const auto& location_data =
+              detections[candidate.first].location_data();
+          const auto& bbox = location_data.relative_bounding_box();
           w_xmin += bbox.xmin() * candidate.second;
           w_ymin += bbox.ymin() * candidate.second;
           w_xmax += (bbox.xmin() + bbox.width()) * candidate.second;
           w_ymax += (bbox.ymin() + bbox.height()) * candidate.second;
+
+          for (int i = 0; i < num_keypoints; ++i) {
+            keypoints[i * 2] +=
+                location_data.relative_keypoints(i).x() * candidate.second;
+            keypoints[i * 2 + 1] +=
+                location_data.relative_keypoints(i).y() * candidate.second;
+          }
         }
         auto* weighted_location = weighted_detection.mutable_location_data()
                                       ->mutable_relative_bounding_box();
@@ -346,9 +360,22 @@ class NonMaxSuppressionCalculator : public CalculatorBase {
                                      weighted_location->xmin());
         weighted_location->set_height((w_ymax / total_score) -
                                       weighted_location->ymin());
+        for (int i = 0; i < num_keypoints; ++i) {
+          auto* keypoint = weighted_detection.mutable_location_data()
+                               ->mutable_relative_keypoints(i);
+          keypoint->set_x(keypoints[i * 2] / total_score);
+          keypoint->set_y(keypoints[i * 2 + 1] / total_score);
+        }
       }
-      remained_indexed_scores = std::move(remained);
+
       output_detections->push_back(weighted_detection);
+      // Breaks the loop if the size of indexed scores doesn't change after an
+      // iteration.
+      if (original_indexed_scores_size == remained.size()) {
+        break;
+      } else {
+        remained_indexed_scores = std::move(remained);
+      }
     }
   }
 

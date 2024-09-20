@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cstdint>
 #include <vector>
 
 #include "absl/synchronization/mutex.h"
@@ -19,7 +20,6 @@
 #include "mediapipe/framework/packet.h"
 #include "mediapipe/framework/port/gmock.h"
 #include "mediapipe/framework/port/gtest.h"
-#include "mediapipe/framework/port/integral_types.h"
 #include "mediapipe/framework/port/logging.h"
 #include "mediapipe/framework/port/parse_text_proto.h"
 #include "mediapipe/framework/port/status_matchers.h"
@@ -30,39 +30,39 @@ namespace mediapipe {
 
 namespace {
 
-const int64 kMaxPacketId = 100;
-const int64 kSlowCalculatorRate = 10;
+const int64_t kMaxPacketId = 100;
+const int64_t kSlowCalculatorRate = 10;
 
 // Rate limiter for TestSlowCalculator.
 ABSL_CONST_INIT absl::Mutex g_source_mutex(absl::kConstInit);
-int64 g_source_counter GUARDED_BY(g_source_mutex);
+int64_t g_source_counter ABSL_GUARDED_BY(g_source_mutex);
 
 // Rate limiter for TestSourceCalculator.
-int64 g_slow_counter GUARDED_BY(g_source_mutex);
+int64_t g_slow_counter ABSL_GUARDED_BY(g_source_mutex);
 
 // Flag that indicates that the source is done.
-bool g_source_done GUARDED_BY(g_source_mutex);
+bool g_source_done ABSL_GUARDED_BY(g_source_mutex);
 
 class TestSourceCalculator : public CalculatorBase {
  public:
   TestSourceCalculator() : current_packet_id_(0) {}
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
-    cc->Outputs().Index(0).Set<int64>();
-    return ::mediapipe::OkStatus();
+  static absl::Status GetContract(CalculatorContract* cc) {
+    cc->Outputs().Index(0).Set<int64_t>();
+    return absl::OkStatus();
   }
-  ::mediapipe::Status Open(CalculatorContext* cc) override {
+  absl::Status Open(CalculatorContext* cc) override {
     absl::MutexLock lock(&g_source_mutex);
     g_source_counter = 0;
     g_source_done = false;
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
+  absl::Status Process(CalculatorContext* cc) override {
     if (current_packet_id_ == kMaxPacketId) {
       absl::MutexLock lock(&g_source_mutex);
       g_source_done = true;
       return tool::StatusStop();
     }
-    cc->Outputs().Index(0).Add(new int64(0), Timestamp(current_packet_id_));
+    cc->Outputs().Index(0).Add(new int64_t(0), Timestamp(current_packet_id_));
     ++current_packet_id_;
     {
       absl::MutexLock lock(&g_source_mutex);
@@ -70,15 +70,15 @@ class TestSourceCalculator : public CalculatorBase {
       g_source_mutex.Await(
           absl::Condition(this, &TestSourceCalculator::CanProceed));
     }
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
  private:
-  bool CanProceed() const EXCLUSIVE_LOCKS_REQUIRED(g_source_mutex) {
+  bool CanProceed() const ABSL_EXCLUSIVE_LOCKS_REQUIRED(g_source_mutex) {
     return g_source_counter <= kSlowCalculatorRate * g_slow_counter ||
            g_source_counter <= 1;
   }
-  int64 current_packet_id_;
+  int64_t current_packet_id_;
 };
 
 REGISTER_CALCULATOR(TestSourceCalculator);
@@ -86,18 +86,18 @@ REGISTER_CALCULATOR(TestSourceCalculator);
 class TestSlowCalculator : public CalculatorBase {
  public:
   TestSlowCalculator() = default;
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
-    cc->Inputs().Index(0).Set<int64>();
-    cc->Outputs().Index(0).Set<int64>();
-    return ::mediapipe::OkStatus();
+  static absl::Status GetContract(CalculatorContract* cc) {
+    cc->Inputs().Index(0).Set<int64_t>();
+    cc->Outputs().Index(0).Set<int64_t>();
+    return absl::OkStatus();
   }
-  ::mediapipe::Status Open(CalculatorContext* cc) override {
+  absl::Status Open(CalculatorContext* cc) override {
     absl::MutexLock lock(&g_source_mutex);
     g_slow_counter = 0;
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
-    cc->Outputs().Index(0).Add(new int64(0),
+  absl::Status Process(CalculatorContext* cc) override {
+    cc->Outputs().Index(0).Add(new int64_t(0),
                                cc->Inputs().Index(0).Value().Timestamp());
     {
       absl::MutexLock lock(&g_source_mutex);
@@ -105,11 +105,11 @@ class TestSlowCalculator : public CalculatorBase {
       g_source_mutex.Await(
           absl::Condition(this, &TestSlowCalculator::CanProceed));
     }
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
  private:
-  bool CanProceed() const EXCLUSIVE_LOCKS_REQUIRED(g_source_mutex) {
+  bool CanProceed() const ABSL_EXCLUSIVE_LOCKS_REQUIRED(g_source_mutex) {
     return g_source_counter > kSlowCalculatorRate * g_slow_counter ||
            g_source_done;
   }
@@ -118,8 +118,9 @@ class TestSlowCalculator : public CalculatorBase {
 REGISTER_CALCULATOR(TestSlowCalculator);
 
 // Return the values of the timestamps of a vector of Packets.
-static std::vector<int64> TimestampValues(const std::vector<Packet>& packets) {
-  std::vector<int64> result;
+static std::vector<int64_t> TimestampValues(
+    const std::vector<Packet>& packets) {
+  std::vector<int64_t> result;
   for (const Packet& p : packets) {
     result.push_back(p.Timestamp().Value());
   }
@@ -149,24 +150,24 @@ TEST_P(FixedSizeInputStreamHandlerTest, DropsPackets) {
   // regulated by FixedSizeInputStreamHandler.
   CalculatorGraphConfig graph_config =
       ParseTextProtoOrDie<CalculatorGraphConfig>(
-          R"(node {
-               calculator: "TestSourceCalculator"
-               output_stream: "input_packets"
-             }
-             node {
-               calculator: "TestSlowCalculator"
-               input_stream: "input_packets"
-               output_stream: "output_packets"
-               input_stream_handler {
-                 input_stream_handler: "FixedSizeInputStreamHandler"
+          R"pb(node {
+                 calculator: "TestSourceCalculator"
+                 output_stream: "input_packets"
                }
-             })");
+               node {
+                 calculator: "TestSlowCalculator"
+                 input_stream: "input_packets"
+                 output_stream: "output_packets"
+                 input_stream_handler {
+                   input_stream_handler: "FixedSizeInputStreamHandler"
+                 }
+               })pb");
   SetFixedMinSize(graph_config.mutable_node(1), GetParam());
   std::vector<Packet> output_packets;
   tool::AddVectorSink("output_packets", &graph_config, &output_packets);
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(graph_config));
-  MEDIAPIPE_ASSERT_OK(graph.Run());
+  MP_ASSERT_OK(graph.Initialize(graph_config));
+  MP_ASSERT_OK(graph.Run());
 
   // The TestSlowCalculator consumes one packet after every tenth packet
   // is sent.  All other packets are dropped by the FixedSizeInputStreamHandler.
@@ -174,7 +175,7 @@ TEST_P(FixedSizeInputStreamHandlerTest, DropsPackets) {
   // consumed.  In this way, the TestSlowCalculator consumes and outputs only
   // every tenth packet.
   EXPECT_EQ(output_packets.size(), 11);
-  std::vector<int64> expected_ts = {0, 9, 19, 29, 39, 49, 59, 69, 79, 89, 99};
+  std::vector<int64_t> expected_ts = {0, 9, 19, 29, 39, 49, 59, 69, 79, 89, 99};
   EXPECT_THAT(TimestampValues(output_packets),
               testing::ContainerEq(expected_ts));
 }
@@ -190,29 +191,29 @@ TEST_P(FixedSizeInputStreamHandlerTest, DropsPacketsInFullStream) {
   // CountingSourceCalculator will stay throttled and the test will time out.
   CalculatorGraphConfig graph_config =
       ParseTextProtoOrDie<CalculatorGraphConfig>(
-          R"(max_queue_size: 10
-             node {
-               calculator: "CountingSourceCalculator"
-               input_side_packet: "MAX_COUNT:max_count"
-               input_side_packet: "BATCH_SIZE:batch_size"
-               output_stream: "input_packets"
-             }
-             node {
-               calculator: "PassThroughCalculator"
-               input_stream: "input_packets"
-               output_stream: "output_packets"
-               input_stream_handler {
-                 input_stream_handler: "FixedSizeInputStreamHandler"
+          R"pb(max_queue_size: 10
+               node {
+                 calculator: "CountingSourceCalculator"
+                 input_side_packet: "MAX_COUNT:max_count"
+                 input_side_packet: "BATCH_SIZE:batch_size"
+                 output_stream: "input_packets"
                }
-             })");
+               node {
+                 calculator: "PassThroughCalculator"
+                 input_stream: "input_packets"
+                 output_stream: "output_packets"
+                 input_stream_handler {
+                   input_stream_handler: "FixedSizeInputStreamHandler"
+                 }
+               })pb");
   SetFixedMinSize(graph_config.mutable_node(1), GetParam());
   std::vector<Packet> output_packets;
   tool::AddVectorSink("output_packets", &graph_config, &output_packets);
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(
+  MP_ASSERT_OK(
       graph.Initialize(graph_config, {{"max_count", MakePacket<int>(10)},
                                       {"batch_size", MakePacket<int>(10)}}));
-  MEDIAPIPE_ASSERT_OK(graph.Run());
+  MP_ASSERT_OK(graph.Run());
 }
 
 // Tests FixedSizeInputStreamHandler with several input streams running
@@ -220,7 +221,7 @@ TEST_P(FixedSizeInputStreamHandlerTest, DropsPacketsInFullStream) {
 TEST_P(FixedSizeInputStreamHandlerTest, ParallelWriteAndRead) {
   CalculatorGraphConfig graph_config =
       ParseTextProtoOrDie<CalculatorGraphConfig>(
-          R"(
+          R"pb(
             input_stream: "in_0"
             input_stream: "in_1"
             input_stream: "in_2"
@@ -241,7 +242,7 @@ TEST_P(FixedSizeInputStreamHandlerTest, ParallelWriteAndRead) {
                   }
                 }
               }
-            })");
+            })pb");
   SetFixedMinSize(graph_config.mutable_node(0), GetParam());
   std::vector<Packet> output_packets[3];
   for (int i = 0; i < 3; ++i) {
@@ -249,11 +250,11 @@ TEST_P(FixedSizeInputStreamHandlerTest, ParallelWriteAndRead) {
                         &output_packets[i]);
   }
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(graph_config, {}));
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
+  MP_ASSERT_OK(graph.Initialize(graph_config, {}));
+  MP_ASSERT_OK(graph.StartRun({}));
 
   {
-    ::mediapipe::ThreadPool pool(3);
+    mediapipe::ThreadPool pool(3);
     pool.StartWorkers();
 
     // Start 3 writers.
@@ -262,15 +263,15 @@ TEST_P(FixedSizeInputStreamHandlerTest, ParallelWriteAndRead) {
         std::string stream_name = absl::StrCat("in_", w);
         for (int i = 0; i < 50; ++i) {
           Packet p = MakePacket<int>(i).At(Timestamp(i));
-          MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(stream_name, p));
+          MP_EXPECT_OK(graph.AddPacketToInputStream(stream_name, p));
           absl::SleepFor(absl::Microseconds(100));
         }
       });
     }
   }
 
-  MEDIAPIPE_ASSERT_OK(graph.CloseAllInputStreams());
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
+  MP_ASSERT_OK(graph.CloseAllInputStreams());
+  MP_ASSERT_OK(graph.WaitUntilDone());
   for (int i = 0; i < 3; ++i) {
     EXPECT_EQ(output_packets[i].size(), output_packets[0].size());
     for (int j = 0; j < output_packets[i].size(); j++) {
@@ -289,7 +290,7 @@ TEST_P(FixedSizeInputStreamHandlerTest, ParallelWriteAndRead) {
 TEST_P(FixedSizeInputStreamHandlerTest, LateArrivalDrop) {
   CalculatorGraphConfig graph_config =
       ParseTextProtoOrDie<CalculatorGraphConfig>(
-          R"(
+          R"pb(
             input_stream: "in_0"
             input_stream: "in_1"
             input_stream: "in_2"
@@ -310,7 +311,7 @@ TEST_P(FixedSizeInputStreamHandlerTest, LateArrivalDrop) {
                   }
                 }
               }
-            })");
+            })pb");
   SetFixedMinSize(graph_config.mutable_node(0), GetParam());
   std::vector<Packet> output_packets[3];
   std::string in_streams[3];
@@ -320,42 +321,42 @@ TEST_P(FixedSizeInputStreamHandlerTest, LateArrivalDrop) {
                         &output_packets[i]);
   }
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(graph_config, {}));
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
+  MP_ASSERT_OK(graph.Initialize(graph_config, {}));
+  MP_ASSERT_OK(graph.StartRun({}));
 
   for (int i = 1; i <= 6; i++) {
-    MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
+    MP_EXPECT_OK(graph.AddPacketToInputStream(
         in_streams[0], MakePacket<int>(i).At(Timestamp(i))));
   }
   for (int i = 3; i <= 7; i++) {
-    MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
+    MP_EXPECT_OK(graph.AddPacketToInputStream(
         in_streams[1], MakePacket<int>(i).At(Timestamp(i))));
-    MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
+    MP_ASSERT_OK(graph.WaitUntilIdle());
   }
   // At this point everything before ts 5 should be dropped.
   for (int i = 4; i <= 7; i++) {
-    MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
+    MP_EXPECT_OK(graph.AddPacketToInputStream(
         in_streams[2], MakePacket<int>(i).At(Timestamp(i))));
-    MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
+    MP_ASSERT_OK(graph.WaitUntilIdle());
   }
 
-  MEDIAPIPE_ASSERT_OK(graph.CloseAllInputStreams());
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
+  MP_ASSERT_OK(graph.CloseAllInputStreams());
+  MP_ASSERT_OK(graph.WaitUntilDone());
 
   if (GetParam()) {
     EXPECT_THAT(TimestampValues(output_packets[0]),
-                testing::ContainerEq(std::vector<int64>{1, 2, 3, 4, 5, 6}));
+                testing::ContainerEq(std::vector<int64_t>{1, 2, 3, 4, 5, 6}));
     EXPECT_THAT(TimestampValues(output_packets[1]),
-                testing::ContainerEq(std::vector<int64>{3, 4, 5, 6, 7}));
+                testing::ContainerEq(std::vector<int64_t>{3, 4, 5, 6, 7}));
     EXPECT_THAT(TimestampValues(output_packets[2]),
-                testing::ContainerEq(std::vector<int64>{4, 5, 6, 7}));
+                testing::ContainerEq(std::vector<int64_t>{4, 5, 6, 7}));
   } else {
     EXPECT_THAT(TimestampValues(output_packets[0]),
-                testing::ContainerEq(std::vector<int64>{5, 6}));
+                testing::ContainerEq(std::vector<int64_t>{5, 6}));
     EXPECT_THAT(TimestampValues(output_packets[1]),
-                testing::ContainerEq(std::vector<int64>{5, 6, 7}));
+                testing::ContainerEq(std::vector<int64_t>{5, 6, 7}));
     EXPECT_THAT(TimestampValues(output_packets[2]),
-                testing::ContainerEq(std::vector<int64>{5, 6, 7}));
+                testing::ContainerEq(std::vector<int64_t>{5, 6, 7}));
   }
 }
 

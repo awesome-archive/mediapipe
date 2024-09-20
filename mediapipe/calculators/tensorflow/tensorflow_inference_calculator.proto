@@ -42,12 +42,19 @@ message TensorFlowInferenceCalculatorOptions {
   // If the 0th dimension is the batch dimension, then the tensors are
   // concatenated on that dimension. If the 0th is a data dimension, then a 0th
   // dimension is added before concatenating. If added, the extra dimension is
-  // removed before outputing the tensor. Examples of each case: If you want
+  // removed before outputting the tensor. Examples of each case: If you want
   // to batch spectra of audio over time for an LSTM, a time-frequency
   // representation has a 0th dimension as the batch dimension. If you want to
   // batch frames of video that are [width, height, channels], the batch
   // dimension needs to be added.
   optional bool add_batch_dim_to_tensors = 3 [default = true];
+
+  // Whether to pad the last batch to batch_size or run inference on a partial
+  // batch.
+  // Setting this to false is useful for TPU models that use in-graph batching
+  // as padding in MediaPipe conflicts with merging of batches in tensorflows
+  // batch ops.
+  optional bool pad_to_batch_size = 8 [default = true];
 
   // These pairs represent feed and fetch tensors for handling recurrent state.
   // Each entry is a colon separated pair of strings. The first half of each
@@ -76,4 +83,13 @@ message TensorFlowInferenceCalculatorOptions {
   // only works in the local process, not "globally" across multiple processes
   // or replicas (if any). Default to 0, i.e. no limit.
   optional int32 max_concurrent_session_runs = 6 [default = 0];
+
+  // If turned on, the Calculator expects a vector of batched packages as input.
+  // This will make sure that you can turn on max_in_flight for batch_size
+  // greater than 1. Otherwise it results in problems of none-monotonically
+  // increasing timestamps.
+  // Use BatchSequentialCalculator to create the batches. The batch_size
+  // should agree for both calculators. All the data in a batch is processed
+  // together. The BatchSequentialCalculator can't run with max_in_flight.
+  optional bool batched_input = 7;
 }

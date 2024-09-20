@@ -32,7 +32,7 @@ ProtoSubgraph::ProtoSubgraph(const CalculatorGraphConfig& config)
 
 ProtoSubgraph::~ProtoSubgraph() {}
 
-::mediapipe::StatusOr<CalculatorGraphConfig> ProtoSubgraph::GetConfig(
+absl::StatusOr<CalculatorGraphConfig> ProtoSubgraph::GetConfig(
     const Subgraph::SubgraphOptions& options) {
   return config_;
 }
@@ -42,13 +42,13 @@ TemplateSubgraph::TemplateSubgraph(const CalculatorGraphTemplate& templ)
 
 TemplateSubgraph::~TemplateSubgraph() {}
 
-::mediapipe::StatusOr<CalculatorGraphConfig> TemplateSubgraph::GetConfig(
+absl::StatusOr<CalculatorGraphConfig> TemplateSubgraph::GetConfig(
     const Subgraph::SubgraphOptions& options) {
-  const TemplateDict& arguments =
-      options.GetExtension(TemplateSubgraphOptions::ext).dict();
+  TemplateDict arguments =
+      Subgraph::GetOptions<mediapipe::TemplateSubgraphOptions>(options).dict();
   tool::TemplateExpander expander;
   CalculatorGraphConfig config;
-  RETURN_IF_ERROR(expander.ExpandTemplates(arguments, templ_, &config));
+  MP_RETURN_IF_ERROR(expander.ExpandTemplates(arguments, templ_, &config));
   return config;
 }
 
@@ -61,6 +61,13 @@ GraphRegistry::GraphRegistry(
     FunctionRegistry<std::unique_ptr<Subgraph>>* factories)
     : global_factories_(factories) {}
 
+void GraphRegistry::Register(
+    const std::string& type_name,
+    std::function<std::unique_ptr<Subgraph>()> factory) {
+  local_factories_.Register(type_name, factory);
+}
+
+// TODO: Remove this convenience function.
 void GraphRegistry::Register(const std::string& type_name,
                              const CalculatorGraphConfig& config) {
   local_factories_.Register(type_name, [config] {
@@ -69,6 +76,7 @@ void GraphRegistry::Register(const std::string& type_name,
   });
 }
 
+// TODO: Remove this convenience function.
 void GraphRegistry::Register(const std::string& type_name,
                              const CalculatorGraphTemplate& templ) {
   local_factories_.Register(type_name, [templ] {
@@ -83,19 +91,19 @@ bool GraphRegistry::IsRegistered(const std::string& ns,
          global_factories_->IsRegistered(ns, type_name);
 }
 
-::mediapipe::StatusOr<CalculatorGraphConfig> GraphRegistry::CreateByName(
-    const std::string& ns, const std::string& type_name,
-    const Subgraph::SubgraphOptions* options) const {
-  Subgraph::SubgraphOptions graph_options;
-  if (options) {
-    graph_options = *options;
-  }
-  ::mediapipe::StatusOr<std::unique_ptr<Subgraph>> maker =
+absl::StatusOr<CalculatorGraphConfig> GraphRegistry::CreateByName(
+    absl::string_view ns, absl::string_view type_name,
+    SubgraphContext* context) const {
+  absl::StatusOr<std::unique_ptr<Subgraph>> maker =
       local_factories_.IsRegistered(ns, type_name)
           ? local_factories_.Invoke(ns, type_name)
           : global_factories_->Invoke(ns, type_name);
-  RETURN_IF_ERROR(maker.status());
-  return maker.ValueOrDie()->GetConfig(graph_options);
+  MP_RETURN_IF_ERROR(maker.status());
+  if (context != nullptr) {
+    return maker.value()->GetConfig(context);
+  }
+  SubgraphContext default_context;
+  return maker.value()->GetConfig(&default_context);
 }
 
 }  // namespace mediapipe

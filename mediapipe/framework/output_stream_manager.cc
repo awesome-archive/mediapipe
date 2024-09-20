@@ -14,26 +14,27 @@
 
 #include "mediapipe/framework/output_stream_manager.h"
 
+#include "absl/log/absl_check.h"
 #include "absl/synchronization/mutex.h"
 #include "mediapipe/framework/input_stream_handler.h"
 #include "mediapipe/framework/port/status_builder.h"
 
 namespace mediapipe {
 
-::mediapipe::Status OutputStreamManager::Initialize(
-    const std::string& name, const PacketType* packet_type) {
+absl::Status OutputStreamManager::Initialize(const std::string& name,
+                                             const PacketType* packet_type) {
   output_stream_spec_.name = name;
   output_stream_spec_.packet_type = packet_type;
+  output_stream_spec_.offset_enabled = false;
   PrepareForRun(nullptr);
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 void OutputStreamManager::PrepareForRun(
-    std::function<void(::mediapipe::Status)> error_callback) {
+    std::function<void(absl::Status)> error_callback) {
   output_stream_spec_.error_callback = std::move(error_callback);
 
   output_stream_spec_.locked_intro_data = false;
-  output_stream_spec_.offset_enabled = false;
   output_stream_spec_.header = Packet();
   {
     absl::MutexLock lock(&stream_mutex_);
@@ -66,7 +67,7 @@ bool OutputStreamManager::IsClosed() const {
 void OutputStreamManager::PropagateHeader() {
   if (output_stream_spec_.locked_intro_data) {
     output_stream_spec_.TriggerErrorCallback(
-        ::mediapipe::FailedPreconditionErrorBuilder(MEDIAPIPE_LOC)
+        mediapipe::FailedPreconditionErrorBuilder(MEDIAPIPE_LOC)
         << "PropagateHeader must be called in CalculatorNode::OpenNode(). "
            "Stream: \""
         << output_stream_spec_.name << "\".");
@@ -80,7 +81,7 @@ void OutputStreamManager::PropagateHeader() {
 
 void OutputStreamManager::AddMirror(InputStreamHandler* input_stream_handler,
                                     CollectionItemId id) {
-  CHECK(input_stream_handler);
+  ABSL_CHECK(input_stream_handler);
   mirrors_.emplace_back(input_stream_handler, id);
 }
 
@@ -106,7 +107,7 @@ Timestamp OutputStreamManager::ComputeOutputTimestampBound(
   if (input_timestamp != Timestamp::Unstarted() &&
       !input_timestamp.IsAllowedInStream()) {
     output_stream_spec_.TriggerErrorCallback(
-        ::mediapipe::FailedPreconditionErrorBuilder(MEDIAPIPE_LOC)
+        mediapipe::FailedPreconditionErrorBuilder(MEDIAPIPE_LOC)
         << "Invalid input timestamp to compute the output timestamp bound. "
            "Stream: \""
         << output_stream_spec_.name
@@ -117,11 +118,9 @@ Timestamp OutputStreamManager::ComputeOutputTimestampBound(
   //                 MaxOutputTimestamp(completed_timestamp) + 1)
   // Note that "MaxOutputTimestamp()" must consider both output packet
   // timetstamp and SetNextTimestampBound values.
-  // See the timestamp mapping section in go/mediapipe-bounds for details.
-  Timestamp new_bound = output_stream_shard.NextTimestampBound();
+  Timestamp input_bound;
   if (output_stream_spec_.offset_enabled &&
       input_timestamp != Timestamp::Unstarted()) {
-    Timestamp input_bound;
     if (input_timestamp == Timestamp::PreStream()) {
       // Timestamp::PreStream() is a special value that we shouldn't apply any
       // offset.
@@ -144,9 +143,16 @@ Timestamp OutputStreamManager::ComputeOutputTimestampBound(
       input_bound =
           input_timestamp.NextAllowedInStream() + output_stream_spec_.offset;
     }
+  }
+  Timestamp new_bound;
+  // The input_bound if it is greater than the shard bound.
+  if (input_bound > output_stream_shard.NextTimestampBound()) {
     new_bound = std::max(new_bound, input_bound);
   }
-
+  // The bound defined by SetNextTimestampBound.
+  new_bound =
+      std::max(new_bound, output_stream_shard.updated_next_timestamp_bound_);
+  // The bound defined by added packets.
   if (!output_stream_shard.IsEmpty()) {
     new_bound = std::max(
         new_bound,
@@ -158,21 +164,26 @@ Timestamp OutputStreamManager::ComputeOutputTimestampBound(
 // TODO Consider moving the propagation logic to OutputStreamHandler.
 void OutputStreamManager::PropagateUpdatesToMirrors(
     Timestamp next_timestamp_bound, OutputStreamShard* output_stream_shard) {
-  CHECK(output_stream_shard);
+  ABSL_CHECK(output_stream_shard);
   {
-    absl::MutexLock lock(&stream_mutex_);
-    next_timestamp_bound_ = next_timestamp_bound;
+    if (next_timestamp_bound != Timestamp::Unset()) {
+      absl::MutexLock lock(&stream_mutex_);
+      next_timestamp_bound_ = next_timestamp_bound;
+      VLOG(3) << "Next timestamp bound for output " << output_stream_spec_.name
+              << " is " << next_timestamp_bound_;
+    }
   }
   std::list<Packet>* packets_to_propagate = output_stream_shard->OutputQueue();
-  VLOG(2) << "Output stream: " << Name()
+  VLOG(3) << "Output stream: " << Name()
           << " queue size: " << packets_to_propagate->size();
-  VLOG(2) << "Output stream: " << Name()
+  VLOG(3) << "Output stream: " << Name()
           << " next timestamp: " << next_timestamp_bound;
   bool add_packets = !packets_to_propagate->empty();
   bool set_bound =
-      !add_packets ||
-      packets_to_propagate->back().Timestamp().NextAllowedInStream() !=
-          next_timestamp_bound;
+      (next_timestamp_bound != Timestamp::Unset()) &&
+      (!add_packets ||
+       packets_to_propagate->back().Timestamp().NextAllowedInStream() !=
+           next_timestamp_bound);
   int mirror_count = mirrors_.size();
   for (int idx = 0; idx < mirror_count; ++idx) {
     const Mirror& mirror = mirrors_[idx];

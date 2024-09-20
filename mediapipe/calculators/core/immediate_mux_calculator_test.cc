@@ -27,7 +27,6 @@
 #include "mediapipe/framework/calculator_framework.h"
 #include "mediapipe/framework/port/gmock.h"
 #include "mediapipe/framework/port/gtest.h"
-#include "mediapipe/framework/port/integral_types.h"
 #include "mediapipe/framework/port/logging.h"
 #include "mediapipe/framework/port/status.h"
 #include "mediapipe/framework/port/status_matchers.h"
@@ -146,7 +145,7 @@ class ImmediateMuxCalculatorTest : public ::testing::Test {
     ASSERT_TRUE(proto_ns::TextFormat::ParseFromString(R"(
         input_stream: "input_packets_0"
         node {
-          calculator: 'RealTimeFlowLimiterCalculator'
+          calculator: 'FlowLimiterCalculator'
           input_stream_handler {
             input_stream_handler: 'ImmediateInputStreamHandler'
           }
@@ -191,17 +190,17 @@ class ImmediateMuxCalculatorTest : public ::testing::Test {
                                                       &graph_config_));
   }
 
-  static Packet PacketAt(int64 ts) {
-    return Adopt(new int64(999)).At(Timestamp(ts));
+  static Packet PacketAt(int64_t ts) {
+    return Adopt(new int64_t(999)).At(Timestamp(ts));
   }
   static Packet None() { return Packet().At(Timestamp::OneOverPostStream()); }
   static bool IsNone(const Packet& packet) {
     return packet.Timestamp() == Timestamp::OneOverPostStream();
   }
   // Return the values of the timestamps of a vector of Packets.
-  static std::vector<int64> TimestampValues(
+  static std::vector<int64_t> TimestampValues(
       const std::vector<Packet>& packets) {
-    std::vector<int64> result;
+    std::vector<int64_t> result;
     for (const Packet& p : packets) {
       result.push_back(p.Timestamp().Value());
     }
@@ -217,23 +216,23 @@ class ImmediateMuxCalculatorTest : public ::testing::Test {
 
     // Start running the graph.
     CalculatorGraph graph;
-    MEDIAPIPE_ASSERT_OK(graph.Initialize(graph_config_));
-    MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
+    MP_ASSERT_OK(graph.Initialize(graph_config_));
+    MP_ASSERT_OK(graph.StartRun({}));
 
     // Send each packet to the graph in the specified order.
     for (int t = 0; t < input_sets.size(); t++) {
       const std::vector<Packet>& input_set = input_sets[t];
-      MEDIAPIPE_EXPECT_OK(graph.WaitUntilIdle());
+      MP_EXPECT_OK(graph.WaitUntilIdle());
       for (int i = 0; i < input_set.size(); i++) {
         const Packet& packet = input_set[i];
         if (!IsNone(packet)) {
-          MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
+          MP_EXPECT_OK(graph.AddPacketToInputStream(
               absl::StrCat("input_packets_", i), packet));
         }
       }
     }
-    MEDIAPIPE_ASSERT_OK(graph.CloseAllInputStreams());
-    MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
+    MP_ASSERT_OK(graph.CloseAllInputStreams());
+    MP_ASSERT_OK(graph.WaitUntilDone());
   }
 
   CalculatorGraphConfig graph_config_;
@@ -289,19 +288,19 @@ TEST_F(ImmediateMuxCalculatorTest, SimultaneousTimestamps) {
 }
 
 // A Calculator::Process callback function.
-typedef std::function<::mediapipe::Status(const InputStreamShardSet&,
-                                          OutputStreamShardSet*)>
+typedef std::function<absl::Status(const InputStreamShardSet&,
+                                   OutputStreamShardSet*)>
     ProcessFunction;
 
 // A testing callback function that passes through all packets.
-::mediapipe::Status PassThrough(const InputStreamShardSet& inputs,
-                                OutputStreamShardSet* outputs) {
+absl::Status PassThrough(const InputStreamShardSet& inputs,
+                         OutputStreamShardSet* outputs) {
   for (int i = 0; i < inputs.NumEntries(); ++i) {
     if (!inputs.Index(i).Value().IsEmpty()) {
       outputs->Index(i).AddPacket(inputs.Index(i).Value());
     }
   }
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 TEST_F(ImmediateMuxCalculatorTest, Demux) {
@@ -325,7 +324,7 @@ TEST_F(ImmediateMuxCalculatorTest, Demux) {
   auto out_cb = [&](const Packet& p) {
     absl::MutexLock lock(&out_mutex);
     out_packets.push_back(p);
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   };
   auto wait_for = [&](std::function<bool()> cond) {
     absl::MutexLock lock(&out_mutex);
@@ -335,22 +334,22 @@ TEST_F(ImmediateMuxCalculatorTest, Demux) {
 
   // Start the graph and add five input packets.
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(
-      graph_config_, {
-                         {"callback_0", Adopt(new auto(wait_0))},
-                         {"callback_1", Adopt(new auto(wait_1))},
-                     }));
-  MEDIAPIPE_ASSERT_OK(graph.ObserveOutputStream("output_packets_0", out_cb));
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
-  MEDIAPIPE_EXPECT_OK(
+  MP_ASSERT_OK(graph.Initialize(graph_config_,
+                                {
+                                    {"callback_0", Adopt(new auto(wait_0))},
+                                    {"callback_1", Adopt(new auto(wait_1))},
+                                }));
+  MP_ASSERT_OK(graph.ObserveOutputStream("output_packets_0", out_cb));
+  MP_ASSERT_OK(graph.StartRun({}));
+  MP_EXPECT_OK(
       graph.AddPacketToInputStream("input_packets_0", PacketAt(10000)));
-  MEDIAPIPE_EXPECT_OK(
+  MP_EXPECT_OK(
       graph.AddPacketToInputStream("input_packets_0", PacketAt(20000)));
-  MEDIAPIPE_EXPECT_OK(
+  MP_EXPECT_OK(
       graph.AddPacketToInputStream("input_packets_0", PacketAt(30000)));
-  MEDIAPIPE_EXPECT_OK(
+  MP_EXPECT_OK(
       graph.AddPacketToInputStream("input_packets_0", PacketAt(40000)));
-  MEDIAPIPE_EXPECT_OK(
+  MP_EXPECT_OK(
       graph.AddPacketToInputStream("input_packets_0", PacketAt(50000)));
 
   // Release the outputs in order 20000, 10000, 30000, 50000, 40000.
@@ -362,8 +361,8 @@ TEST_F(ImmediateMuxCalculatorTest, Demux) {
   semaphore_0.Release(1);  // 50000
   wait_for([&] { return out_packets.size() >= 3; });
   semaphore_1.Release(1);  // 40000
-  MEDIAPIPE_ASSERT_OK(graph.CloseAllInputStreams());
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
+  MP_ASSERT_OK(graph.CloseAllInputStreams());
+  MP_ASSERT_OK(graph.WaitUntilDone());
 
   // Output packets 10000 and 40000 are superseded and dropped.
   EXPECT_THAT(TimestampValues(out_packets), ElementsAre(20000, 30000, 50000));

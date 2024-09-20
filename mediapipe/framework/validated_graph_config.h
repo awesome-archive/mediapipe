@@ -16,14 +16,18 @@
 #define MEDIAPIPE_FRAMEWORK_VALIDATED_GRAPH_CONFIG_H_
 
 #include <map>
-#include <unordered_set>
+#include <string>
 #include <vector>
 
+#include "absl/container/flat_hash_set.h"
+#include "google/protobuf/repeated_ptr_field.h"
 #include "mediapipe/framework/calculator.pb.h"
 #include "mediapipe/framework/calculator_contract.h"
+#include "mediapipe/framework/graph_service_manager.h"
 #include "mediapipe/framework/packet_generator.pb.h"
 #include "mediapipe/framework/packet_type.h"
 #include "mediapipe/framework/port/map_util.h"
+#include "mediapipe/framework/port/proto_ns.h"
 #include "mediapipe/framework/port/status.h"
 #include "mediapipe/framework/port/status_builder.h"
 #include "mediapipe/framework/status_handler.pb.h"
@@ -33,47 +37,11 @@ namespace mediapipe {
 
 class ValidatedGraphConfig;
 
-// Returns a short unique name for a Node in a CalculatorGraphConfig.
-// This is the Node.name (if specified) or the Node.calculator.
-// If there are multiple calculators with similar name in the graph, the name
-// will be postfixed by "_<COUNT>". For example, in the following graph the node
-// names will be as mentiond.
-//
-// node { // Name will be "CalcA"
-//   calculator: "CalcA"
-// }
-// node { // Name will be "NameB"
-//   calculator: "CalcB"
-//   name: "NameB"
-// }
-// node { // Name will be "CalcC_1" due to duplicate "calculator" field.
-//   calculator: "CalcC"
-// }
-// node { // Name will be "CalcC_2" due to duplicate "calculator" field.
-//   calculator: "CalcC"
-// }
-// node { // Name will be "NameX".
-//   calculator: "CalcD"
-//   name: "NameX"
-// }
-// node { // Name will be "NameY".
-//   calculator: "CalcD"
-//   name: "NameY"
-// }
-// node { // Name will be "NameZ_1". due to "name" field duplicate.
-//   calculator: "CalcE"
-//   name: "NameZ"
-// }
-// node { // Name will be "NameZ_2". due to "name" field duplicate.
-//   calculator: "CalcF"
-//   name: "NameZ"
-// }
-//
-// TODO: Update GraphNode.UniqueName in MediaPipe Visualizer to match
-// this logic.
-// TODO: Fix the edge case mentioned in the bug.
-std::string CanonicalNodeName(const CalculatorGraphConfig& graph_config,
-                              int node_id);
+std::string DebugEdgeNames(
+    const std::string& edge_type,
+    const proto_ns::RepeatedPtrField<ProtoString>& edges);
+
+std::string DebugName(const CalculatorGraphConfig::Node& node_config);
 
 // Type information for a graph node (Calculator, Generator, etc).
 class NodeTypeInfo {
@@ -107,15 +75,13 @@ class NodeTypeInfo {
 
   // node_index is the index of this node among the nodes of the same type
   // in the validated graph config.
-  ::mediapipe::Status Initialize(const ValidatedGraphConfig& validated_graph,
-                                 const CalculatorGraphConfig::Node& node,
-                                 int node_index);
-  ::mediapipe::Status Initialize(const ValidatedGraphConfig& validated_graph,
-                                 const PacketGeneratorConfig& node,
-                                 int node_index);
-  ::mediapipe::Status Initialize(const ValidatedGraphConfig& validated_graph,
-                                 const StatusHandlerConfig& node,
-                                 int node_index);
+  absl::Status Initialize(const ValidatedGraphConfig& validated_graph,
+                          const CalculatorGraphConfig::Node& node,
+                          int node_index);
+  absl::Status Initialize(const ValidatedGraphConfig& validated_graph,
+                          const PacketGeneratorConfig& node, int node_index);
+  absl::Status Initialize(const ValidatedGraphConfig& validated_graph,
+                          const StatusHandlerConfig& node, int node_index);
 
   // TODO: many of these accessors can be replaced by Contract().
   const PacketTypeSet& InputSidePacketTypes() const {
@@ -139,7 +105,7 @@ class NodeTypeInfo {
 
   // Get the input/output side packet/stream index that is the first
   // for the PacketTypeSets.  Subsequent id's in the collection are
-  // guaranteed to be contiguous in the master flat array.
+  // guaranteed to be contiguous in the main flat array.
   int InputSidePacketBaseIndex() const { return input_side_packet_base_index_; }
   int OutputSidePacketBaseIndex() const {
     return output_side_packet_base_index_;
@@ -169,19 +135,18 @@ class NodeTypeInfo {
   // be a virtual node corresponding to a graph input stream (which are
   // listed by index contiguously after all calculators).
   // This function is only valid for a NodeTypeInfo of NodeType CALCULATOR.
-  const std::unordered_set<int>& AncestorSources() const {
+  const absl::flat_hash_set<int>& AncestorSources() const {
     return ancestor_sources_;
   }
   // Returns True if the source was not already there.
   // This function is only valid for a NodeTypeInfo of NodeType CALCULATOR.
   bool AddSource(int index) { return ancestor_sources_.insert(index).second; }
 
-  // Convert the NodeType enum into a std::string (generally for error
-  // messaging).
+  // Convert the NodeType enum into a string (generally for error messaging).
   static std::string NodeTypeToString(NodeType node_type);
 
-  // Returns the name of the specified InputStreamHandler, or empty std::string
-  // if none set.
+  // Returns the name of the specified InputStreamHandler, or empty string if
+  // none set.
   std::string GetInputStreamHandler() const {
     return contract_.GetInputStreamHandler();
   }
@@ -197,23 +162,23 @@ class NodeTypeInfo {
   CalculatorContract contract_;
 
   // The base indexes of the first entry belonging to this node in
-  // the master flat arrays of ValidatedGraphConfig.  Subsequent
+  // the main flat arrays of ValidatedGraphConfig.  Subsequent
   // entries are guaranteed to be sequential and in the order of the
   // CollectionItemIds.
   // Example:
   //   all_input_streams
   //     [node_info.InputStreamBaseIndex() +
   //      node_info.InputStreamTypes().GetId("TAG", 2).value()];
-  int input_side_packet_base_index_ = -1;
-  int output_side_packet_base_index_ = -1;
-  int input_stream_base_index_ = -1;
-  int output_stream_base_index_ = -1;
+  int input_side_packet_base_index_ = 0;
+  int output_side_packet_base_index_ = 0;
+  int input_stream_base_index_ = 0;
+  int output_stream_base_index_ = 0;
 
   // The type and index of this node.
   NodeRef node_;
 
   // The set of sources which affect this node.
-  std::unordered_set<int> ancestor_sources_;
+  absl::flat_hash_set<int> ancestor_sources_;
 };
 
 // Information for either the input or output side of an edge.  An edge
@@ -238,17 +203,21 @@ class ValidatedGraphConfig {
   // Initializes the ValidatedGraphConfig.  This function must be called
   // before any other functions.  Subgraphs are specified through the
   // global graph registry or an optional local graph registry.
-  ::mediapipe::Status Initialize(const CalculatorGraphConfig& input_config,
-                                 const GraphRegistry* graph_registry = nullptr);
+  absl::Status Initialize(
+      CalculatorGraphConfig input_config,
+      const GraphRegistry* graph_registry = nullptr,
+      const Subgraph::SubgraphOptions* graph_options = nullptr,
+      const GraphServiceManager* service_manager = nullptr);
 
   // Initializes the ValidatedGraphConfig from registered graph and subgraph
   // configs.  Subgraphs are retrieved from the specified graph registry or from
   // the global graph registry.  A subgraph can be instantiated directly by
   // specifying its type in |graph_type|.
-  ::mediapipe::Status Initialize(
+  absl::Status Initialize(
       const std::string& graph_type,
-      const Subgraph::SubgraphOptions* options = nullptr,
-      const GraphRegistry* graph_registry = nullptr);
+      const GraphRegistry* graph_registry = nullptr,
+      const Subgraph::SubgraphOptions* graph_options = nullptr,
+      const GraphServiceManager* service_manager = nullptr);
 
   // Initializes the ValidatedGraphConfig from the specified graph and subgraph
   // configs.  Template graph and subgraph configs can be specified through
@@ -256,11 +225,12 @@ class ValidatedGraphConfig {
   // CalclatorGraphConfig.type.  A subgraph can be instantiated directly by
   // specifying its type in |graph_type|.  A template graph can be instantiated
   // directly by specifying its template arguments in |arguments|.
-  ::mediapipe::Status Initialize(
+  absl::Status Initialize(
       const std::vector<CalculatorGraphConfig>& input_configs,
       const std::vector<CalculatorGraphTemplate>& input_templates,
       const std::string& graph_type = "",
-      const Subgraph::SubgraphOptions* arguments = nullptr);
+      const Subgraph::SubgraphOptions* graph_options = nullptr,
+      const GraphServiceManager* service_manager = nullptr);
 
   // Returns true if the ValidatedGraphConfig has been initialized.
   bool Initialized() const { return initialized_; }
@@ -268,15 +238,15 @@ class ValidatedGraphConfig {
   // Returns an error if the provided side packets will be generated by
   // the PacketGenerators in this graph.
   template <typename T>
-  ::mediapipe::Status CanAcceptSidePackets(
+  absl::Status CanAcceptSidePackets(
       const std::map<std::string, T>& side_packets) const;
 
   // Validate that all the required side packets are provided, and the
   // packets have the required type.
-  ::mediapipe::Status ValidateRequiredSidePackets(
+  absl::Status ValidateRequiredSidePackets(
       const std::map<std::string, Packet>& side_packets) const;
   // Same as ValidateRequiredSidePackets but only provide the type.
-  ::mediapipe::Status ValidateRequiredSidePacketTypes(
+  absl::Status ValidateRequiredSidePacketTypes(
       const std::map<std::string, PacketType>& side_packet_types) const;
 
   // The proto configuration (canonicalized).
@@ -321,14 +291,21 @@ class ValidatedGraphConfig {
     return output_streams_[iter->second].parent_node.index;
   }
 
+  std::vector<int> OutputStreamToConsumers(int idx) const {
+    auto iter = output_streams_to_consumer_nodes_.find(idx);
+    if (iter == output_streams_to_consumer_nodes_.end()) {
+      return {};
+    }
+    return iter->second;
+  }
+
   // Returns the registered type name of the specified side packet if
   // it can be determined, otherwise an appropriate error is returned.
-  ::mediapipe::StatusOr<std::string> RegisteredSidePacketTypeName(
+  absl::StatusOr<std::string> RegisteredSidePacketTypeName(
       const std::string& name);
   // Returns the registered type name of the specified stream if it can
   // be determined, otherwise an appropriate error is returned.
-  ::mediapipe::StatusOr<std::string> RegisteredStreamTypeName(
-      const std::string& name);
+  absl::StatusOr<std::string> RegisteredStreamTypeName(const std::string& name);
 
   // The namespace used for class name lookup.
   std::string Package() const { return config_.package(); }
@@ -336,13 +313,25 @@ class ValidatedGraphConfig {
   // Returns true if |name| is a reserved executor name.
   static bool IsReservedExecutorName(const std::string& name);
 
+  // Returns true if a side packet is provided as an input to the graph.
+  bool IsExternalSidePacket(const std::string& name) const {
+    return required_side_packets_.count(name) > 0;
+  }
+
  private:
+  // Perform transforms such as converting legacy features, expanding
+  // subgraphs, and popluting input stream handler.
+  absl::Status PerformBasicTransforms(
+      const GraphRegistry* graph_registry,
+      const Subgraph::SubgraphOptions* graph_options,
+      const GraphServiceManager* service_manager);
+
   // Initialize the PacketGenerator information.
-  ::mediapipe::Status InitializeGeneratorInfo();
+  absl::Status InitializeGeneratorInfo();
   // Initialize the Calculator information.
-  ::mediapipe::Status InitializeCalculatorInfo();
+  absl::Status InitializeCalculatorInfo();
   // Initialize the StatusHandler information.
-  ::mediapipe::Status InitializeStatusHandlerInfo();
+  absl::Status InitializeStatusHandlerInfo();
 
   // Initialize the EdgeInfo objects for side packets.
   //
@@ -354,7 +343,7 @@ class ValidatedGraphConfig {
   //
   // If need_sorting_ptr is nullptr then an error will be returned if the
   // nodes in the side packet graph are not in topologically sorted order.
-  ::mediapipe::Status InitializeSidePacketInfo(bool* need_sorting_ptr);
+  absl::Status InitializeSidePacketInfo(bool* need_sorting_ptr);
   // Adds EdgeInfo objects to input_side_packets_ for all the input side
   // packets required by the node_type_info.  If nodes are processed
   // with AddInputSidePacketsForNode and AddOutputSidePacketsForNode
@@ -362,7 +351,7 @@ class ValidatedGraphConfig {
   // required_side_packets_ are used to ensure that the graph is
   // topologically sorted.  node_type_info is updated with the proper
   // initial index for input side packets.
-  ::mediapipe::Status AddInputSidePacketsForNode(NodeTypeInfo* node_type_info);
+  absl::Status AddInputSidePacketsForNode(NodeTypeInfo* node_type_info);
   // Adds EdgeInfo objects to output_side_packets_ for all the output side
   // packets produced by the node_type_info.  side_packet_to_producer_ is
   // updated.  need_sorting_ptr will be set to true if the nodes in the
@@ -370,21 +359,21 @@ class ValidatedGraphConfig {
   // is output after something that required it), otherwise need_sorting_ptr
   // is left as is.  node_type_info is updated with the proper initial index
   // for output side packets.
-  ::mediapipe::Status AddOutputSidePacketsForNode(NodeTypeInfo* node_type_info,
-                                                  bool* need_sorting_ptr);
+  absl::Status AddOutputSidePacketsForNode(NodeTypeInfo* node_type_info,
+                                           bool* need_sorting_ptr);
 
   // These functions are analogous to the same operations for side
   // packets, with the small difference that it is an error to use an
   // undefined stream (whereas it is allowed to use an undefined side
   // packet).
-  ::mediapipe::Status InitializeStreamInfo(bool* need_sorting_ptr);
-  ::mediapipe::Status AddOutputStreamsForNode(NodeTypeInfo* node_type_info);
-  ::mediapipe::Status AddInputStreamsForNode(NodeTypeInfo* node_type_info,
-                                             bool* need_sorting_ptr);
+  absl::Status InitializeStreamInfo(bool* need_sorting_ptr);
+  absl::Status AddOutputStreamsForNode(NodeTypeInfo* node_type_info);
+  absl::Status AddInputStreamsForNode(NodeTypeInfo* node_type_info,
+                                      bool* need_sorting_ptr);
   // A helper function for adding a single output stream EdgeInfo.
-  ::mediapipe::Status AddOutputStream(NodeTypeInfo::NodeRef node,
-                                      const std::string& name,
-                                      PacketType* packet_type);
+  absl::Status AddOutputStream(NodeTypeInfo::NodeRef node,
+                               const std::string& name,
+                               PacketType* packet_type);
 
   // Return the index of the node adjusted for the topological sorter.
   int SorterIndexForNode(NodeTypeInfo::NodeRef node) const;
@@ -403,31 +392,34 @@ class ValidatedGraphConfig {
   // two node types, graph input streams and status handlers, can be safely
   // ignored in the analysis of output side packet generation or stream
   // header packet propagation.
-  ::mediapipe::Status TopologicalSortNodes();
+  absl::Status TopologicalSortNodes();
 
   // TODO Add InputStreamHandler.
   // TODO Add OutputStreamHandler.
 
   // Fill the "upstream" field for all back edges.
-  ::mediapipe::Status FillUpstreamFieldForBackEdges();
+  absl::Status FillUpstreamFieldForBackEdges();
 
   // Compute the dependence of nodes on sources.
-  ::mediapipe::Status ComputeSourceDependence();
+  absl::Status ComputeSourceDependence();
 
   // Infer the type of types set to "Any" by what they are connected to.
-  ::mediapipe::Status ResolveAnyTypes(std::vector<EdgeInfo>* input_edges,
-                                      std::vector<EdgeInfo>* output_edges);
+  absl::Status ResolveAnyTypes(std::vector<EdgeInfo>* input_edges,
+                               std::vector<EdgeInfo>* output_edges);
+  // Narrow down OneOf types if they other end is a single type.
+  absl::Status ResolveOneOfTypes(std::vector<EdgeInfo>* input_edges,
+                                 std::vector<EdgeInfo>* output_edges);
 
   // Returns an error if the generator graph does not have consistent
   // type specifications for side packets.
-  ::mediapipe::Status ValidateSidePacketTypes();
+  absl::Status ValidateSidePacketTypes();
   // Returns an error if the graph of calculators does not have consistent
   // type specifications for streams.
-  ::mediapipe::Status ValidateStreamTypes();
+  absl::Status ValidateStreamTypes();
   // Returns an error if the graph does not have valid ExecutorConfigs, or
   // if the executor name in a node config is reserved or is not declared
   // in an ExecutorConfig.
-  ::mediapipe::Status ValidateExecutors();
+  absl::Status ValidateExecutors();
 
   bool initialized_ = false;
 
@@ -443,6 +435,10 @@ class ValidatedGraphConfig {
 
   // Mapping from stream name to the output_streams_ index which produces it.
   std::map<std::string, int> stream_to_producer_;
+
+  // Mapping from output streams to consumer node ids. Used for profiling.
+  std::map<int, std::vector<int>> output_streams_to_consumer_nodes_;
+
   // Mapping from side packet name to the output_side_packets_ index
   // which produces it.
   std::map<std::string, int> side_packet_to_producer_;
@@ -465,16 +461,16 @@ class ValidatedGraphConfig {
 };
 
 template <typename T>
-::mediapipe::Status ValidatedGraphConfig::CanAcceptSidePackets(
+absl::Status ValidatedGraphConfig::CanAcceptSidePackets(
     const std::map<std::string, T>& side_packets) const {
   for (const auto& output_side_packet : output_side_packets_) {
     if (ContainsKey(side_packets, output_side_packet.name)) {
-      return ::mediapipe::UnknownErrorBuilder(MEDIAPIPE_LOC)
+      return mediapipe::UnknownErrorBuilder(MEDIAPIPE_LOC)
              << "Side packet \"" << output_side_packet.name
              << "\" is both provided and generated by a PacketGenerator.";
     }
   }
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace mediapipe

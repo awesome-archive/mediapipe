@@ -17,7 +17,6 @@
 
 #include <queue>
 #include <string>
-#include <utility>
 
 #include "mediapipe/framework/input_stream.h"
 #include "mediapipe/framework/packet.h"
@@ -51,7 +50,7 @@ class InputStreamShard : public InputStream {
     return !packet_queue_.empty() ? packet_queue_.front() : empty_packet_;
   }
 
-  // Returns a reference to the name std::string of the InputStreamManager.
+  // Returns a reference to the name string of the InputStreamManager.
   const std::string& Name() const { return *name_; }
 
   bool IsDone() const override { return is_done_; }
@@ -75,7 +74,7 @@ class InputStreamShard : public InputStream {
   std::queue<Packet> packet_queue_;
   Packet empty_packet_;
 
-  // Pointer to the name std::string of the InputStreamManager.
+  // Pointer to the name string of the InputStreamManager.
   const std::string* name_;
   bool is_done_;
 

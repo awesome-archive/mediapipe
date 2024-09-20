@@ -54,11 +54,11 @@ FrameRotation FrameRotationFromDegrees(int degrees_ccw) {
   }
 }
 
-::mediapipe::Status QuadRenderer::GlSetup() {
+absl::Status QuadRenderer::GlSetup() {
   return GlSetup(kBasicTexturedFragmentShader, {"video_frame"});
 }
 
-::mediapipe::Status QuadRenderer::GlSetup(
+absl::Status QuadRenderer::GlSetup(
     const GLchar* custom_frag_shader,
     const std::vector<const GLchar*>& custom_frame_uniforms) {
   // Load vertex and fragment shaders
@@ -84,7 +84,21 @@ FrameRotation FrameRotationFromDegrees(int degrees_ccw) {
   scale_unif_ = glGetUniformLocation(program_, "scale");
   RET_CHECK(scale_unif_ != -1) << "could not find uniform 'scale'";
 
-  return ::mediapipe::OkStatus();
+  glGenVertexArrays(1, &vao_);
+  glGenBuffers(2, vbo_);
+
+  glBindVertexArray(vao_);
+  glEnableVertexAttribArray(ATTRIB_VERTEX);
+  glEnableVertexAttribArray(ATTRIB_TEXTURE_POSITION);
+
+  glBindBuffer(GL_ARRAY_BUFFER, vbo_[1]);
+  glBufferData(GL_ARRAY_BUFFER, sizeof(mediapipe::kBasicTextureVertices),
+               kBasicTextureVertices, GL_STATIC_DRAW);
+  glVertexAttribPointer(ATTRIB_TEXTURE_POSITION, 2, GL_FLOAT, 0, 0, nullptr);
+  glBindBuffer(GL_ARRAY_BUFFER, 0);
+  glBindVertexArray(0);
+
+  return absl::OkStatus();
 }
 
 void QuadRenderer::GlTeardown() {
@@ -92,12 +106,24 @@ void QuadRenderer::GlTeardown() {
     glDeleteProgram(program_);
     program_ = 0;
   }
+  if (vao_) {
+    glDeleteVertexArrays(1, &vao_);
+    vao_ = 0;
+  }
+  if (vbo_[0]) {
+    glDeleteBuffers(2, vbo_);
+    vbo_[0] = 0;
+    vbo_[1] = 0;
+  }
+  rotation_ = std::nullopt;
 }
 
-::mediapipe::Status QuadRenderer::GlRender(
-    float frame_width, float frame_height, float view_width, float view_height,
-    FrameScaleMode scale_mode, FrameRotation rotation, bool flip_horizontal,
-    bool flip_vertical, bool flip_texture) {
+absl::Status QuadRenderer::GlRender(float frame_width, float frame_height,
+                                    float view_width, float view_height,
+                                    FrameScaleMode scale_mode,
+                                    FrameRotation rotation,
+                                    bool flip_horizontal, bool flip_vertical,
+                                    bool flip_texture) const {
   RET_CHECK(program_) << "Must setup the program before rendering.";
 
   glUseProgram(program_);
@@ -131,12 +157,42 @@ void QuadRenderer::GlTeardown() {
       break;
   }
 
+  if (flip_texture) {
+    switch (rotation) {
+      case FrameRotation::kNone:  // Fall-through intended.
+      case FrameRotation::k180:
+        flip_vertical = !flip_vertical;
+        break;
+      case FrameRotation::k90:
+        flip_horizontal = !flip_horizontal;
+        break;
+      case FrameRotation::k270:
+        flip_horizontal = !flip_horizontal;
+        break;
+    }
+  }
   const int h_flip_factor = flip_horizontal ? -1 : 1;
   const int v_flip_factor = flip_vertical ? -1 : 1;
+
   GLfloat scale[] = {scale_width * h_flip_factor, scale_height * v_flip_factor,
                      1.0, 1.0};
   glUniform4fv(scale_unif_, 1, scale);
 
+  // Draw.
+
+  glBindVertexArray(vao_);
+  if (rotation != rotation_) {
+    rotation_ = rotation;
+    UpdateVertices(rotation);
+  }
+
+  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
+  glBindVertexArray(0);
+
+  return absl::OkStatus();
+}
+
+void QuadRenderer::UpdateVertices(FrameRotation rotation) const {
   // Choose vertices for rotation.
   const GLfloat* vertices;  // quad used to render the texture.
   switch (rotation) {
@@ -154,24 +210,18 @@ void QuadRenderer::GlTeardown() {
       break;
   }
 
-  // Draw.
-  glVertexAttribPointer(ATTRIB_VERTEX, 2, GL_FLOAT, 0, 0, vertices);
-  glEnableVertexAttribArray(ATTRIB_VERTEX);
-  glVertexAttribPointer(
-      ATTRIB_TEXTURE_POSITION, 2, GL_FLOAT, 0, 0,
-      flip_texture ? kBasicTextureVerticesFlipY : kBasicTextureVertices);
-  glEnableVertexAttribArray(ATTRIB_TEXTURE_POSITION);
-  glDrawArrays(GL_TRIANGLE_STRIP, 0, 4);
-
-  return ::mediapipe::OkStatus();
+  glBindBuffer(GL_ARRAY_BUFFER, vbo_[0]);
+  glBufferData(GL_ARRAY_BUFFER, sizeof(mediapipe::kBasicSquareVertices),
+               vertices, GL_STATIC_DRAW);
+  glVertexAttribPointer(ATTRIB_VERTEX, 2, GL_FLOAT, 0, 0, nullptr);
+  glBindBuffer(GL_ARRAY_BUFFER, 0);
 }
 
-::mediapipe::Status FrameRotationFromInt(FrameRotation* rotation,
-                                         int degrees_ccw) {
+absl::Status FrameRotationFromInt(FrameRotation* rotation, int degrees_ccw) {
   RET_CHECK(degrees_ccw % 90 == 0) << "rotation must be a multiple of 90; "
                                    << degrees_ccw << " was provided";
   *rotation = FrameRotationFromDegrees(degrees_ccw % 360);
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace mediapipe

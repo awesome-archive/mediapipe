@@ -1,27 +1,32 @@
 # Description:
 #   OpenCV libraries for video/image processing on MacOS
 
+load("@bazel_skylib//lib:paths.bzl", "paths")
+
 licenses(["notice"])  # BSD license
 
 exports_files(["LICENSE"])
 
-# The following build rule assumes that OpenCV is installed by
-# 'brew install opencv' command on macos.
-# If you install OpenCV separately, please modify the build rule accordingly.
+# The path to OpenCV is a combination of the path set for "macos_opencv"
+# in the WORKSPACE file and the prefix here.
+PREFIX = "opt/opencv@3"
+
 cc_library(
     name = "opencv",
     srcs = glob(
         [
-            "local/opt/opencv/lib/libopencv_core.dylib",
-            "local/opt/opencv/lib/libopencv_highgui.dylib",
-            "local/opt/opencv/lib/libopencv_imgcodecs.dylib",
-            "local/opt/opencv/lib/libopencv_imgproc.dylib",
-            "local/opt/opencv/lib/libopencv_video.dylib",
-            "local/opt/opencv/lib/libopencv_videoio.dylib",
+            paths.join(PREFIX, "lib/libopencv_core.dylib"),
+            paths.join(PREFIX, "lib/libopencv_calib3d.dylib"),
+            paths.join(PREFIX, "lib/libopencv_features2d.dylib"),
+            paths.join(PREFIX, "lib/libopencv_highgui.dylib"),
+            paths.join(PREFIX, "lib/libopencv_imgcodecs.dylib"),
+            paths.join(PREFIX, "lib/libopencv_imgproc.dylib"),
+            paths.join(PREFIX, "lib/libopencv_video.dylib"),
+            paths.join(PREFIX, "lib/libopencv_videoio.dylib"),
         ],
     ),
-    hdrs = glob(["local/opt/opencv/include/opencv4/**/*.h*"]),
-    includes = ["local/opt/opencv/include/opencv4/"],
+    hdrs = glob([paths.join(PREFIX, "include/opencv2/**/*.h*")]),
+    includes = [paths.join(PREFIX, "include/")],
     linkstatic = 1,
     visibility = ["//visibility:public"],
 )

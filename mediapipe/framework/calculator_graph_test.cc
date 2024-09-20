@@ -17,21 +17,29 @@
 #include <pthread.h>
 
 #include <atomic>
+#include <cstdint>
 #include <ctime>
 #include <deque>
+#include <functional>
 #include <map>
 #include <memory>
+#include <string>
 #include <tuple>
 #include <utility>
 #include <vector>
 
 #include "absl/container/fixed_array.h"
+#include "absl/log/absl_check.h"
+#include "absl/log/absl_log.h"
 #include "absl/memory/memory.h"
+#include "absl/status/status.h"
 #include "absl/strings/escaping.h"
 #include "absl/strings/str_cat.h"
+#include "absl/strings/str_format.h"
 #include "absl/strings/string_view.h"
 #include "absl/strings/substitute.h"
 #include "absl/time/clock.h"
+#include "absl/time/time.h"
 #include "mediapipe/framework/calculator_framework.h"
 #include "mediapipe/framework/collection_item_id.h"
 #include "mediapipe/framework/counter_factory.h"
@@ -45,11 +53,12 @@
 #include "mediapipe/framework/port/canonical_errors.h"
 #include "mediapipe/framework/port/gmock.h"
 #include "mediapipe/framework/port/gtest.h"
-#include "mediapipe/framework/port/logging.h"
 #include "mediapipe/framework/port/parse_text_proto.h"
 #include "mediapipe/framework/port/ret_check.h"
 #include "mediapipe/framework/port/status.h"
 #include "mediapipe/framework/port/status_matchers.h"
+#include "mediapipe/framework/resources.h"
+#include "mediapipe/framework/resources_service.h"
 #include "mediapipe/framework/status_handler.h"
 #include "mediapipe/framework/subgraph.h"
 #include "mediapipe/framework/thread_pool_executor.h"
@@ -58,33 +67,47 @@
 #include "mediapipe/framework/tool/sink.h"
 #include "mediapipe/framework/tool/status_util.h"
 #include "mediapipe/framework/type_map.h"
+#include "mediapipe/gpu/gpu_service.h"
 
 namespace mediapipe {
 
 namespace {
 
+constexpr char kCounter2Tag[] = "COUNTER2";
+constexpr char kCounter1Tag[] = "COUNTER1";
+constexpr char kExtraTag[] = "EXTRA";
+constexpr char kWaitSemTag[] = "WAIT_SEM";
+constexpr char kPostSemTag[] = "POST_SEM";
+constexpr char kErrorOnOpenTag[] = "ERROR_ON_OPEN";
+constexpr char kOutputTag[] = "OUTPUT";
+constexpr char kInputTag[] = "INPUT";
+constexpr char kSelectTag[] = "SELECT";
+
+using testing::ElementsAre;
+using testing::HasSubstr;
+
 // Pass packets through. Note that it calls SetOffset() in Process()
 // instead of Open().
 class SetOffsetInProcessCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Inputs().Index(0).SetAny();
     cc->Outputs().Index(0).SetSameAs(&cc->Inputs().Index(0));
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
+  absl::Status Open(CalculatorContext* cc) final {
     // Input: arbitrary Packets.
     // Output: copy of the input.
     cc->Outputs().Index(0).SetHeader(cc->Inputs().Index(0).Header());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     cc->SetOffset(TimestampDiff(0));
     cc->GetCounter("PassThrough")->Increment();
     cc->Outputs().Index(0).AddPacket(cc->Inputs().Index(0).Value());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 };
 REGISTER_CALCULATOR(SetOffsetInProcessCalculator);
@@ -92,21 +115,19 @@ REGISTER_CALCULATOR(SetOffsetInProcessCalculator);
 // A Calculator that outputs the square of its input packet (an int).
 class SquareIntCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Inputs().Index(0).Set<int>();
     cc->Outputs().Index(0).SetSameAs(&cc->Inputs().Index(0));
-    return ::mediapipe::OkStatus();
+    cc->SetTimestampOffset(TimestampDiff(0));
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
-    cc->SetOffset(TimestampDiff(0));
-    return ::mediapipe::OkStatus();
-  }
+  absl::Status Open(CalculatorContext* cc) final { return absl::OkStatus(); }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     int value = cc->Inputs().Index(0).Value().Get<int>();
     cc->Outputs().Index(0).Add(new int(value * value), cc->InputTimestamp());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 };
 REGISTER_CALCULATOR(SquareIntCalculator);
@@ -120,28 +141,28 @@ REGISTER_CALCULATOR(SquareIntCalculator);
 // the unselected outputs.
 class DemuxTimedCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     RET_CHECK_EQ(cc->Inputs().NumEntries(), 2);
-    cc->Inputs().Tag("SELECT").Set<int>();
-    PacketType* data_input = &cc->Inputs().Tag("INPUT");
+    cc->Inputs().Tag(kSelectTag).Set<int>();
+    PacketType* data_input = &cc->Inputs().Tag(kInputTag);
     data_input->SetAny();
     for (CollectionItemId id = cc->Outputs().BeginId("OUTPUT");
          id < cc->Outputs().EndId("OUTPUT"); ++id) {
       cc->Outputs().Get(id).SetSameAs(data_input);
     }
-    return ::mediapipe::OkStatus();
+    cc->SetTimestampOffset(TimestampDiff(0));
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
+  absl::Status Open(CalculatorContext* cc) final {
     select_input_ = cc->Inputs().GetId("SELECT", 0);
     data_input_ = cc->Inputs().GetId("INPUT", 0);
     output_base_ = cc->Outputs().GetId("OUTPUT", 0);
     num_outputs_ = cc->Outputs().NumEntries("OUTPUT");
-    cc->SetOffset(TimestampDiff(0));
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     int select = cc->Inputs().Get(select_input_).Get<int>();
     RET_CHECK(0 <= select && select < num_outputs_);
     const Timestamp next_timestamp_bound =
@@ -157,7 +178,7 @@ class DemuxTimedCalculator : public CalculatorBase {
             .SetNextTimestampBound(next_timestamp_bound);
       }
     }
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
  private:
@@ -178,8 +199,8 @@ REGISTER_CALCULATOR(DemuxTimedCalculator);
 // propagation on the unselected inputs.
 class MuxTimedCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
-    cc->Inputs().Tag("SELECT").Set<int>();
+  static absl::Status GetContract(CalculatorContract* cc) {
+    cc->Inputs().Tag(kSelectTag).Set<int>();
     CollectionItemId data_input_id = cc->Inputs().BeginId("INPUT");
     PacketType* data_input0 = &cc->Inputs().Get(data_input_id);
     data_input0->SetAny();
@@ -188,25 +209,25 @@ class MuxTimedCalculator : public CalculatorBase {
       cc->Inputs().Get(data_input_id).SetSameAs(data_input0);
     }
     RET_CHECK_EQ(cc->Outputs().NumEntries(), 1);
-    cc->Outputs().Tag("OUTPUT").SetSameAs(data_input0);
-    return ::mediapipe::OkStatus();
+    cc->Outputs().Tag(kOutputTag).SetSameAs(data_input0);
+    cc->SetTimestampOffset(TimestampDiff(0));
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
+  absl::Status Open(CalculatorContext* cc) final {
     select_input_ = cc->Inputs().GetId("SELECT", 0);
     data_input_base_ = cc->Inputs().GetId("INPUT", 0);
     num_data_inputs_ = cc->Inputs().NumEntries("INPUT");
     output_ = cc->Outputs().GetId("OUTPUT", 0);
-    cc->SetOffset(TimestampDiff(0));
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     int select = cc->Inputs().Get(select_input_).Get<int>();
     RET_CHECK(0 <= select && select < num_data_inputs_);
     cc->Outputs().Get(output_).AddPacket(
         cc->Inputs().Get(data_input_base_ + select).Value());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
  private:
@@ -222,26 +243,24 @@ REGISTER_CALCULATOR(MuxTimedCalculator);
 // streams and outputs the sum to the output stream.
 class IntAdderCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     for (int i = 0; i < cc->Inputs().NumEntries(); ++i) {
       cc->Inputs().Index(i).Set<int>();
     }
     cc->Outputs().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
+    cc->SetTimestampOffset(TimestampDiff(0));
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
-    cc->SetOffset(TimestampDiff(0));
-    return ::mediapipe::OkStatus();
-  }
+  absl::Status Open(CalculatorContext* cc) final { return absl::OkStatus(); }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     int sum = 0;
     for (int i = 0; i < cc->Inputs().NumEntries(); ++i) {
       sum += cc->Inputs().Index(i).Get<int>();
     }
     cc->Outputs().Index(0).Add(new int(sum), cc->InputTimestamp());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 };
 REGISTER_CALCULATOR(IntAdderCalculator);
@@ -250,26 +269,24 @@ REGISTER_CALCULATOR(IntAdderCalculator);
 // streams and outputs the sum to the output stream.
 class FloatAdderCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     for (int i = 0; i < cc->Inputs().NumEntries(); ++i) {
       cc->Inputs().Index(i).Set<float>();
     }
     cc->Outputs().Index(0).Set<float>();
-    return ::mediapipe::OkStatus();
+    cc->SetTimestampOffset(TimestampDiff(0));
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
-    cc->SetOffset(TimestampDiff(0));
-    return ::mediapipe::OkStatus();
-  }
+  absl::Status Open(CalculatorContext* cc) final { return absl::OkStatus(); }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     float sum = 0.0;
     for (int i = 0; i < cc->Inputs().NumEntries(); ++i) {
       sum += cc->Inputs().Index(i).Get<float>();
     }
     cc->Outputs().Index(0).Add(new float(sum), cc->InputTimestamp());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 };
 REGISTER_CALCULATOR(FloatAdderCalculator);
@@ -278,26 +295,24 @@ REGISTER_CALCULATOR(FloatAdderCalculator);
 // input streams and outputs the product to the output stream.
 class IntMultiplierCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     for (int i = 0; i < cc->Inputs().NumEntries(); ++i) {
       cc->Inputs().Index(i).Set<int>();
     }
     cc->Outputs().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
+    cc->SetTimestampOffset(TimestampDiff(0));
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
-    cc->SetOffset(TimestampDiff(0));
-    return ::mediapipe::OkStatus();
-  }
+  absl::Status Open(CalculatorContext* cc) final { return absl::OkStatus(); }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     int product = 1;
     for (int i = 0; i < cc->Inputs().NumEntries(); ++i) {
       product *= cc->Inputs().Index(i).Get<int>();
     }
     cc->Outputs().Index(0).Add(new int(product), cc->InputTimestamp());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 };
 REGISTER_CALCULATOR(IntMultiplierCalculator);
@@ -307,24 +322,24 @@ REGISTER_CALCULATOR(IntMultiplierCalculator);
 // output stream.
 class FloatScalarMultiplierCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Inputs().Index(0).Set<float>();
     cc->Outputs().Index(0).Set<float>();
     cc->InputSidePackets().Index(0).Set<float>();
-    return ::mediapipe::OkStatus();
+    cc->SetTimestampOffset(TimestampDiff(0));
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
+  absl::Status Open(CalculatorContext* cc) final {
     scalar_ = cc->InputSidePackets().Index(0).Get<float>();
-    cc->SetOffset(TimestampDiff(0));
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     float value = cc->Inputs().Index(0).Value().Get<float>();
     cc->Outputs().Index(0).Add(new float(scalar_ * value),
                                cc->InputTimestamp());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
  private:
@@ -335,126 +350,33 @@ REGISTER_CALCULATOR(FloatScalarMultiplierCalculator);
 // A Calculator that converts an integer to a float.
 class IntToFloatCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Inputs().Index(0).Set<int>();
     cc->Outputs().Index(0).Set<float>();
-    return ::mediapipe::OkStatus();
+    cc->SetTimestampOffset(TimestampDiff(0));
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
-    cc->SetOffset(TimestampDiff(0));
-    return ::mediapipe::OkStatus();
-  }
+  absl::Status Open(CalculatorContext* cc) final { return absl::OkStatus(); }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     int value = cc->Inputs().Index(0).Value().Get<int>();
     cc->Outputs().Index(0).Add(new float(static_cast<float>(value)),
                                cc->InputTimestamp());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 };
 REGISTER_CALCULATOR(IntToFloatCalculator);
 
-// A Calculator that passes an input packet through if it contains an even
-// integer.
-class EvenIntFilterCalculator : public CalculatorBase {
- public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
-    cc->Inputs().Index(0).Set<int>();
-    cc->Outputs().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
-  }
-
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
-    int value = cc->Inputs().Index(0).Get<int>();
-    if (value % 2 == 0) {
-      cc->Outputs().Index(0).AddPacket(cc->Inputs().Index(0).Value());
-    } else {
-      cc->Outputs().Index(0).SetNextTimestampBound(
-          cc->InputTimestamp().NextAllowedInStream());
-    }
-    return ::mediapipe::OkStatus();
-  }
-};
-REGISTER_CALCULATOR(EvenIntFilterCalculator);
-
-// A Calculator that passes packets through or not, depending on a second
-// input. The first input stream's packets are only propagated if the second
-// input stream carries the value true.
-class ValveCalculator : public CalculatorBase {
- public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
-    cc->Inputs().Index(0).SetAny();
-    cc->Inputs().Index(1).Set<bool>();
-    cc->Outputs().Index(0).SetSameAs(&cc->Inputs().Index(0));
-    return ::mediapipe::OkStatus();
-  }
-
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
-    cc->Outputs().Index(0).SetHeader(cc->Inputs().Index(0).Header());
-    return ::mediapipe::OkStatus();
-  }
-
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
-    if (cc->Inputs().Index(1).Get<bool>()) {
-      cc->GetCounter("PassThrough")->Increment();
-      cc->Outputs().Index(0).AddPacket(cc->Inputs().Index(0).Value());
-    } else {
-      cc->GetCounter("Block")->Increment();
-      // The next timestamp bound is the minimum timestamp that the next packet
-      // can have, so, if we want to inform the downstream that no packet at
-      // InputTimestamp() is coming, we need to set it to the next value.
-      // We could also just call SetOffset(TimestampDiff(0)) in Open, and then
-      // we would not have to call this manually.
-      cc->Outputs().Index(0).SetNextTimestampBound(
-          cc->InputTimestamp().NextAllowedInStream());
-    }
-    return ::mediapipe::OkStatus();
-  }
-};
-REGISTER_CALCULATOR(ValveCalculator);
-
-// A Calculator that simply passes its input Packets and header through,
-// but shifts the timestamp.
-class TimeShiftCalculator : public CalculatorBase {
- public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
-    cc->Inputs().Index(0).SetAny();
-    cc->Outputs().Index(0).SetSameAs(&cc->Inputs().Index(0));
-    cc->InputSidePackets().Index(0).Set<TimestampDiff>();
-    return ::mediapipe::OkStatus();
-  }
-
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
-    // Input: arbitrary Packets.
-    // Output: copy of the input.
-    cc->Outputs().Index(0).SetHeader(cc->Inputs().Index(0).Header());
-    shift_ = cc->InputSidePackets().Index(0).Get<TimestampDiff>();
-    cc->SetOffset(shift_);
-    return ::mediapipe::OkStatus();
-  }
-
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
-    cc->GetCounter("PassThrough")->Increment();
-    cc->Outputs().Index(0).AddPacket(
-        cc->Inputs().Index(0).Value().At(cc->InputTimestamp() + shift_));
-    return ::mediapipe::OkStatus();
-  }
-
- private:
-  TimestampDiff shift_;
-};
-REGISTER_CALCULATOR(TimeShiftCalculator);
-
 template <typename OutputType>
 class TypedEmptySourceCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Outputs().Index(0).SetAny();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
+  absl::Status Process(CalculatorContext* cc) override {
     cc->Outputs().Index(0).Add(new OutputType(), Timestamp::PostStream());
     return tool::StatusStop();
   }
@@ -467,13 +389,13 @@ REGISTER_CALCULATOR(IntEmptySourceCalculator);
 template <typename InputType>
 class TypedSinkCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Inputs().Index(0).Set<InputType>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
-    return ::mediapipe::OkStatus();
+  absl::Status Process(CalculatorContext* cc) override {
+    return absl::OkStatus();
   }
 };
 typedef TypedSinkCalculator<std::string> StringSinkCalculator;
@@ -489,29 +411,29 @@ class GlobalCountSourceCalculator : public CalculatorBase {
  public:
   static const int kNumOutputPackets;
 
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->InputSidePackets().Index(0).Set<std::atomic<int>*>();
     if (cc->InputSidePackets().NumEntries() >= 2) {
       cc->InputSidePackets().Index(1).Set<bool>();
     }
     cc->Outputs().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) override {
+  absl::Status Open(CalculatorContext* cc) override {
     if (cc->InputSidePackets().NumEntries() >= 2 &&
         cc->InputSidePackets().Index(1).Get<bool>()) {
       OutputOne(cc);
     }
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
+  absl::Status Process(CalculatorContext* cc) override {
     OutputOne(cc);
     if (local_count_ >= kNumOutputPackets) {
       return tool::StatusStop();
     } else {
-      return ::mediapipe::OkStatus();
+      return absl::OkStatus();
     }
   }
 
@@ -524,7 +446,7 @@ class GlobalCountSourceCalculator : public CalculatorBase {
     ++local_count_;
   }
 
-  int64 local_count_ = 0;
+  int64_t local_count_ = 0;
 };
 const int GlobalCountSourceCalculator::kNumOutputPackets = 5;
 REGISTER_CALCULATOR(GlobalCountSourceCalculator);
@@ -534,19 +456,19 @@ static const int kTestSequenceLength = 15;
 // Outputs the integers 0, 1, 2, 3, ..., 14, all with timestamp 0.
 class TestSequence1SourceCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Outputs().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
+  absl::Status Process(CalculatorContext* cc) override {
     cc->Outputs().Index(0).Add(new int(count_), Timestamp(0));
     ++count_;
     ++num_outputs_;
     if (num_outputs_ >= kTestSequenceLength) {
       return tool::StatusStop();
     } else {
-      return ::mediapipe::OkStatus();
+      return absl::OkStatus();
     }
   }
 
@@ -560,12 +482,12 @@ REGISTER_CALCULATOR(TestSequence1SourceCalculator);
 // 100, 99, 98, 97, ....
 class TestSequence2SourceCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Outputs().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
+  absl::Status Process(CalculatorContext* cc) override {
     cc->Outputs().Index(0).Add(new int(count_), Timestamp(timestamp_));
     ++count_;
     ++num_outputs_;
@@ -573,7 +495,7 @@ class TestSequence2SourceCalculator : public CalculatorBase {
     if (num_outputs_ >= kTestSequenceLength) {
       return tool::StatusStop();
     } else {
-      return ::mediapipe::OkStatus();
+      return absl::OkStatus();
     }
   }
 
@@ -587,19 +509,19 @@ REGISTER_CALCULATOR(TestSequence2SourceCalculator);
 // Outputs the integers 0, 1, 2 repeatedly for a total of 15 outputs.
 class Modulo3SourceCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Outputs().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
+  absl::Status Process(CalculatorContext* cc) override {
     cc->Outputs().Index(0).Add(new int(count_ % 3), Timestamp(count_ % 3));
     ++count_;
     ++num_outputs_;
     if (num_outputs_ >= kTestSequenceLength) {
       return tool::StatusStop();
     } else {
-      return ::mediapipe::OkStatus();
+      return absl::OkStatus();
     }
   }
 
@@ -616,14 +538,14 @@ REGISTER_CALCULATOR(Modulo3SourceCalculator);
 // calculator.
 class OutputAllSourceCalculator : public CalculatorBase {
  public:
-  static const int kNumOutputPackets = 100;
+  static constexpr int kNumOutputPackets = 100;
 
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Outputs().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
+  absl::Status Process(CalculatorContext* cc) override {
     for (int i = 0; i < kNumOutputPackets; ++i) {
       cc->Outputs().Index(0).Add(new int(0), Timestamp(i));
     }
@@ -639,18 +561,18 @@ REGISTER_CALCULATOR(OutputAllSourceCalculator);
 // progress.
 class OutputOneAtATimeSourceCalculator : public CalculatorBase {
  public:
-  static const int kNumOutputPackets = 1000;
+  static constexpr int kNumOutputPackets = 1000;
 
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Outputs().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
+  absl::Status Process(CalculatorContext* cc) override {
     if (index_ < kNumOutputPackets) {
       cc->Outputs().Index(0).Add(new int(0), Timestamp(index_));
       ++index_;
-      return ::mediapipe::OkStatus();
+      return absl::OkStatus();
     }
     return tool::StatusStop();
   }
@@ -666,20 +588,20 @@ REGISTER_CALCULATOR(OutputOneAtATimeSourceCalculator);
 // input stream connected to this calculator can become full.
 class DecimatorCalculator : public CalculatorBase {
  public:
-  static const int kDecimationRatio = 101;
+  static constexpr int kDecimationRatio = 101;
 
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Inputs().Index(0).SetAny();
     cc->Outputs().Index(0).SetSameAs(&cc->Inputs().Index(0));
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     if (index_ % kDecimationRatio == 0) {
       cc->Outputs().Index(0).AddPacket(cc->Inputs().Index(0).Value());
     }
     ++index_;
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
  private:
@@ -691,23 +613,23 @@ REGISTER_CALCULATOR(DecimatorCalculator);
 // this calculator simply passes its input packets through, unchanged.
 class ErrorOnOpenCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Inputs().Index(0).SetAny();
     cc->Outputs().Index(0).SetSameAs(&cc->Inputs().Index(0));
-    cc->InputSidePackets().Tag("ERROR_ON_OPEN").Set<bool>();
-    return ::mediapipe::OkStatus();
+    cc->InputSidePackets().Tag(kErrorOnOpenTag).Set<bool>();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
-    if (cc->InputSidePackets().Tag("ERROR_ON_OPEN").Get<bool>()) {
-      return ::mediapipe::NotFoundError("expected error");
+  absl::Status Open(CalculatorContext* cc) final {
+    if (cc->InputSidePackets().Tag(kErrorOnOpenTag).Get<bool>()) {
+      return absl::NotFoundError("expected error");
     }
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     cc->Outputs().Index(0).AddPacket(cc->Inputs().Index(0).Value());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 };
 REGISTER_CALCULATOR(ErrorOnOpenCalculator);
@@ -717,64 +639,64 @@ REGISTER_CALCULATOR(ErrorOnOpenCalculator);
 // Process() method. The input stream and output stream have the integer type.
 class UnitDelayCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Inputs().Index(0).Set<int>();
     cc->Outputs().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
+  absl::Status Open(CalculatorContext* cc) final {
     cc->Outputs().Index(0).Add(new int(0), Timestamp(0));
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     const Packet& packet = cc->Inputs().Index(0).Value();
     cc->Outputs().Index(0).AddPacket(
         packet.At(packet.Timestamp().NextAllowedInStream()));
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 };
 REGISTER_CALCULATOR(UnitDelayCalculator);
 
 class UnitDelayUntimedCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Inputs().Index(0).Set<int>();
     cc->Outputs().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
+  absl::Status Open(CalculatorContext* cc) final {
     cc->Outputs().Index(0).Add(new int(0), Timestamp::Min());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     cc->Outputs().Index(0).AddPacket(cc->Inputs().Index(0).Value());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 };
 REGISTER_CALCULATOR(UnitDelayUntimedCalculator);
 
 class FloatUnitDelayCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Inputs().Index(0).Set<float>();
     cc->Outputs().Index(0).Set<float>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
+  absl::Status Open(CalculatorContext* cc) final {
     cc->Outputs().Index(0).Add(new float(0.0), Timestamp(0));
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     const Packet& packet = cc->Inputs().Index(0).Value();
     cc->Outputs().Index(0).AddPacket(
         packet.At(packet.Timestamp().NextAllowedInStream()));
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 };
 REGISTER_CALCULATOR(FloatUnitDelayCalculator);
@@ -783,20 +705,18 @@ REGISTER_CALCULATOR(FloatUnitDelayCalculator);
 // discards input packets in Process().
 class AssertEmptyInputInOpenCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Inputs().Index(0).SetAny();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
+  absl::Status Open(CalculatorContext* cc) final {
     RET_CHECK(cc->Inputs().Index(0).Value().IsEmpty());
     RET_CHECK_EQ(cc->Inputs().Index(0).Value().Timestamp(), Timestamp::Unset());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
-    return ::mediapipe::OkStatus();
-  }
+  absl::Status Process(CalculatorContext* cc) final { return absl::OkStatus(); }
 };
 REGISTER_CALCULATOR(AssertEmptyInputInOpenCalculator);
 
@@ -804,22 +724,22 @@ REGISTER_CALCULATOR(AssertEmptyInputInOpenCalculator);
 // 0, 1, ..., 9.
 class SlowCountingSinkCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Inputs().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
+  absl::Status Process(CalculatorContext* cc) override {
     absl::SleepFor(absl::Milliseconds(10));
     int value = cc->Inputs().Index(0).Get<int>();
-    CHECK_EQ(value, counter_);
+    ABSL_CHECK_EQ(value, counter_);
     ++counter_;
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Close(CalculatorContext* cc) override {
-    CHECK_EQ(10, counter_);
-    return ::mediapipe::OkStatus();
+  absl::Status Close(CalculatorContext* cc) override {
+    ABSL_CHECK_EQ(10, counter_);
+    return absl::OkStatus();
   }
 
  private:
@@ -831,51 +751,50 @@ template <typename InputType>
 class TypedStatusHandler : public StatusHandler {
  public:
   ~TypedStatusHandler() override = 0;
-  static ::mediapipe::Status FillExpectations(
+  static absl::Status FillExpectations(
       const MediaPipeOptions& extendable_options,
       PacketTypeSet* input_side_packets) {
     input_side_packets->Index(0).Set<InputType>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  static ::mediapipe::Status HandlePreRunStatus(
+  static absl::Status HandlePreRunStatus(
       const MediaPipeOptions& extendable_options,
       const PacketSet& input_side_packets,  //
-      const ::mediapipe::Status& pre_run_status) {
-    return ::mediapipe::OkStatus();
+      const absl::Status& pre_run_status) {
+    return absl::OkStatus();
   }
 
-  static ::mediapipe::Status HandleStatus(
-      const MediaPipeOptions& extendable_options,
-      const PacketSet& input_side_packets,  //
-      const ::mediapipe::Status& run_status) {
-    return ::mediapipe::OkStatus();
+  static absl::Status HandleStatus(const MediaPipeOptions& extendable_options,
+                                   const PacketSet& input_side_packets,  //
+                                   const absl::Status& run_status) {
+    return absl::OkStatus();
   }
 };
 typedef TypedStatusHandler<std::string> StringStatusHandler;
-typedef TypedStatusHandler<uint32> Uint32StatusHandler;
+typedef TypedStatusHandler<uint32_t> Uint32StatusHandler;
 REGISTER_STATUS_HANDLER(StringStatusHandler);
 REGISTER_STATUS_HANDLER(Uint32StatusHandler);
 
-// A std::string generator that will succeed.
+// A string generator that will succeed.
 class StaticCounterStringGenerator : public PacketGenerator {
  public:
-  static ::mediapipe::Status FillExpectations(
+  static absl::Status FillExpectations(
       const PacketGeneratorOptions& extendable_options,
       PacketTypeSet* input_side_packets, PacketTypeSet* output_side_packets) {
     for (int i = 0; i < input_side_packets->NumEntries(); ++i) {
       input_side_packets->Index(i).SetAny();
     }
     output_side_packets->Index(0).Set<std::string>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  static ::mediapipe::Status Generate(
-      const PacketGeneratorOptions& extendable_options,
-      const PacketSet& input_side_packets, PacketSet* output_side_packets) {
+  static absl::Status Generate(const PacketGeneratorOptions& extendable_options,
+                               const PacketSet& input_side_packets,
+                               PacketSet* output_side_packets) {
     output_side_packets->Index(0) = MakePacket<std::string>("fixed_string");
     ++num_packets_generated_;
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
   static int NumPacketsGenerated() { return num_packets_generated_; }
@@ -892,20 +811,20 @@ REGISTER_PACKET_GENERATOR(StaticCounterStringGenerator);
 // called. Both claim to output strings but instead always fail.
 class FailingPacketGenerator : public PacketGenerator {
  public:
-  static ::mediapipe::Status FillExpectations(
+  static absl::Status FillExpectations(
       const PacketGeneratorOptions& extendable_options,
       PacketTypeSet* input_side_packets, PacketTypeSet* output_side_packets) {
     for (int i = 0; i < input_side_packets->NumEntries(); ++i) {
       input_side_packets->Index(i).SetAny();
     }
     output_side_packets->Index(0).Set<std::string>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  static ::mediapipe::Status Generate(
-      const PacketGeneratorOptions& extendable_options,
-      const PacketSet& input_side_packets, PacketSet* output_side_packets) {
-    return ::mediapipe::UnknownError("this always fails.");
+  static absl::Status Generate(const PacketGeneratorOptions& extendable_options,
+                               const PacketSet& input_side_packets,
+                               PacketSet* output_side_packets) {
+    return absl::UnknownError("this always fails.");
   }
 };
 REGISTER_PACKET_GENERATOR(FailingPacketGenerator);
@@ -913,28 +832,28 @@ REGISTER_PACKET_GENERATOR(FailingPacketGenerator);
 // Passes the integer through if it is positive.
 class EnsurePositivePacketGenerator : public PacketGenerator {
  public:
-  static ::mediapipe::Status FillExpectations(
+  static absl::Status FillExpectations(
       const PacketGeneratorOptions& extendable_options,
       PacketTypeSet* input_side_packets, PacketTypeSet* output_side_packets) {
     for (int i = 0; i < input_side_packets->NumEntries(); ++i) {
       input_side_packets->Index(i).Set<int>();
       output_side_packets->Index(i).Set<int>();
     }
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  static ::mediapipe::Status Generate(
-      const PacketGeneratorOptions& extendable_options,
-      const PacketSet& input_side_packets, PacketSet* output_side_packets) {
+  static absl::Status Generate(const PacketGeneratorOptions& extendable_options,
+                               const PacketSet& input_side_packets,
+                               PacketSet* output_side_packets) {
     for (int i = 0; i < input_side_packets.NumEntries(); ++i) {
       if (input_side_packets.Index(i).Get<int>() > 0) {
         output_side_packets->Index(i) = input_side_packets.Index(i);
       } else {
-        return ::mediapipe::UnknownError(
+        return absl::UnknownError(
             absl::StrCat("Integer ", i, " was not positive."));
       }
     }
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 };
 REGISTER_PACKET_GENERATOR(EnsurePositivePacketGenerator);
@@ -951,32 +870,30 @@ class FailableStatusHandler : public StatusHandler {
     kFailPostRun = 2,
   };
 
-  static ::mediapipe::Status FillExpectations(
+  static absl::Status FillExpectations(
       const MediaPipeOptions& extendable_options,
       PacketTypeSet* input_side_packets) {
     input_side_packets->Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
-  static ::mediapipe::Status HandlePreRunStatus(
+  static absl::Status HandlePreRunStatus(
       const MediaPipeOptions& extendable_options,
-      const PacketSet& input_side_packets,
-      const ::mediapipe::Status& pre_run_status) {
+      const PacketSet& input_side_packets, const absl::Status& pre_run_status) {
     if (input_side_packets.Index(0).Get<int>() == kFailPreRun) {
-      return ::mediapipe::UnknownError(
+      return absl::UnknownError(
           "FailableStatusHandler failing pre run as intended.");
     } else {
-      return ::mediapipe::OkStatus();
+      return absl::OkStatus();
     }
   }
-  static ::mediapipe::Status HandleStatus(
-      const MediaPipeOptions& extendable_options,
-      const PacketSet& input_side_packets,
-      const ::mediapipe::Status& run_status) {
+  static absl::Status HandleStatus(const MediaPipeOptions& extendable_options,
+                                   const PacketSet& input_side_packets,
+                                   const absl::Status& run_status) {
     if (input_side_packets.Index(0).Get<int>() == kFailPostRun) {
-      return ::mediapipe::UnknownError(
+      return absl::UnknownError(
           "FailableStatusHandler failing post run as intended.");
     } else {
-      return ::mediapipe::OkStatus();
+      return absl::OkStatus();
     }
   }
 };
@@ -984,13 +901,13 @@ REGISTER_STATUS_HANDLER(FailableStatusHandler);
 
 class FailingSourceCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Outputs().Index(0).Set<std::string>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
-    return ::mediapipe::UnknownError("this always fails.");
+  absl::Status Process(CalculatorContext* cc) override {
+    return absl::UnknownError("this always fails.");
   }
 };
 REGISTER_CALCULATOR(FailingSourceCalculator);
@@ -1018,24 +935,22 @@ class SemaphoreCalculator : public CalculatorBase {
  public:
   using Semaphore = AtomicSemaphore;
 
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Inputs().Index(0).SetAny();
     cc->Outputs().Index(0).SetSameAs(&cc->Inputs().Index(0));
-    cc->InputSidePackets().Tag("POST_SEM").Set<Semaphore*>();
-    cc->InputSidePackets().Tag("WAIT_SEM").Set<Semaphore*>();
-    return ::mediapipe::OkStatus();
+    cc->InputSidePackets().Tag(kPostSemTag).Set<Semaphore*>();
+    cc->InputSidePackets().Tag(kWaitSemTag).Set<Semaphore*>();
+    cc->SetTimestampOffset(TimestampDiff(0));
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) override {
-    cc->SetOffset(TimestampDiff(0));
-    return ::mediapipe::OkStatus();
-  }
+  absl::Status Open(CalculatorContext* cc) override { return absl::OkStatus(); }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
-    cc->InputSidePackets().Tag("POST_SEM").Get<Semaphore*>()->Release(1);
-    cc->InputSidePackets().Tag("WAIT_SEM").Get<Semaphore*>()->Acquire(1);
+  absl::Status Process(CalculatorContext* cc) override {
+    cc->InputSidePackets().Tag(kPostSemTag).Get<Semaphore*>()->Release(1);
+    cc->InputSidePackets().Tag(kWaitSemTag).Get<Semaphore*>()->Acquire(1);
     cc->Outputs().Index(0).AddPacket(cc->Inputs().Index(0).Value());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 };
 REGISTER_CALCULATOR(SemaphoreCalculator);
@@ -1044,95 +959,27 @@ REGISTER_CALCULATOR(SemaphoreCalculator);
 // and takes 20 milliseconds to run.
 class OneShot20MsCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
-    return ::mediapipe::OkStatus();
+  static absl::Status GetContract(CalculatorContract* cc) {
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
+  absl::Status Process(CalculatorContext* cc) override {
     absl::SleepFor(absl::Milliseconds(20));
     return tool::StatusStop();
   }
 };
 REGISTER_CALCULATOR(OneShot20MsCalculator);
 
-// A source calculator that alternates between outputting an integer (0, 1, 2,
-// ..., 100) and setting the next timestamp bound. The timestamps of the output
-// packets and next timestamp bounds are 0, 10, 20, 30, ...
-//
-//   T=0    Output 0
-//   T=10   Set timestamp bound
-//   T=20   Output 1
-//   T=30   Set timestamp bound
-//   ...
-//   T=2000 Output 100
-class OutputAndBoundSourceCalculator : public CalculatorBase {
- public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
-    cc->Outputs().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
-  }
-
-  ::mediapipe::Status Open(CalculatorContext* cc) override {
-    counter_ = 0;
-    return ::mediapipe::OkStatus();
-  }
-
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
-    Timestamp timestamp(counter_);
-    if (counter_ % 20 == 0) {
-      cc->Outputs().Index(0).AddPacket(
-          MakePacket<int>(counter_ / 20).At(timestamp));
-    } else {
-      cc->Outputs().Index(0).SetNextTimestampBound(timestamp);
-    }
-    if (counter_ == 2000) {
-      return tool::StatusStop();
-    }
-    counter_ += 10;
-    return ::mediapipe::OkStatus();
-  }
-
- private:
-  int counter_;
-};
-REGISTER_CALCULATOR(OutputAndBoundSourceCalculator);
-
-// A calculator that outputs an initial packet of value 0 at time 0 in the
-// Open() method, and then delays each input packet by 20 time units in the
-// Process() method. The input stream and output stream have the integer type.
-class Delay20Calculator : public CalculatorBase {
- public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
-    cc->Inputs().Index(0).Set<int>();
-    cc->Outputs().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
-  }
-
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
-    cc->SetOffset(TimestampDiff(20));
-    cc->Outputs().Index(0).AddPacket(MakePacket<int>(0).At(Timestamp(0)));
-    return ::mediapipe::OkStatus();
-  }
-
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
-    const Packet& packet = cc->Inputs().Index(0).Value();
-    Timestamp timestamp = packet.Timestamp() + 20;
-    cc->Outputs().Index(0).AddPacket(packet.At(timestamp));
-    return ::mediapipe::OkStatus();
-  }
-};
-REGISTER_CALCULATOR(Delay20Calculator);
-
 // A source calculator that outputs a packet containing the return value of
 // pthread_self() (the pthread id of the current thread).
 class PthreadSelfSourceCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Outputs().Index(0).Set<pthread_t>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
+  absl::Status Process(CalculatorContext* cc) override {
     cc->Outputs().Index(0).AddPacket(
         MakePacket<pthread_t>(pthread_self()).At(Timestamp(0)));
     return tool::StatusStop();
@@ -1144,38 +991,38 @@ REGISTER_CALCULATOR(PthreadSelfSourceCalculator);
 // It outputs five int packets with timestamps 0, 1, 2, 3, 4.
 class CheckInputTimestampSourceCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Outputs().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
   // InputTimestamp() returns Timestamp::Unstarted() in Open() for both source
   // and non-source nodes.
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
+  absl::Status Open(CalculatorContext* cc) final {
     RET_CHECK_EQ(cc->InputTimestamp(), Timestamp::Unstarted());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
   // InputTimestamp() always returns Timestamp(0) in Process() for source
   // nodes.
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     RET_CHECK_EQ(cc->InputTimestamp(), Timestamp(0));
     cc->Outputs().Index(0).Add(new int(count_), Timestamp(count_));
     ++count_;
     if (count_ >= 5) {
       return tool::StatusStop();
     } else {
-      return ::mediapipe::OkStatus();
+      return absl::OkStatus();
     }
   }
 
   // InputTimestamp() returns Timestamp::Done() in Close() for both source
   // and non-source nodes.
-  ::mediapipe::Status Close(CalculatorContext* cc) final {
+  absl::Status Close(CalculatorContext* cc) final {
     // Must use CHECK instead of RET_CHECK in Close(), because the framework
     // may call the Close() method of a source node with .IgnoreError().
-    CHECK_EQ(cc->InputTimestamp(), Timestamp::Done());
-    return ::mediapipe::OkStatus();
+    ABSL_CHECK_EQ(cc->InputTimestamp(), Timestamp::Done());
+    return absl::OkStatus();
   }
 
  private:
@@ -1187,33 +1034,33 @@ REGISTER_CALCULATOR(CheckInputTimestampSourceCalculator);
 // It expects to consume the output of a CheckInputTimestampSourceCalculator.
 class CheckInputTimestampSinkCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Inputs().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
   // InputTimestamp() returns Timestamp::Unstarted() in Open() for both source
   // and non-source nodes.
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
+  absl::Status Open(CalculatorContext* cc) final {
     RET_CHECK_EQ(cc->InputTimestamp(), Timestamp::Unstarted());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
   // InputTimestamp() returns the timestamp of input packets in Process() for
   // non-source nodes.
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     RET_CHECK_EQ(cc->InputTimestamp(),
                  cc->Inputs().Index(0).Value().Timestamp());
     RET_CHECK_EQ(cc->InputTimestamp(), Timestamp(count_));
     ++count_;
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
   // InputTimestamp() returns Timestamp::Done() in Close() for both source
   // and non-source nodes.
-  ::mediapipe::Status Close(CalculatorContext* cc) final {
+  absl::Status Close(CalculatorContext* cc) final {
     RET_CHECK_EQ(cc->InputTimestamp(), Timestamp::Done());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
  private:
@@ -1226,34 +1073,34 @@ REGISTER_CALCULATOR(CheckInputTimestampSinkCalculator);
 // the framework.
 class CheckInputTimestamp2SourceCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Outputs().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
   // InputTimestamp() returns Timestamp::Unstarted() in Open() for both source
   // and non-source nodes.
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
+  absl::Status Open(CalculatorContext* cc) final {
     RET_CHECK_EQ(cc->InputTimestamp(), Timestamp::Unstarted());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
   // InputTimestamp() always returns Timestamp(0) in Process() for source
   // nodes.
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     RET_CHECK_EQ(cc->InputTimestamp(), Timestamp(0));
     cc->Outputs().Index(0).Add(new int(count_), Timestamp(count_));
     ++count_;
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
   // InputTimestamp() returns Timestamp::Done() in Close() for both source
   // and non-source nodes.
-  ::mediapipe::Status Close(CalculatorContext* cc) final {
+  absl::Status Close(CalculatorContext* cc) final {
     // Must use CHECK instead of RET_CHECK in Close(), because the framework
     // may call the Close() method of a source node with .IgnoreError().
-    CHECK_EQ(cc->InputTimestamp(), Timestamp::Done());
-    return ::mediapipe::OkStatus();
+    ABSL_CHECK_EQ(cc->InputTimestamp(), Timestamp::Done());
+    return absl::OkStatus();
   }
 
  private:
@@ -1266,21 +1113,21 @@ REGISTER_CALCULATOR(CheckInputTimestamp2SourceCalculator);
 // It returns tool::StatusStop() after consuming five input packets.
 class CheckInputTimestamp2SinkCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Inputs().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
   // InputTimestamp() returns Timestamp::Unstarted() in Open() for both source
   // and non-source nodes.
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
+  absl::Status Open(CalculatorContext* cc) final {
     RET_CHECK_EQ(cc->InputTimestamp(), Timestamp::Unstarted());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
   // InputTimestamp() returns the timestamp of input packets in Process() for
   // non-source nodes.
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     RET_CHECK_EQ(cc->InputTimestamp(),
                  cc->Inputs().Index(0).Value().Timestamp());
     RET_CHECK_EQ(cc->InputTimestamp(), Timestamp(count_));
@@ -1288,15 +1135,15 @@ class CheckInputTimestamp2SinkCalculator : public CalculatorBase {
     if (count_ >= 5) {
       return tool::StatusStop();
     } else {
-      return ::mediapipe::OkStatus();
+      return absl::OkStatus();
     }
   }
 
   // InputTimestamp() returns Timestamp::Done() in Close() for both source
   // and non-source nodes.
-  ::mediapipe::Status Close(CalculatorContext* cc) final {
+  absl::Status Close(CalculatorContext* cc) final {
     RET_CHECK_EQ(cc->InputTimestamp(), Timestamp::Done());
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
  private:
@@ -1304,153 +1151,25 @@ class CheckInputTimestamp2SinkCalculator : public CalculatorBase {
 };
 REGISTER_CALCULATOR(CheckInputTimestamp2SinkCalculator);
 
-// Takes an input stream packet and passes it (with timestamp removed) as an
-// output side packet.
-class OutputSidePacketInProcessCalculator : public CalculatorBase {
- public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
-    cc->Inputs().Index(0).SetAny();
-    cc->OutputSidePackets().Index(0).SetSameAs(&cc->Inputs().Index(0));
-    return ::mediapipe::OkStatus();
-  }
-
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
-    cc->OutputSidePackets().Index(0).Set(
-        cc->Inputs().Index(0).Value().At(Timestamp::Unset()));
-    return ::mediapipe::OkStatus();
-  }
-};
-REGISTER_CALCULATOR(OutputSidePacketInProcessCalculator);
-
-// Takes an input stream packet and counts the number of the packets it
-// receives. Outputs the total number of packets as a side packet in Close.
-class CountAndOutputSummarySidePacketInCloseCalculator : public CalculatorBase {
- public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
-    cc->Inputs().Index(0).SetAny();
-    cc->OutputSidePackets().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
-  }
-
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
-    ++count_;
-    return ::mediapipe::OkStatus();
-  }
-
-  ::mediapipe::Status Close(CalculatorContext* cc) final {
-    cc->OutputSidePackets().Index(0).Set(
-        MakePacket<int>(count_).At(Timestamp::Unset()));
-    return ::mediapipe::OkStatus();
-  }
-
-  int count_ = 0;
-};
-REGISTER_CALCULATOR(CountAndOutputSummarySidePacketInCloseCalculator);
-
-// Takes an input stream packet and passes it (with timestamp intact) as an
-// output side packet. This triggers an error in the graph.
-class OutputSidePacketWithTimestampCalculator : public CalculatorBase {
- public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
-    cc->Inputs().Index(0).SetAny();
-    cc->OutputSidePackets().Index(0).SetSameAs(&cc->Inputs().Index(0));
-    return ::mediapipe::OkStatus();
-  }
-
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
-    cc->OutputSidePackets().Index(0).Set(cc->Inputs().Index(0).Value());
-    return ::mediapipe::OkStatus();
-  }
-};
-REGISTER_CALCULATOR(OutputSidePacketWithTimestampCalculator);
-
-// Generates an output side packet containing the integer 1.
-class IntegerOutputSidePacketCalculator : public CalculatorBase {
- public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
-    cc->OutputSidePackets().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
-  }
-
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
-    cc->OutputSidePackets().Index(0).Set(MakePacket<int>(1));
-    return ::mediapipe::OkStatus();
-  }
-
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
-    LOG(FATAL) << "Not reached.";
-    return ::mediapipe::OkStatus();
-  }
-};
-REGISTER_CALCULATOR(IntegerOutputSidePacketCalculator);
-
-// Generates an output side packet containing the sum of the two integer input
-// side packets.
-class SidePacketAdderCalculator : public CalculatorBase {
- public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
-    cc->InputSidePackets().Index(0).Set<int>();
-    cc->InputSidePackets().Index(1).Set<int>();
-    cc->OutputSidePackets().Index(0).Set<int>();
-    return ::mediapipe::OkStatus();
-  }
-
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
-    cc->OutputSidePackets().Index(0).Set(
-        MakePacket<int>(cc->InputSidePackets().Index(1).Get<int>() +
-                        cc->InputSidePackets().Index(0).Get<int>()));
-    return ::mediapipe::OkStatus();
-  }
-
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
-    LOG(FATAL) << "Not reached.";
-    return ::mediapipe::OkStatus();
-  }
-};
-REGISTER_CALCULATOR(SidePacketAdderCalculator);
-
-// Produces an output packet with the PostStream timestamp containing the
-// input side packet.
-class SidePacketToStreamPacketCalculator : public CalculatorBase {
- public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
-    cc->InputSidePackets().Index(0).SetAny();
-    cc->Outputs().Index(0).SetSameAs(&cc->InputSidePackets().Index(0));
-    return ::mediapipe::OkStatus();
-  }
-
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
-    cc->Outputs().Index(0).AddPacket(
-        cc->InputSidePackets().Index(0).At(Timestamp::PostStream()));
-    cc->Outputs().Index(0).Close();
-    return ::mediapipe::OkStatus();
-  }
-
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
-    return ::mediapipe::tool::StatusStop();
-  }
-};
-REGISTER_CALCULATOR(SidePacketToStreamPacketCalculator);
-
 // A calculator checks if either of two input streams contains a packet and
 // sends the packet to the single output stream with the same timestamp.
 class SimpleMuxCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     RET_CHECK_EQ(cc->Inputs().NumEntries(), 2);
     cc->Inputs().Index(0).SetAny();
     cc->Inputs().Index(1).SetSameAs(&cc->Inputs().Index(0));
     RET_CHECK_EQ(cc->Outputs().NumEntries(), 1);
     cc->Outputs().Index(0).SetSameAs(&cc->Inputs().Index(0));
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
+  absl::Status Open(CalculatorContext* cc) final {
     data_input_base_ = cc->Inputs().BeginId();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     int select_packet_index = -1;
     if (!cc->Inputs().Index(0).IsEmpty()) {
       select_packet_index = 0;
@@ -1461,7 +1180,7 @@ class SimpleMuxCalculator : public CalculatorBase {
       cc->Outputs().Index(0).AddPacket(
           cc->Inputs().Get(data_input_base_ + select_packet_index).Value());
     }
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
  private:
@@ -1473,51 +1192,50 @@ REGISTER_CALCULATOR(SimpleMuxCalculator);
 // by modifying the int in its input side packet.
 class IncrementingStatusHandler : public StatusHandler {
  public:
-  static ::mediapipe::Status FillExpectations(
+  static absl::Status FillExpectations(
       const MediaPipeOptions& extendable_options,
       PacketTypeSet* input_side_packets) {
-    input_side_packets->Tag("EXTRA").SetAny().Optional();
-    input_side_packets->Tag("COUNTER1").Set<std::unique_ptr<int>>();
-    input_side_packets->Tag("COUNTER2").Set<std::unique_ptr<int>>();
-    return ::mediapipe::OkStatus();
+    input_side_packets->Tag(kExtraTag).SetAny().Optional();
+    input_side_packets->Tag(kCounter1Tag).Set<std::unique_ptr<int>>();
+    input_side_packets->Tag(kCounter2Tag).Set<std::unique_ptr<int>>();
+    return absl::OkStatus();
   }
 
-  static ::mediapipe::Status HandlePreRunStatus(
+  static absl::Status HandlePreRunStatus(
       const MediaPipeOptions& extendable_options,
       const PacketSet& input_side_packets,  //
-      const ::mediapipe::Status& pre_run_status) {
-    int* counter = GetFromUniquePtr<int>(input_side_packets.Tag("COUNTER1"));
+      const absl::Status& pre_run_status) {
+    int* counter = GetFromUniquePtr<int>(input_side_packets.Tag(kCounter1Tag));
     (*counter)++;
     return pre_run_status_result_;
   }
 
-  static ::mediapipe::Status HandleStatus(
-      const MediaPipeOptions& extendable_options,
-      const PacketSet& input_side_packets,  //
-      const ::mediapipe::Status& run_status) {
-    int* counter = GetFromUniquePtr<int>(input_side_packets.Tag("COUNTER2"));
+  static absl::Status HandleStatus(const MediaPipeOptions& extendable_options,
+                                   const PacketSet& input_side_packets,  //
+                                   const absl::Status& run_status) {
+    int* counter = GetFromUniquePtr<int>(input_side_packets.Tag(kCounter2Tag));
     (*counter)++;
     return post_run_status_result_;
   }
 
-  static void SetPreRunStatusResult(const ::mediapipe::Status& status) {
+  static void SetPreRunStatusResult(const absl::Status& status) {
     pre_run_status_result_ = status;
   }
 
-  static void SetPostRunStatusResult(const ::mediapipe::Status& status) {
+  static void SetPostRunStatusResult(const absl::Status& status) {
     post_run_status_result_ = status;
   }
 
  private:
   // Return values of HandlePreRunStatus() and HandleSTatus(), respectively.
-  static ::mediapipe::Status pre_run_status_result_;
-  static ::mediapipe::Status post_run_status_result_;
+  static absl::Status pre_run_status_result_;
+  static absl::Status post_run_status_result_;
 };
 
-::mediapipe::Status IncrementingStatusHandler::pre_run_status_result_ =
-    ::mediapipe::OkStatus();
-::mediapipe::Status IncrementingStatusHandler::post_run_status_result_ =
-    ::mediapipe::OkStatus();
+absl::Status IncrementingStatusHandler::pre_run_status_result_ =
+    absl::OkStatus();
+absl::Status IncrementingStatusHandler::post_run_status_result_ =
+    absl::OkStatus();
 
 REGISTER_STATUS_HANDLER(IncrementingStatusHandler);
 
@@ -1531,8 +1249,8 @@ REGISTER_STATUS_HANDLER(IncrementingStatusHandler);
 class CurrentThreadExecutor : public Executor {
  public:
   ~CurrentThreadExecutor() override {
-    CHECK(!executing_);
-    CHECK(tasks_.empty());
+    ABSL_CHECK(!executing_);
+    ABSL_CHECK(tasks_.empty());
   }
 
   void Schedule(std::function<void()> task) override {
@@ -1543,7 +1261,7 @@ class CurrentThreadExecutor : public Executor {
       // running) to avoid an indefinitely-deep call stack.
       tasks_.emplace_back(std::move(task));
     } else {
-      CHECK(tasks_.empty());
+      ABSL_CHECK(tasks_.empty());
       executing_ = true;
       task();
       while (!tasks_.empty()) {
@@ -1565,7 +1283,7 @@ class CurrentThreadExecutor : public Executor {
 // Returns a CalculatorGraphConfig used by tests.
 CalculatorGraphConfig GetConfig() {
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         # The graph configuration. We list the nodes in an arbitrary (not
         # topologically-sorted) order to verify that CalculatorGraph can
         # handle such configurations.
@@ -1667,7 +1385,7 @@ CalculatorGraphConfig GetConfig() {
           output_side_packet: "LOW:unused_low"
           output_side_packet: "PAIR:node_5_converted"
         }
-      )");
+      )pb");
   return config;
 }
 
@@ -1684,22 +1402,22 @@ void RunComprehensiveTest(CalculatorGraph* graph,
   tool::AddPostStreamPacketSink("final_sum", &proto, &dumped_final_sum_packet);
   tool::AddPostStreamPacketSink("final_stddev", &proto,
                                 &dumped_final_stddev_packet);
-  MEDIAPIPE_ASSERT_OK(graph->Initialize(proto));
+  MP_ASSERT_OK(graph->Initialize(proto));
 
   std::map<std::string, Packet> extra_side_packets;
-  extra_side_packets.emplace("node_3", Adopt(new uint64((15LL << 32) | 3)));
+  extra_side_packets.emplace("node_3", Adopt(new uint64_t((15LL << 32) | 3)));
   if (define_node_5) {
-    extra_side_packets.emplace("node_5", Adopt(new uint64((15LL << 32) | 5)));
+    extra_side_packets.emplace("node_5", Adopt(new uint64_t((15LL << 32) | 5)));
   }
 
   // Call graph->Run() several times, to make sure that the appropriate
   // cleanup happens between iterations.
   for (int iteration = 0; iteration < 2; ++iteration) {
-    LOG(INFO) << "Loop iteration " << iteration;
+    ABSL_LOG(INFO) << "Loop iteration " << iteration;
     dumped_final_sum_packet = Packet();
     dumped_final_stddev_packet = Packet();
     dumped_final_packet = Packet();
-    MEDIAPIPE_ASSERT_OK(graph->Run(extra_side_packets));
+    MP_ASSERT_OK(graph->Run(extra_side_packets));
     // The merger will output the timestamp and all ints output from
     // the range calculators.  The saver will concatenate together the
     // strings with a '/' deliminator.
@@ -1737,20 +1455,20 @@ void RunComprehensiveTest(CalculatorGraph* graph,
                                        ->GetCounter("copy_range5-PassThrough")
                                        ->Get());
   }
-  LOG(INFO) << "After Loop Runs.";
+  ABSL_LOG(INFO) << "After Loop Runs.";
   // Verify that the graph can still run (but not successfully) when
   // one of the nodes is caused to fail.
   extra_side_packets.clear();
-  extra_side_packets.emplace("node_3", Adopt(new uint64((15LL << 32) | 0)));
+  extra_side_packets.emplace("node_3", Adopt(new uint64_t((15LL << 32) | 0)));
   if (define_node_5) {
-    extra_side_packets.emplace("node_5", Adopt(new uint64((15LL << 32) | 5)));
+    extra_side_packets.emplace("node_5", Adopt(new uint64_t((15LL << 32) | 5)));
   }
   dumped_final_sum_packet = Packet();
   dumped_final_stddev_packet = Packet();
   dumped_final_packet = Packet();
-  LOG(INFO) << "Expect an error to be logged here.";
+  ABSL_LOG(INFO) << "Expect an error to be logged here.";
   ASSERT_FALSE(graph->Run(extra_side_packets).ok());
-  LOG(INFO) << "Error should have been logged.";
+  ABSL_LOG(INFO) << "Error should have been logged.";
 }
 
 TEST(CalculatorGraph, BadInitialization) {
@@ -1764,7 +1482,7 @@ TEST(CalculatorGraph, BadInitialization) {
 TEST(CalculatorGraph, BadRun) {
   CalculatorGraphConfig proto = GetConfig();
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(proto));
+  MP_ASSERT_OK(graph.Initialize(proto));
   // Don't set the input side packets.
   EXPECT_FALSE(graph.Run().ok());
 }
@@ -1785,8 +1503,7 @@ TEST(CalculatorGraph, RunsCorrectlyOnApplicationThread) {
 
 TEST(CalculatorGraph, RunsCorrectlyWithExternalExecutor) {
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(
-      graph.SetExecutor("", std::make_shared<ThreadPoolExecutor>(1)));
+  MP_ASSERT_OK(graph.SetExecutor("", std::make_shared<ThreadPoolExecutor>(1)));
   CalculatorGraphConfig proto = GetConfig();
   RunComprehensiveTest(&graph, proto, /*define_node_5=*/true);
 }
@@ -1796,7 +1513,7 @@ TEST(CalculatorGraph, RunsCorrectlyWithExternalExecutor) {
 // result in a recursive call to itself.
 TEST(CalculatorGraph, RunsCorrectlyWithCurrentThreadExecutor) {
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(
+  MP_ASSERT_OK(
       graph.SetExecutor("", std::make_shared<CurrentThreadExecutor>()));
   CalculatorGraphConfig proto = GetConfig();
   RunComprehensiveTest(&graph, proto, /*define_node_5=*/true);
@@ -1805,9 +1522,9 @@ TEST(CalculatorGraph, RunsCorrectlyWithCurrentThreadExecutor) {
 TEST(CalculatorGraph, RunsCorrectlyWithNonDefaultExecutors) {
   CalculatorGraph graph;
   // Add executors "second" and "third".
-  MEDIAPIPE_ASSERT_OK(
+  MP_ASSERT_OK(
       graph.SetExecutor("second", std::make_shared<ThreadPoolExecutor>(1)));
-  MEDIAPIPE_ASSERT_OK(
+  MP_ASSERT_OK(
       graph.SetExecutor("third", std::make_shared<ThreadPoolExecutor>(1)));
   CalculatorGraphConfig proto = GetConfig();
   ExecutorConfig* executor = proto.add_executor();
@@ -1866,18 +1583,18 @@ TEST(CalculatorGraph, RunsCorrectlyWithMultipleExecutors) {
 // Packet generator for an arbitrary unit64 packet.
 class Uint64PacketGenerator : public PacketGenerator {
  public:
-  static ::mediapipe::Status FillExpectations(
+  static absl::Status FillExpectations(
       const PacketGeneratorOptions& extendable_options,
       PacketTypeSet* input_side_packets, PacketTypeSet* output_side_packets) {
-    output_side_packets->Index(0).Set<uint64>();
-    return ::mediapipe::OkStatus();
+    output_side_packets->Index(0).Set<uint64_t>();
+    return absl::OkStatus();
   }
 
-  static ::mediapipe::Status Generate(
-      const PacketGeneratorOptions& extendable_options,
-      const PacketSet& input_side_packets, PacketSet* output_side_packets) {
-    output_side_packets->Index(0) = Adopt(new uint64(15LL << 32 | 5));
-    return ::mediapipe::OkStatus();
+  static absl::Status Generate(const PacketGeneratorOptions& extendable_options,
+                               const PacketSet& input_side_packets,
+                               PacketSet* output_side_packets) {
+    output_side_packets->Index(0) = Adopt(new uint64_t(15LL << 32 | 5));
+    return absl::OkStatus();
   }
 };
 REGISTER_PACKET_GENERATOR(Uint64PacketGenerator);
@@ -1903,23 +1620,23 @@ TEST(CalculatorGraph, TypeMismatch) {
   config.mutable_node(0)->set_calculator("StringEmptySourceCalculator");
   config.mutable_node(1)->set_calculator("StringSinkCalculator");
   graph.reset(new CalculatorGraph());
-  MEDIAPIPE_ASSERT_OK(graph->Initialize(config));
-  MEDIAPIPE_EXPECT_OK(graph->Run());
+  MP_ASSERT_OK(graph->Initialize(config));
+  MP_EXPECT_OK(graph->Run());
   graph.reset(nullptr);
 
   // Type matches, expect success.
   config.mutable_node(0)->set_calculator("IntEmptySourceCalculator");
   config.mutable_node(1)->set_calculator("IntSinkCalculator");
   graph.reset(new CalculatorGraph());
-  MEDIAPIPE_ASSERT_OK(graph->Initialize(config));
-  MEDIAPIPE_EXPECT_OK(graph->Run());
+  MP_ASSERT_OK(graph->Initialize(config));
+  MP_EXPECT_OK(graph->Run());
   graph.reset(nullptr);
 
   // Type mismatch, expect non-crashing failure.
   config.mutable_node(0)->set_calculator("StringEmptySourceCalculator");
   config.mutable_node(1)->set_calculator("IntSinkCalculator");
   graph.reset(new CalculatorGraph());
-  MEDIAPIPE_ASSERT_OK(graph->Initialize(config));
+  MP_ASSERT_OK(graph->Initialize(config));
   EXPECT_FALSE(graph->Run().ok());
   graph.reset(nullptr);
 
@@ -1927,7 +1644,7 @@ TEST(CalculatorGraph, TypeMismatch) {
   config.mutable_node(0)->set_calculator("IntEmptySourceCalculator");
   config.mutable_node(1)->set_calculator("StringSinkCalculator");
   graph.reset(new CalculatorGraph());
-  MEDIAPIPE_ASSERT_OK(graph->Initialize(config));
+  MP_ASSERT_OK(graph->Initialize(config));
   EXPECT_FALSE(graph->Run().ok());
   graph.reset(nullptr);
 }
@@ -1974,8 +1691,8 @@ TEST(CalculatorGraph, LayerOrdering) {
   std::map<std::string, Packet> input_side_packets;
   input_side_packets["global_counter"] = Adopt(new auto(&global_counter));
 
-  MEDIAPIPE_ASSERT_OK(graph->Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph->Run(input_side_packets));
+  MP_ASSERT_OK(graph->Initialize(config));
+  MP_ASSERT_OK(graph->Run(input_side_packets));
   graph.reset(nullptr);
 
   ASSERT_EQ(GlobalCountSourceCalculator::kNumOutputPackets,
@@ -2022,7 +1739,7 @@ TEST(CalculatorGraph, StatusHandlerInputVerification) {
   // Status handlers with all inputs present should be OK.
   auto graph = absl::make_unique<CalculatorGraph>();
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         packet_generator {
           packet_generator: "StaticCounterStringGenerator"
           output_side_packet: "created_by_factory"
@@ -2046,11 +1763,11 @@ TEST(CalculatorGraph, StatusHandlerInputVerification) {
           status_handler: "StringStatusHandler"
           input_side_packet: "extra_string"
         }
-      )");
-  MEDIAPIPE_ASSERT_OK(graph->Initialize(config));
+      )pb");
+  MP_ASSERT_OK(graph->Initialize(config));
   Packet extra_string = Adopt(new std::string("foo"));
-  Packet a_uint64 = Adopt(new uint64(0));
-  MEDIAPIPE_EXPECT_OK(
+  Packet a_uint64 = Adopt(new uint64_t(0));
+  MP_EXPECT_OK(
       graph->Run({{"extra_string", extra_string}, {"a_uint64", a_uint64}}));
 
   // Should fail verification when missing a required input. The generator is
@@ -2058,20 +1775,19 @@ TEST(CalculatorGraph, StatusHandlerInputVerification) {
   EXPECT_FALSE(graph->Run({{"a_uint64", a_uint64}}).ok());
 
   // Should fail verification when the type of an already created packet is
-  // wrong. Here we give the uint64 packet instead of the std::string packet to
-  // the StringStatusHandler.
+  // wrong. Here we give the uint64 packet instead of the string packet to the
+  // StringStatusHandler.
   EXPECT_FALSE(
       graph->Run({{"extra_string", a_uint64}, {"a_uint64", a_uint64}}).ok());
 
   // Should fail verification when the type of a packet generated by a base
   // packet factory is wrong. Everything is correct except we add a status
-  // handler expecting a uint32 but give it the std::string from the packet
-  // factory.
+  // handler expecting a uint32 but give it the string from the packet factory.
   auto* invalid_handler = config.add_status_handler();
   invalid_handler->set_status_handler("Uint32StatusHandler");
   invalid_handler->add_input_side_packet("created_by_factory");
   graph.reset(new CalculatorGraph());
-  ::mediapipe::Status status = graph->Initialize(config);
+  absl::Status status = graph->Initialize(config);
   EXPECT_THAT(status.message(),
               testing::AllOf(testing::HasSubstr("Uint32StatusHandler"),
                              // The problematic input side packet.
@@ -2080,11 +1796,11 @@ TEST(CalculatorGraph, StatusHandlerInputVerification) {
                              testing::HasSubstr("string"),
                              // Expected type.
                              testing::HasSubstr(
-                                 MediaPipeTypeStringOrDemangled<uint32>())));
+                                 MediaPipeTypeStringOrDemangled<uint32_t>())));
 
   // Should fail verification when the type of a to-be-generated packet is
-  // wrong. The added handler now expects a std::string but will receive the
-  // uint32 generated by the existing generator.
+  // wrong. The added handler now expects a string but will receive the uint32
+  // generated by the existing generator.
   invalid_handler->set_status_handler("StringStatusHandler");
   invalid_handler->set_input_side_packet(0, "generated_by_generator");
   graph.reset(new CalculatorGraph());
@@ -2097,16 +1813,16 @@ TEST(CalculatorGraph, StatusHandlerInputVerification) {
                              // The problematic input side packet.
                              testing::HasSubstr("generated_by_generator"),
                              // Actual type.
-                             testing::HasSubstr("string"),
-                             // Expected type.
                              testing::HasSubstr(
-                                 MediaPipeTypeStringOrDemangled<uint32>())));
+                                 MediaPipeTypeStringOrDemangled<uint32_t>()),
+                             // Expected type.
+                             testing::HasSubstr("string")));
 }
 
 TEST(CalculatorGraph, GenerateInInitialize) {
   CalculatorGraph graph;
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         packet_generator {
           packet_generator: "StaticCounterStringGenerator"
           input_side_packet: "created_by_factory"
@@ -2135,18 +1851,18 @@ TEST(CalculatorGraph, GenerateInInitialize) {
           input_side_packet: "foo3"
           output_side_packet: "foo4"
         }
-      )");
+      )pb");
   int initial_count = StaticCounterStringGenerator::NumPacketsGenerated();
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(
+  MP_ASSERT_OK(graph.Initialize(
       config,
       {{"created_by_factory", MakePacket<std::string>("default string")},
        {"input_in_initialize", MakePacket<int>(10)}}));
   EXPECT_EQ(initial_count + 2,
             StaticCounterStringGenerator::NumPacketsGenerated());
-  MEDIAPIPE_ASSERT_OK(graph.Run({{"input_in_run", MakePacket<int>(11)}}));
+  MP_ASSERT_OK(graph.Run({{"input_in_run", MakePacket<int>(11)}}));
   EXPECT_EQ(initial_count + 4,
             StaticCounterStringGenerator::NumPacketsGenerated());
-  MEDIAPIPE_ASSERT_OK(graph.Run({{"input_in_run", MakePacket<int>(12)}}));
+  MP_ASSERT_OK(graph.Run({{"input_in_run", MakePacket<int>(12)}}));
   EXPECT_EQ(initial_count + 6,
             StaticCounterStringGenerator::NumPacketsGenerated());
 }
@@ -2186,7 +1902,7 @@ void ResetCounters(std::map<std::string, Packet>* input_side_packets) {
 TEST(CalculatorGraph, HandlersRun) {
   std::unique_ptr<CalculatorGraph> graph(new CalculatorGraph());
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         packet_generator {
           packet_generator: "FailingPacketGenerator"
           output_side_packet: "unavailable"
@@ -2209,7 +1925,7 @@ TEST(CalculatorGraph, HandlersRun) {
           input_side_packet: "COUNTER2:unavailable_input_counter2"
           input_side_packet: "EXTRA:unavailable"
         }
-      )");
+      )pb");
   std::map<std::string, Packet> input_side_packets(
       {{"unused_input", AdoptAsUniquePtr(new int(0))},
        {"no_input_counter1", AdoptAsUniquePtr(new int(0))},
@@ -2241,7 +1957,7 @@ TEST(CalculatorGraph, HandlersRun) {
   // run at initialize time.
   config.mutable_packet_generator(0)->add_input_side_packet("unused_input");
   graph.reset(new CalculatorGraph());
-  MEDIAPIPE_ASSERT_OK(graph->Initialize(config));
+  MP_ASSERT_OK(graph->Initialize(config));
   ResetCounters(&input_side_packets);
   EXPECT_THAT(graph->Run(input_side_packets).ToString(),
               testing::HasSubstr("FailingPacketGenerator"));
@@ -2263,7 +1979,7 @@ TEST(CalculatorGraph, HandlersRun) {
   config.mutable_packet_generator(0)->set_packet_generator(
       "StaticCounterStringGenerator");
   graph.reset(new CalculatorGraph());
-  MEDIAPIPE_ASSERT_OK(graph->Initialize(config));
+  MP_ASSERT_OK(graph->Initialize(config));
   ResetCounters(&input_side_packets);
   // The entire graph should still fail because of the FailingSourceCalculator.
   EXPECT_THAT(graph->Run(input_side_packets).ToString(),
@@ -2286,9 +2002,9 @@ TEST(CalculatorGraph, HandlersRun) {
   // of the successful graph run.
   config.mutable_node(0)->set_calculator("StringEmptySourceCalculator");
   graph.reset(new CalculatorGraph());
-  MEDIAPIPE_ASSERT_OK(graph->Initialize(config));
+  MP_ASSERT_OK(graph->Initialize(config));
   ResetCounters(&input_side_packets);
-  MEDIAPIPE_EXPECT_OK(graph->Run(input_side_packets));
+  MP_EXPECT_OK(graph->Run(input_side_packets));
   EXPECT_EQ(1,
             *GetFromUniquePtr<int>(input_side_packets.at("no_input_counter1")));
   EXPECT_EQ(1,
@@ -2302,17 +2018,17 @@ TEST(CalculatorGraph, HandlersRun) {
   EXPECT_EQ(1, *GetFromUniquePtr<int>(
                    input_side_packets.at("unavailable_input_counter2")));
 
-  ::mediapipe::Status run_status;
+  absl::Status run_status;
 
   // Make status handlers fail. The graph should fail.
   // First, when the PRE_run fails
   IncrementingStatusHandler::SetPreRunStatusResult(
-      ::mediapipe::InternalError("Fail at pre-run"));
+      absl::InternalError("Fail at pre-run"));
   graph.reset(new CalculatorGraph());
-  MEDIAPIPE_ASSERT_OK(graph->Initialize(config));
+  MP_ASSERT_OK(graph->Initialize(config));
   ResetCounters(&input_side_packets);
   run_status = graph->Run(input_side_packets);
-  EXPECT_TRUE(run_status.code() == ::mediapipe::StatusCode::kInternal);
+  EXPECT_TRUE(run_status.code() == absl::StatusCode::kInternal);
   EXPECT_THAT(run_status.ToString(), testing::HasSubstr("Fail at pre-run"));
   EXPECT_EQ(1,
             *GetFromUniquePtr<int>(input_side_packets.at("no_input_counter1")));
@@ -2328,14 +2044,14 @@ TEST(CalculatorGraph, HandlersRun) {
                    input_side_packets.at("unavailable_input_counter2")));
 
   // Second, when the POST_run fails
-  IncrementingStatusHandler::SetPreRunStatusResult(::mediapipe::OkStatus());
+  IncrementingStatusHandler::SetPreRunStatusResult(absl::OkStatus());
   IncrementingStatusHandler::SetPostRunStatusResult(
-      ::mediapipe::InternalError("Fail at post-run"));
+      absl::InternalError("Fail at post-run"));
   graph.reset(new CalculatorGraph());
-  MEDIAPIPE_ASSERT_OK(graph->Initialize(config));
+  MP_ASSERT_OK(graph->Initialize(config));
   ResetCounters(&input_side_packets);
   run_status = graph->Run(input_side_packets);
-  EXPECT_TRUE(run_status.code() == ::mediapipe::StatusCode::kInternal);
+  EXPECT_TRUE(run_status.code() == absl::StatusCode::kInternal);
   EXPECT_THAT(run_status.ToString(), testing::HasSubstr("Fail at post-run"));
   EXPECT_EQ(1,
             *GetFromUniquePtr<int>(input_side_packets.at("no_input_counter1")));
@@ -2351,34 +2067,54 @@ TEST(CalculatorGraph, HandlersRun) {
                    input_side_packets.at("unavailable_input_counter2")));
 }
 
+TEST(CalculatorGraph, CalculatorGraphConfigCopyElision) {
+  CalculatorGraph graph;
+  CalculatorGraphConfig config =
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
+        input_stream: 'in'
+        node {
+          calculator: 'PassThroughCalculator'
+          input_stream: 'in'
+          output_stream: 'out'
+        }
+      )pb");
+  // config is consumed and never copied, which avoid copying data.
+  MP_ASSERT_OK(graph.Initialize(std::move(config)));
+  MP_EXPECT_OK(graph.StartRun({}));
+  MP_EXPECT_OK(
+      graph.AddPacketToInputStream("in", MakePacket<int>(1).At(Timestamp(1))));
+  MP_EXPECT_OK(graph.CloseInputStream("in"));
+  MP_EXPECT_OK(graph.WaitUntilDone());
+}
+
 // Test that calling SetOffset() in Calculator::Process() results in the
-// ::mediapipe::StatusCode::kFailedPrecondition error.
+// absl::StatusCode::kFailedPrecondition error.
 TEST(CalculatorGraph, SetOffsetInProcess) {
   CalculatorGraph graph;
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         input_stream: 'in'
         node {
           calculator: 'SetOffsetInProcessCalculator'
           input_stream: 'in'
           output_stream: 'out'
         }
-      )");
+      )pb");
 
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_EXPECT_OK(graph.StartRun({}));
-  MEDIAPIPE_EXPECT_OK(
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_EXPECT_OK(graph.StartRun({}));
+  MP_EXPECT_OK(
       graph.AddPacketToInputStream("in", MakePacket<int>(0).At(Timestamp(0))));
-  ::mediapipe::Status status = graph.WaitUntilIdle();
+  absl::Status status = graph.WaitUntilIdle();
   EXPECT_FALSE(status.ok());
-  EXPECT_EQ(::mediapipe::StatusCode::kFailedPrecondition, status.code());
+  EXPECT_EQ(absl::StatusCode::kFailedPrecondition, status.code());
 }
 
 // Test that MediaPipe releases input packets when it is done with them.
 TEST(CalculatorGraph, InputPacketLifetime) {
   CalculatorGraph graph;
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         input_stream: 'in'
         node {
           calculator: 'PassThroughCalculator'
@@ -2390,7 +2126,7 @@ TEST(CalculatorGraph, InputPacketLifetime) {
           input_stream: 'mid'
           output_stream: 'out'
         }
-      )");
+      )pb");
 
   LifetimeTracker tracker;
   Timestamp timestamp = Timestamp(0);
@@ -2398,219 +2134,18 @@ TEST(CalculatorGraph, InputPacketLifetime) {
     return Adopt(tracker.MakeObject().release()).At(++timestamp);
   };
 
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_EXPECT_OK(graph.StartRun({}));
-  MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream("in", new_packet()));
-  MEDIAPIPE_EXPECT_OK(graph.WaitUntilIdle());
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_EXPECT_OK(graph.StartRun({}));
+  MP_EXPECT_OK(graph.AddPacketToInputStream("in", new_packet()));
+  MP_EXPECT_OK(graph.WaitUntilIdle());
   EXPECT_EQ(0, tracker.live_count());
-  MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream("in", new_packet()));
-  MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream("in", new_packet()));
-  MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream("in", new_packet()));
-  MEDIAPIPE_EXPECT_OK(graph.WaitUntilIdle());
+  MP_EXPECT_OK(graph.AddPacketToInputStream("in", new_packet()));
+  MP_EXPECT_OK(graph.AddPacketToInputStream("in", new_packet()));
+  MP_EXPECT_OK(graph.AddPacketToInputStream("in", new_packet()));
+  MP_EXPECT_OK(graph.WaitUntilIdle());
   EXPECT_EQ(0, tracker.live_count());
-  MEDIAPIPE_EXPECT_OK(graph.CloseInputStream("in"));
-  MEDIAPIPE_EXPECT_OK(graph.WaitUntilDone());
-}
-
-// Test that SetNextTimestampBound propagates.
-TEST(CalculatorGraph, SetNextTimestampBoundPropagation) {
-  CalculatorGraph graph;
-  CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
-        input_stream: 'in'
-        input_stream: 'gate'
-        node {
-          calculator: 'ValveCalculator'
-          input_stream: 'in'
-          input_stream: 'gate'
-          output_stream: 'gated'
-        }
-        node {
-          calculator: 'PassThroughCalculator'
-          input_stream: 'gated'
-          output_stream: 'passed'
-        }
-        node {
-          calculator: 'TimeShiftCalculator'
-          input_stream: 'passed'
-          output_stream: 'shifted'
-          input_side_packet: 'shift'
-        }
-        node {
-          calculator: 'MergeCalculator'
-          input_stream: 'in'
-          input_stream: 'shifted'
-          output_stream: 'merged'
-        }
-        node {
-          name: 'merged_output'
-          calculator: 'PassThroughCalculator'
-          input_stream: 'merged'
-          output_stream: 'out'
-        }
-      )");
-
-  Timestamp timestamp = Timestamp(0);
-  auto send_inputs = [&graph, &timestamp](int input, bool pass) {
-    ++timestamp;
-    MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
-        "in", MakePacket<int>(input).At(timestamp)));
-    MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
-        "gate", MakePacket<bool>(pass).At(timestamp)));
-  };
-
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(
-      graph.StartRun({{"shift", MakePacket<TimestampDiff>(0)}}));
-
-  auto pass_counter =
-      graph.GetCounterFactory()->GetCounter("ValveCalculator-PassThrough");
-  auto block_counter =
-      graph.GetCounterFactory()->GetCounter("ValveCalculator-Block");
-  auto merged_counter =
-      graph.GetCounterFactory()->GetCounter("merged_output-PassThrough");
-
-  send_inputs(1, true);
-  send_inputs(2, true);
-  send_inputs(3, false);
-  send_inputs(4, false);
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
-
-  // Verify that MergeCalculator was able to run even when the gated branch
-  // was blocked.
-  EXPECT_EQ(2, pass_counter->Get());
-  EXPECT_EQ(2, block_counter->Get());
-  EXPECT_EQ(4, merged_counter->Get());
-
-  send_inputs(5, true);
-  send_inputs(6, false);
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
-
-  EXPECT_EQ(3, pass_counter->Get());
-  EXPECT_EQ(3, block_counter->Get());
-  EXPECT_EQ(6, merged_counter->Get());
-
-  MEDIAPIPE_ASSERT_OK(graph.CloseAllInputStreams());
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
-
-  // Now test with time shift
-  MEDIAPIPE_ASSERT_OK(
-      graph.StartRun({{"shift", MakePacket<TimestampDiff>(-1)}}));
-
-  send_inputs(7, true);
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
-
-  // The merger should have run only once now, at timestamp 6, with inputs
-  // <null, 7>. If we do not respect the offset and unblock the merger for
-  // timestamp 7 too, then it will have run twice, with 6: <null,7> and
-  // 7: <7, null>.
-  EXPECT_EQ(4, pass_counter->Get());
-  EXPECT_EQ(3, block_counter->Get());
-  EXPECT_EQ(7, merged_counter->Get());
-
-  MEDIAPIPE_ASSERT_OK(graph.CloseAllInputStreams());
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
-
-  EXPECT_EQ(4, pass_counter->Get());
-  EXPECT_EQ(3, block_counter->Get());
-  EXPECT_EQ(8, merged_counter->Get());
-}
-
-// Both input streams of the calculator node have the same next timestamp
-// bound. One input stream has a packet at that timestamp. The other input
-// stream is empty. We should not run the Process() method of the node in this
-// case.
-TEST(CalculatorGraph, NotAllInputPacketsAtNextTimestampBoundAvailable) {
-  //
-  // in0_unfiltered  in1_to_be_filtered
-  //        |             |
-  //        |             V
-  //        |  +-----------------------+
-  //        |  |EvenIntFilterCalculator|
-  //        |  +-----------------------+
-  //        |             |
-  //        \             /
-  //         \           / in1_filtered
-  //          \         /
-  //           |       |
-  //           V       V
-  //      +------------------+
-  //      |IntAdderCalculator|
-  //      +------------------+
-  //               |
-  //               V
-  //              out
-  //
-  CalculatorGraph graph;
-  CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
-        input_stream: 'in0_unfiltered'
-        input_stream: 'in1_to_be_filtered'
-        node {
-          calculator: 'EvenIntFilterCalculator'
-          input_stream: 'in1_to_be_filtered'
-          output_stream: 'in1_filtered'
-        }
-        node {
-          calculator: 'IntAdderCalculator'
-          input_stream: 'in0_unfiltered'
-          input_stream: 'in1_filtered'
-          output_stream: 'out'
-        }
-      )");
-  std::vector<Packet> packet_dump;
-  tool::AddVectorSink("out", &config, &packet_dump);
-
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
-
-  Timestamp timestamp = Timestamp(0);
-
-  // We send an integer with timestamp 1 to the in0_unfiltered input stream of
-  // the IntAdderCalculator. We then send an even integer with timestamp 1 to
-  // the EvenIntFilterCalculator. This packet will go through and
-  // the IntAdderCalculator will run. The next timestamp bounds of both the
-  // input streams of the IntAdderCalculator will become 2.
-
-  ++timestamp;  // Timestamp 1.
-  MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
-      "in0_unfiltered", MakePacket<int>(1).At(timestamp)));
-  MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
-      "in1_to_be_filtered", MakePacket<int>(2).At(timestamp)));
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
-  ASSERT_EQ(1, packet_dump.size());
-  EXPECT_EQ(3, packet_dump[0].Get<int>());
-
-  // We send an odd integer with timestamp 2 to the EvenIntFilterCalculator.
-  // This packet will be filtered out and the next timestamp bound of the
-  // in1_filtered input stream of the IntAdderCalculator will become 3.
-
-  ++timestamp;  // Timestamp 2.
-  MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
-      "in1_to_be_filtered", MakePacket<int>(3).At(timestamp)));
-
-  // We send an integer with timestamp 3 to the in0_unfiltered input stream of
-  // the IntAdderCalculator. MediaPipe should propagate the next timestamp bound
-  // across the IntAdderCalculator but should not run its Process() method.
-
-  ++timestamp;  // Timestamp 3.
-  MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
-      "in0_unfiltered", MakePacket<int>(3).At(timestamp)));
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
-  ASSERT_EQ(1, packet_dump.size());
-
-  // We send an even integer with timestamp 3 to the IntAdderCalculator. This
-  // packet will go through and the IntAdderCalculator will run.
-
-  MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
-      "in1_to_be_filtered", MakePacket<int>(4).At(timestamp)));
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
-  ASSERT_EQ(2, packet_dump.size());
-  EXPECT_EQ(7, packet_dump[1].Get<int>());
-
-  MEDIAPIPE_ASSERT_OK(graph.CloseAllInputStreams());
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
-  EXPECT_EQ(2, packet_dump.size());
+  MP_EXPECT_OK(graph.CloseInputStream("in"));
+  MP_EXPECT_OK(graph.WaitUntilDone());
 }
 
 // Demonstrate an if-then-else graph.
@@ -2622,7 +2157,7 @@ TEST(CalculatorGraph, IfThenElse) {
   // of the two branches different.
   CalculatorGraph graph;
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         input_stream: 'in'
         input_stream: 'select'
         node {
@@ -2659,21 +2194,21 @@ TEST(CalculatorGraph, IfThenElse) {
           input_stream: 'SELECT:select'
           output_stream: 'OUTPUT:out'
         }
-      )");
+      )pb");
   std::vector<Packet> packet_dump;
   tool::AddVectorSink("out", &config, &packet_dump);
 
   Timestamp timestamp = Timestamp(0);
   auto send_inputs = [&graph, &timestamp](int input, int select) {
     ++timestamp;
-    MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
+    MP_EXPECT_OK(graph.AddPacketToInputStream(
         "in", MakePacket<int>(input).At(timestamp)));
-    MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
+    MP_EXPECT_OK(graph.AddPacketToInputStream(
         "select", MakePacket<int>(select).At(timestamp)));
   };
 
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.StartRun({}));
 
   // If the "select" input is 0, we apply a double operation. If "select" is 1,
   // we apply a square operation. To make the code easier to understand, define
@@ -2682,29 +2217,29 @@ TEST(CalculatorGraph, IfThenElse) {
   const int kApplySquare = 1;
 
   send_inputs(1, kApplyDouble);
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
+  MP_ASSERT_OK(graph.WaitUntilIdle());
   ASSERT_EQ(1, packet_dump.size());
   EXPECT_EQ(2, packet_dump[0].Get<int>());
 
   send_inputs(2, kApplySquare);
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
+  MP_ASSERT_OK(graph.WaitUntilIdle());
   ASSERT_EQ(2, packet_dump.size());
   EXPECT_EQ(4, packet_dump[1].Get<int>());
 
   send_inputs(3, kApplyDouble);
   send_inputs(4, kApplyDouble);
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
+  MP_ASSERT_OK(graph.WaitUntilIdle());
   EXPECT_EQ(4, packet_dump.size());
   EXPECT_EQ(6, packet_dump[2].Get<int>());
   EXPECT_EQ(8, packet_dump[3].Get<int>());
 
   send_inputs(5, kApplySquare);
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
+  MP_ASSERT_OK(graph.WaitUntilIdle());
   ASSERT_EQ(5, packet_dump.size());
   EXPECT_EQ(25, packet_dump[4].Get<int>());
 
   send_inputs(6, kApplyDouble);
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
+  MP_ASSERT_OK(graph.WaitUntilIdle());
   ASSERT_EQ(6, packet_dump.size());
   EXPECT_EQ(12, packet_dump[5].Get<int>());
 
@@ -2712,15 +2247,15 @@ TEST(CalculatorGraph, IfThenElse) {
   send_inputs(8, kApplySquare);
   send_inputs(9, kApplySquare);
   send_inputs(10, kApplyDouble);
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
+  MP_ASSERT_OK(graph.WaitUntilIdle());
   ASSERT_EQ(10, packet_dump.size());
   EXPECT_EQ(49, packet_dump[6].Get<int>());
   EXPECT_EQ(64, packet_dump[7].Get<int>());
   EXPECT_EQ(81, packet_dump[8].Get<int>());
   EXPECT_EQ(20, packet_dump[9].Get<int>());
 
-  MEDIAPIPE_ASSERT_OK(graph.CloseAllInputStreams());
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
+  MP_ASSERT_OK(graph.CloseAllInputStreams());
+  MP_ASSERT_OK(graph.WaitUntilDone());
   EXPECT_EQ(10, packet_dump.size());
 }
 
@@ -2728,28 +2263,28 @@ TEST(CalculatorGraph, IfThenElse) {
 // for the unselected outputs.
 class DemuxUntimedCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     RET_CHECK_EQ(cc->Inputs().NumEntries(), 2);
-    cc->Inputs().Tag("INPUT").SetAny();
-    cc->Inputs().Tag("SELECT").Set<int>();
+    cc->Inputs().Tag(kInputTag).SetAny();
+    cc->Inputs().Tag(kSelectTag).Set<int>();
     for (CollectionItemId id = cc->Outputs().BeginId("OUTPUT");
          id < cc->Outputs().EndId("OUTPUT"); ++id) {
-      cc->Outputs().Get(id).SetSameAs(&cc->Inputs().Tag("INPUT"));
+      cc->Outputs().Get(id).SetSameAs(&cc->Inputs().Tag(kInputTag));
     }
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
-    int index = cc->Inputs().Tag("SELECT").Get<int>();
-    if (!cc->Inputs().Tag("INPUT").IsEmpty()) {
+  absl::Status Process(CalculatorContext* cc) final {
+    int index = cc->Inputs().Tag(kSelectTag).Get<int>();
+    if (!cc->Inputs().Tag(kInputTag).IsEmpty()) {
       cc->Outputs()
           .Get("OUTPUT", index)
-          .AddPacket(cc->Inputs().Tag("INPUT").Value());
+          .AddPacket(cc->Inputs().Tag(kInputTag).Value());
     } else {
       cc->Outputs()
           .Get("OUTPUT", index)
           .SetNextTimestampBound(cc->InputTimestamp() + 1);
     }
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 };
 REGISTER_CALCULATOR(DemuxUntimedCalculator);
@@ -2765,7 +2300,7 @@ TEST(CalculatorGraph, IfThenElse2) {
   // of the two branches different.
   CalculatorGraph graph;
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         input_stream: 'in'
         input_stream: 'select'
         node {
@@ -2803,21 +2338,21 @@ TEST(CalculatorGraph, IfThenElse2) {
           output_stream: 'OUTPUT:out'
           input_stream_handler { input_stream_handler: 'MuxInputStreamHandler' }
         }
-      )");
+      )pb");
   std::vector<Packet> packet_dump;
   tool::AddVectorSink("out", &config, &packet_dump);
 
   Timestamp timestamp = Timestamp(0);
   auto send_inputs = [&graph, &timestamp](int input, int select) {
     ++timestamp;
-    MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
+    MP_EXPECT_OK(graph.AddPacketToInputStream(
         "in", MakePacket<int>(input).At(timestamp)));
-    MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
+    MP_EXPECT_OK(graph.AddPacketToInputStream(
         "select", MakePacket<int>(select).At(timestamp)));
   };
 
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.StartRun({}));
 
   // If the "select" input is 0, we apply a double operation. If "select" is 1,
   // we apply a square operation. To make the code easier to understand, define
@@ -2826,29 +2361,29 @@ TEST(CalculatorGraph, IfThenElse2) {
   const int kApplySquare = 1;
 
   send_inputs(1, kApplyDouble);
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
+  MP_ASSERT_OK(graph.WaitUntilIdle());
   ASSERT_EQ(1, packet_dump.size());
   EXPECT_EQ(2, packet_dump[0].Get<int>());
 
   send_inputs(2, kApplySquare);
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
+  MP_ASSERT_OK(graph.WaitUntilIdle());
   ASSERT_EQ(2, packet_dump.size());
   EXPECT_EQ(4, packet_dump[1].Get<int>());
 
   send_inputs(3, kApplyDouble);
   send_inputs(4, kApplyDouble);
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
+  MP_ASSERT_OK(graph.WaitUntilIdle());
   EXPECT_EQ(4, packet_dump.size());
   EXPECT_EQ(6, packet_dump[2].Get<int>());
   EXPECT_EQ(8, packet_dump[3].Get<int>());
 
   send_inputs(5, kApplySquare);
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
+  MP_ASSERT_OK(graph.WaitUntilIdle());
   ASSERT_EQ(5, packet_dump.size());
   EXPECT_EQ(25, packet_dump[4].Get<int>());
 
   send_inputs(6, kApplyDouble);
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
+  MP_ASSERT_OK(graph.WaitUntilIdle());
   ASSERT_EQ(6, packet_dump.size());
   EXPECT_EQ(12, packet_dump[5].Get<int>());
 
@@ -2856,15 +2391,15 @@ TEST(CalculatorGraph, IfThenElse2) {
   send_inputs(8, kApplySquare);
   send_inputs(9, kApplySquare);
   send_inputs(10, kApplyDouble);
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
+  MP_ASSERT_OK(graph.WaitUntilIdle());
   ASSERT_EQ(10, packet_dump.size());
   EXPECT_EQ(49, packet_dump[6].Get<int>());
   EXPECT_EQ(64, packet_dump[7].Get<int>());
   EXPECT_EQ(81, packet_dump[8].Get<int>());
   EXPECT_EQ(20, packet_dump[9].Get<int>());
 
-  MEDIAPIPE_ASSERT_OK(graph.CloseAllInputStreams());
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
+  MP_ASSERT_OK(graph.CloseAllInputStreams());
+  MP_ASSERT_OK(graph.WaitUntilDone());
   EXPECT_EQ(10, packet_dump.size());
 }
 
@@ -2886,7 +2421,7 @@ TEST(CalculatorGraph, ClosedSourceNodeShouldNotBeUnthrottled) {
   // the source node filled an input stream and the input stream changes from
   // being "full" to "not full".
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         num_threads: 1
         max_queue_size: 100
         node {
@@ -2909,11 +2444,11 @@ TEST(CalculatorGraph, ClosedSourceNodeShouldNotBeUnthrottled) {
           input_stream: 'decimated_second_stream'
           output_stream: 'output'
         }
-      )");
+      )pb");
 
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.Run());
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.Run());
 }
 
 // Tests that a calculator can output a packet in the Open() method.
@@ -2927,7 +2462,7 @@ TEST(CalculatorGraph, ClosedSourceNodeShouldNotBeUnthrottled) {
 // The scheduler should be able to run the graph from this initial state.
 TEST(CalculatorGraph, OutputPacketInOpen) {
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         max_queue_size: 1
         node {
           calculator: 'GlobalCountSourceCalculator'
@@ -2944,7 +2479,7 @@ TEST(CalculatorGraph, OutputPacketInOpen) {
           input_stream: 'delayed_integers'
           output_stream: 'output'
         }
-      )");
+      )pb");
   std::vector<Packet> packet_dump;
   tool::AddVectorSink("output", &config, &packet_dump);
 
@@ -2953,8 +2488,8 @@ TEST(CalculatorGraph, OutputPacketInOpen) {
   input_side_packets["global_counter"] = Adopt(new auto(&global_counter));
 
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.Run(input_side_packets));
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.Run(input_side_packets));
   ASSERT_EQ(GlobalCountSourceCalculator::kNumOutputPackets + 1,
             packet_dump.size());
   EXPECT_EQ(0, packet_dump[0].Get<int>());
@@ -2976,7 +2511,7 @@ TEST(CalculatorGraph, OutputPacketInOpen) {
 // The scheduler must schedule a throttled source node from the beginning.
 TEST(CalculatorGraph, OutputPacketInOpen2) {
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         max_queue_size: 1
         node {
           calculator: 'GlobalCountSourceCalculator'
@@ -2994,7 +2529,7 @@ TEST(CalculatorGraph, OutputPacketInOpen2) {
           input_stream: 'integers'
           output_stream: 'output'
         }
-      )");
+      )pb");
   std::vector<Packet> packet_dump;
   tool::AddVectorSink("output", &config, &packet_dump);
 
@@ -3003,8 +2538,8 @@ TEST(CalculatorGraph, OutputPacketInOpen2) {
   input_side_packets["global_counter"] = Adopt(new auto(&global_counter));
 
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.Run(input_side_packets));
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.Run(input_side_packets));
   ASSERT_EQ(GlobalCountSourceCalculator::kNumOutputPackets + 1,
             packet_dump.size());
   int i;
@@ -3021,11 +2556,133 @@ TEST(CalculatorGraph, OutputPacketInOpen2) {
   EXPECT_EQ(Timestamp(i), packet_dump[i].Timestamp());
 }
 
+TEST(CalculatorGraph, DeadlockIsReportedAndSufficientInfoProvided) {
+  CalculatorGraphConfig config =
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
+        report_deadlock: true
+        max_queue_size: 1
+        input_stream: 'input1'
+        input_stream: 'input2'
+        node {
+          calculator: 'PassThroughCalculator'
+          input_stream: 'input1'
+          input_stream: 'input2'
+          output_stream: 'output1'
+          output_stream: 'output2'
+        }
+      )pb");
+
+  CalculatorGraph graph;
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.StartRun({}));
+
+  Packet packet = MakePacket<int>(1);
+  MP_EXPECT_OK(graph.AddPacketToInputStream("input1", packet.At(Timestamp(0))));
+  absl::Status status =
+      graph.AddPacketToInputStream("input1", packet.At(Timestamp(1)));
+
+  EXPECT_EQ(status.code(), absl::StatusCode::kUnavailable);
+  EXPECT_THAT(status.message(),
+              testing::AllOf(testing::HasSubstr("deadlock"),
+                             testing::HasSubstr("input1"),
+                             testing::HasSubstr("PassThroughCalculator")));
+  graph.Cancel();
+}
+
+TEST(CalculatorGraph,
+     DeadlockIsReportedAndSufficientInfoProvidedMultipleCalculators) {
+  CalculatorGraphConfig config =
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
+        report_deadlock: true
+        max_queue_size: 1
+        input_stream: 'input1'
+        input_stream: 'input2'
+        node {
+          calculator: 'PassThroughCalculator'
+          input_stream: 'input1'
+          input_stream: 'input2'
+          output_stream: 'output1'
+          output_stream: 'output2'
+        }
+        node {
+          calculator: 'MergeCalculator'
+          input_stream: 'output1'
+          input_stream: 'output2'
+          output_stream: 'output3'
+        }
+      )pb");
+
+  CalculatorGraph graph;
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.StartRun({}));
+
+  Packet packet = MakePacket<int>(1);
+  MP_EXPECT_OK(graph.AddPacketToInputStream("input1", packet.At(Timestamp(0))));
+  absl::Status status =
+      graph.AddPacketToInputStream("input1", packet.At(Timestamp(1)));
+
+  EXPECT_EQ(status.code(), absl::StatusCode::kUnavailable);
+  EXPECT_THAT(status.message(),
+              testing::AllOf(testing::HasSubstr("deadlock"),
+                             testing::HasSubstr("input1"),
+                             testing::HasSubstr("PassThroughCalculator")));
+  graph.Cancel();
+}
+
+TEST(CalculatorGraph, TwoDeadlocksAreReportedAndSufficientInfoProvided) {
+  CalculatorGraphConfig config =
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
+        report_deadlock: true
+        max_queue_size: 1
+        input_stream: 'input1'
+        input_stream: 'input2'
+        node {
+          calculator: 'PassThroughCalculator'
+          input_stream: 'input1'
+          input_stream: 'input2'
+          output_stream: 'output1'
+          output_stream: 'output2'
+        }
+        node {
+          calculator: 'PassThroughCalculator'
+          input_stream: 'output1'
+          input_stream: 'output2'
+          output_stream: 'output3'
+          output_stream: 'output4'
+        }
+        node {
+          calculator: 'MergeCalculator'
+          input_stream: 'input1'
+          input_stream: 'output1'
+          input_stream: 'output2'
+          input_stream: 'output3'
+          input_stream: 'output4'
+          output_stream: 'output5'
+        }
+      )pb");
+
+  CalculatorGraph graph;
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.StartRun({}));
+
+  Packet packet = MakePacket<int>(1);
+  MP_EXPECT_OK(graph.AddPacketToInputStream("input1", packet.At(Timestamp(0))));
+  absl::Status status =
+      graph.AddPacketToInputStream("input1", packet.At(Timestamp(1)));
+
+  EXPECT_EQ(status.code(), absl::StatusCode::kUnavailable);
+  EXPECT_THAT(status.message(),
+              testing::AllOf(testing::HasSubstr("deadlock"),
+                             testing::HasSubstr("input1"),
+                             testing::HasSubstr("PassThroughCalculator")));
+  graph.Cancel();
+}
+
 // Tests that no packets are available on input streams in Open(), even if the
 // upstream calculator outputs a packet in Open().
 TEST(CalculatorGraph, EmptyInputInOpen) {
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         max_queue_size: 1
         node {
           calculator: 'GlobalCountSourceCalculator'
@@ -3046,21 +2703,21 @@ TEST(CalculatorGraph, EmptyInputInOpen) {
           calculator: 'AssertEmptyInputInOpenCalculator'
           input_stream: 'integers'
         }
-      )");
+      )pb");
 
   std::atomic<int> global_counter(1);
   std::map<std::string, Packet> input_side_packets;
   input_side_packets["global_counter"] = Adopt(new auto(&global_counter));
 
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_EXPECT_OK(graph.Run(input_side_packets));
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_EXPECT_OK(graph.Run(input_side_packets));
 }
 
 // Test for b/33568859.
 TEST(CalculatorGraph, UnthrottleRespectsLayers) {
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         max_queue_size: 1
         node {
           calculator: 'GlobalCountSourceCalculator'
@@ -3080,7 +2737,7 @@ TEST(CalculatorGraph, UnthrottleRespectsLayers) {
           input_stream: 'integers1'
           output_stream: 'integers1passthrough'
         }
-      )");
+      )pb");
 
   std::vector<Packet> layer0_packets;
   std::vector<Packet> layer1_packets;
@@ -3091,14 +2748,14 @@ TEST(CalculatorGraph, UnthrottleRespectsLayers) {
   std::map<std::string, Packet> input_side_packets;
   input_side_packets["global_counter"] = Adopt(new auto(&global_counter));
   // TODO: Set this value to true. When the calculator outputs a
-  // packet in Open, it will trigget b/33568859, and the test will fail. Use
+  // packet in Open, it will trigger b/33568859, and the test will fail. Use
   // this test to verify that b/33568859 is fixed.
   constexpr bool kOutputInOpen = true;
   input_side_packets["output_in_open"] = MakePacket<bool>(kOutputInOpen);
 
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.Run(input_side_packets));
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.Run(input_side_packets));
   ASSERT_EQ(GlobalCountSourceCalculator::kNumOutputPackets,
             layer0_packets.size());
   ASSERT_EQ(GlobalCountSourceCalculator::kNumOutputPackets,
@@ -3126,7 +2783,7 @@ TEST(CalculatorGraph, UnthrottleRespectsLayers) {
 // so far. The graph has one cycle.
 TEST(CalculatorGraph, Cycle) {
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         node {
           calculator: 'GlobalCountSourceCalculator'
           input_side_packet: 'global_counter'
@@ -3150,7 +2807,7 @@ TEST(CalculatorGraph, Cycle) {
           input_stream: 'sum'
           output_stream: 'old_sum'
         }
-      )");
+      )pb");
   std::vector<Packet> packet_dump;
   tool::AddVectorSink("sum", &config, &packet_dump);
 
@@ -3159,8 +2816,8 @@ TEST(CalculatorGraph, Cycle) {
   input_side_packets["global_counter"] = Adopt(new auto(&global_counter));
 
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.Run(input_side_packets));
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.Run(input_side_packets));
   ASSERT_EQ(GlobalCountSourceCalculator::kNumOutputPackets, packet_dump.size());
   int sum = 0;
   for (int i = 0; i < GlobalCountSourceCalculator::kNumOutputPackets; ++i) {
@@ -3177,7 +2834,7 @@ TEST(CalculatorGraph, Cycle) {
 // packet timestamps ignored.
 TEST(CalculatorGraph, CycleUntimed) {
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         input_stream_handler {
           input_stream_handler: 'BarrierInputStreamHandler'
         }
@@ -3201,7 +2858,7 @@ TEST(CalculatorGraph, CycleUntimed) {
           input_stream: 'sum'
           output_stream: 'old_sum'
         }
-      )");
+      )pb");
   std::vector<Packet> packet_dump;
   tool::AddVectorSink("sum", &config, &packet_dump);
 
@@ -3210,8 +2867,8 @@ TEST(CalculatorGraph, CycleUntimed) {
   input_side_packets["global_counter"] = Adopt(new auto(&global_counter));
 
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.Run(input_side_packets));
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.Run(input_side_packets));
   ASSERT_EQ(GlobalCountSourceCalculator::kNumOutputPackets, packet_dump.size());
   int sum = 0;
   for (int i = 0; i < GlobalCountSourceCalculator::kNumOutputPackets; ++i) {
@@ -3227,7 +2884,7 @@ TEST(CalculatorGraph, CycleUntimed) {
 // The graph has two cycles.
 TEST(CalculatorGraph, DirectFormI) {
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         node {
           calculator: 'GlobalCountSourceCalculator'
           input_side_packet: 'global_counter'
@@ -3302,7 +2959,7 @@ TEST(CalculatorGraph, DirectFormI) {
             input_stream_handler: 'EarlyCloseInputStreamHandler'
           }
         }
-      )");
+      )pb");
   std::vector<Packet> packet_dump;
   tool::AddVectorSink("y", &config, &packet_dump);
 
@@ -3313,8 +2970,8 @@ TEST(CalculatorGraph, DirectFormI) {
   input_side_packets["a1"] = Adopt(new float(1.5));
   input_side_packets["b1"] = Adopt(new float(2.0));
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.Run(input_side_packets));
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.Run(input_side_packets));
   ASSERT_EQ(GlobalCountSourceCalculator::kNumOutputPackets, packet_dump.size());
   ASSERT_EQ(GlobalCountSourceCalculator::kNumOutputPackets, 5);
   EXPECT_FLOAT_EQ(1.0, packet_dump[0].Get<float>());
@@ -3334,7 +2991,7 @@ TEST(CalculatorGraph, DirectFormI) {
 // The graph has two cycles.
 TEST(CalculatorGraph, DirectFormII) {
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         node {
           calculator: 'GlobalCountSourceCalculator'
           input_side_packet: 'global_counter'
@@ -3404,7 +3061,7 @@ TEST(CalculatorGraph, DirectFormII) {
             input_stream_handler: 'EarlyCloseInputStreamHandler'
           }
         }
-      )");
+      )pb");
   std::vector<Packet> packet_dump;
   tool::AddVectorSink("y", &config, &packet_dump);
 
@@ -3416,8 +3073,8 @@ TEST(CalculatorGraph, DirectFormII) {
   input_side_packets["b1"] = Adopt(new float(2.0));
 
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.Run(input_side_packets));
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.Run(input_side_packets));
   ASSERT_EQ(GlobalCountSourceCalculator::kNumOutputPackets, packet_dump.size());
   ASSERT_EQ(GlobalCountSourceCalculator::kNumOutputPackets, 5);
   EXPECT_FLOAT_EQ(1.0, packet_dump[0].Get<float>());
@@ -3435,7 +3092,7 @@ TEST(CalculatorGraph, DotProduct) {
   // The use of BarrierInputStreamHandler in this graph aligns the input
   // packets to a calculator by arrival order rather than by timestamp.
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         input_stream_handler {
           input_stream_handler: 'BarrierInputStreamHandler'
         }
@@ -3492,13 +3149,13 @@ TEST(CalculatorGraph, DotProduct) {
           input_stream: 'z_product'
           output_stream: 'dot_product'
         }
-      )");
+      )pb");
   std::vector<Packet> packet_dump;
   tool::AddVectorSink("dot_product", &config, &packet_dump);
 
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.Run());
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.Run());
 
   // The calculator graph performs the following computation:
   //   test_sequence_1 is split into x_1, y_1, z_1.
@@ -3531,7 +3188,7 @@ TEST(CalculatorGraph, DotProduct) {
 
 TEST(CalculatorGraph, TerminatesOnCancelWithOpenGraphInputStreams) {
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         node {
           calculator: 'PassThroughCalculator'
           input_stream: 'in_a'
@@ -3541,39 +3198,39 @@ TEST(CalculatorGraph, TerminatesOnCancelWithOpenGraphInputStreams) {
         }
         input_stream: 'in_a'
         input_stream: 'in_b'
-      )");
+      )pb");
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
-  MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.StartRun({}));
+  MP_EXPECT_OK(graph.AddPacketToInputStream(
       "in_a", MakePacket<int>(1).At(Timestamp(1))));
-  MEDIAPIPE_EXPECT_OK(graph.CloseInputStream("in_a"));
-  MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
+  MP_EXPECT_OK(graph.CloseInputStream("in_a"));
+  MP_EXPECT_OK(graph.AddPacketToInputStream(
       "in_b", MakePacket<int>(2).At(Timestamp(2))));
-  MEDIAPIPE_EXPECT_OK(graph.WaitUntilIdle());
+  MP_EXPECT_OK(graph.WaitUntilIdle());
   graph.Cancel();
   // This tests that the graph doesn't deadlock on WaitUntilDone (because
   // the scheduler thread is sleeping).
-  ::mediapipe::Status status = graph.WaitUntilDone();
-  EXPECT_EQ(status.code(), ::mediapipe::StatusCode::kCancelled);
+  absl::Status status = graph.WaitUntilDone();
+  EXPECT_EQ(status.code(), absl::StatusCode::kCancelled);
 }
 
 TEST(CalculatorGraph, TerminatesOnCancelAfterPause) {
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         node {
           calculator: 'PassThroughCalculator'
           input_stream: 'in'
           output_stream: 'out'
         }
         input_stream: 'in'
-      )");
+      )pb");
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.StartRun({}));
   graph.Pause();
   // Make the PassThroughCalculator runnable while the scheduler is paused.
-  MEDIAPIPE_EXPECT_OK(
+  MP_EXPECT_OK(
       graph.AddPacketToInputStream("in", MakePacket<int>(1).At(Timestamp(1))));
   // Now cancel the graph run. A non-empty scheduler queue should not prevent
   // the scheduler from terminating.
@@ -3583,8 +3240,8 @@ TEST(CalculatorGraph, TerminatesOnCancelAfterPause) {
   graph.Pause();
   // This tests that the graph doesn't deadlock on WaitUntilDone (because
   // the scheduler thread is sleeping).
-  ::mediapipe::Status status = graph.WaitUntilDone();
-  EXPECT_EQ(status.code(), ::mediapipe::StatusCode::kCancelled);
+  absl::Status status = graph.WaitUntilDone();
+  EXPECT_EQ(status.code(), absl::StatusCode::kCancelled);
 }
 
 // A PacketGenerator that simply passes its input Packets through
@@ -3593,11 +3250,11 @@ TEST(CalculatorGraph, TerminatesOnCancelAfterPause) {
 // also be ignored.
 class PassThroughGenerator : public PacketGenerator {
  public:
-  static ::mediapipe::Status FillExpectations(
+  static absl::Status FillExpectations(
       const PacketGeneratorOptions& extendable_options, PacketTypeSet* inputs,
       PacketTypeSet* outputs) {
     if (!inputs->TagMap()->SameAs(*outputs->TagMap())) {
-      return ::mediapipe::InvalidArgumentError(
+      return absl::InvalidArgumentError(
           "Input and outputs to PassThroughGenerator must use the same tags "
           "and indexes.");
     }
@@ -3605,153 +3262,24 @@ class PassThroughGenerator : public PacketGenerator {
       inputs->Get(id).SetAny();
       outputs->Get(id).SetSameAs(&inputs->Get(id));
     }
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  static ::mediapipe::Status Generate(
-      const PacketGeneratorOptions& extendable_options,
-      const PacketSet& input_side_packets, PacketSet* output_side_packets) {
+  static absl::Status Generate(const PacketGeneratorOptions& extendable_options,
+                               const PacketSet& input_side_packets,
+                               PacketSet* output_side_packets) {
     for (CollectionItemId id = input_side_packets.BeginId();
          id < input_side_packets.EndId(); ++id) {
       output_side_packets->Get(id) = input_side_packets.Get(id);
     }
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 };
 REGISTER_PACKET_GENERATOR(PassThroughGenerator);
-
-TEST(CalculatorGraph, SharePacketGeneratorGraph) {
-  CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
-        node {
-          calculator: 'CountingSourceCalculator'
-          output_stream: 'count1'
-          input_side_packet: 'MAX_COUNT:max_count1'
-        }
-        node {
-          calculator: 'CountingSourceCalculator'
-          output_stream: 'count2'
-          input_side_packet: 'MAX_COUNT:max_count2'
-        }
-        node {
-          calculator: 'CountingSourceCalculator'
-          output_stream: 'count3'
-          input_side_packet: 'MAX_COUNT:max_count3'
-        }
-        node {
-          calculator: 'CountingSourceCalculator'
-          output_stream: 'count4'
-          input_side_packet: 'MAX_COUNT:max_count4'
-        }
-        node {
-          calculator: 'PassThroughCalculator'
-          input_side_packet: 'MAX_COUNT:max_count5'
-          output_side_packet: 'MAX_COUNT:max_count6'
-        }
-        node {
-          calculator: 'CountingSourceCalculator'
-          output_stream: 'count5'
-          input_side_packet: 'MAX_COUNT:max_count6'
-        }
-        packet_generator {
-          packet_generator: 'PassThroughGenerator'
-          input_side_packet: 'max_count1'
-          output_side_packet: 'max_count2'
-        }
-        packet_generator {
-          packet_generator: 'PassThroughGenerator'
-          input_side_packet: 'max_count4'
-          output_side_packet: 'max_count5'
-        }
-      )");
-
-  // At this point config is a standard config which specifies both
-  // calculators and packet_factories/packet_genators.  The following
-  // code is an example of reusing side packets across a number of
-  // CalculatorGraphs.  It is particularly informative to note how each
-  // side packet is created.
-  //
-  // max_count1 is set for all graphs by a PacketFactory in the config.
-  // The side packet is created by generator_graph.InitializeGraph().
-  //
-  // max_count2 is set for all graphs by a PacketGenerator in the config.
-  // The side packet is created by generator_graph.InitializeGraph()
-  // because max_count1 is available at that time.
-  //
-  // max_count3 is set for all graphs by directly being specified as an
-  // argument to generator_graph.InitializeGraph().
-  //
-  // max_count4 is set per graph because it is directly specified as an
-  // argument to generator_graph.ProcessGraph().
-  //
-  // max_count5 is set per graph by a PacketGenerator which is run when
-  // generator_graph.ProcessGraph() is run (because max_count4 isn't
-  // available until then).
-
-  // Before anything else, split the graph config into two parts, one
-  // with the PacketFactory and PacketGenerator config and the other
-  // with the Calculator config.
-  CalculatorGraphConfig calculator_config = config;
-  calculator_config.clear_packet_factory();
-  calculator_config.clear_packet_generator();
-  CalculatorGraphConfig generator_config = config;
-  generator_config.clear_node();
-
-  // Next, create a ValidatedGraphConfig for both configs.
-  ValidatedGraphConfig validated_calculator_config;
-  MEDIAPIPE_ASSERT_OK(
-      validated_calculator_config.Initialize(calculator_config));
-  ValidatedGraphConfig validated_generator_config;
-  MEDIAPIPE_ASSERT_OK(validated_generator_config.Initialize(generator_config));
-
-  // Create a PacketGeneratorGraph.  Side packets max_count1, max_count2,
-  // and max_count3 are created upon initialization.
-  // Note that validated_generator_config must outlive generator_graph.
-  PacketGeneratorGraph generator_graph;
-  MEDIAPIPE_ASSERT_OK(
-      generator_graph.Initialize(&validated_generator_config, nullptr,
-                                 {{"max_count1", MakePacket<int>(10)},
-                                  {"max_count3", MakePacket<int>(20)}}));
-  ASSERT_THAT(generator_graph.BasePackets(),
-              testing::ElementsAre(testing::Key("max_count1"),
-                                   testing::Key("max_count2"),
-                                   testing::Key("max_count3")));
-
-  // Create a bunch of graphs.
-  std::vector<std::unique_ptr<CalculatorGraph>> graphs;
-  for (int i = 0; i < 100; ++i) {
-    graphs.emplace_back(absl::make_unique<CalculatorGraph>());
-    // Do not pass extra side packets here.
-    // Note that validated_calculator_config must outlive the graph.
-    MEDIAPIPE_ASSERT_OK(graphs.back()->Initialize(calculator_config, {}));
-  }
-  // Run a bunch of graphs, reusing side packets max_count1, max_count2,
-  // and max_count3.  The side packet max_count4 is added per run,
-  // and triggers the execution of a packet generator which generates
-  // max_count5.
-  for (int i = 0; i < 100; ++i) {
-    std::map<std::string, Packet> all_side_packets;
-    // Creates max_count4 and max_count5.
-    MEDIAPIPE_ASSERT_OK(generator_graph.RunGraphSetup(
-        {{"max_count4", MakePacket<int>(30 + i)}}, &all_side_packets));
-    ASSERT_THAT(all_side_packets,
-                testing::ElementsAre(
-                    testing::Key("max_count1"), testing::Key("max_count2"),
-                    testing::Key("max_count3"), testing::Key("max_count4"),
-                    testing::Key("max_count5")));
-    // Pass all the side packets prepared by generator_graph here.
-    MEDIAPIPE_ASSERT_OK(graphs[i]->Run(all_side_packets));
-    // TODO Verify the actual output.
-  }
-
-  // Destroy all the graphs.
-  graphs.clear();
-}
-
 TEST(CalculatorGraph, RecoverAfterRunError) {
   PacketGeneratorGraph generator_graph;
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         node {
           name: 'calculator1'
           calculator: 'CountingSourceCalculator'
@@ -3770,24 +3298,23 @@ TEST(CalculatorGraph, RecoverAfterRunError) {
           status_handler: 'FailableStatusHandler'
           input_side_packet: 'status_handler_command'
         }
-      )");
+      )pb");
 
   int packet_count = 0;
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config, {}));
-  MEDIAPIPE_ASSERT_OK(graph.ObserveOutputStream(
-      "count1", [&packet_count](const Packet& packet) {
-        ++packet_count;
-        return ::mediapipe::OkStatus();
-      }));
+  MP_ASSERT_OK(graph.Initialize(config, {}));
+  MP_ASSERT_OK(graph.ObserveOutputStream("count1",
+                                         [&packet_count](const Packet& packet) {
+                                           ++packet_count;
+                                           return absl::OkStatus();
+                                         }));
   // Set ERROR_COUNT higher than MAX_COUNT and hence the calculator will
   // finish successfully.
   packet_count = 0;
-  MEDIAPIPE_ASSERT_OK(
-      graph.Run({{"max_count1", MakePacket<int>(10)},
-                 {"max_error1", MakePacket<int>(20)},
-                 {"status_handler_command",
-                  MakePacket<int>(FailableStatusHandler::kOk)}}));
+  MP_ASSERT_OK(graph.Run({{"max_count1", MakePacket<int>(10)},
+                          {"max_error1", MakePacket<int>(20)},
+                          {"status_handler_command",
+                           MakePacket<int>(FailableStatusHandler::kOk)}}));
   EXPECT_EQ(packet_count, 10);
   // Fail in PacketGenerator::Generate().
   // Negative max_count1 will cause EnsurePositivePacketGenerator to fail.
@@ -3798,11 +3325,10 @@ TEST(CalculatorGraph, RecoverAfterRunError) {
                           MakePacket<int>(FailableStatusHandler::kOk)}})
                    .ok());
   packet_count = 0;
-  MEDIAPIPE_ASSERT_OK(
-      graph.Run({{"max_count1", MakePacket<int>(10)},
-                 {"max_error1", MakePacket<int>(20)},
-                 {"status_handler_command",
-                  MakePacket<int>(FailableStatusHandler::kOk)}}));
+  MP_ASSERT_OK(graph.Run({{"max_count1", MakePacket<int>(10)},
+                          {"max_error1", MakePacket<int>(20)},
+                          {"status_handler_command",
+                           MakePacket<int>(FailableStatusHandler::kOk)}}));
   EXPECT_EQ(packet_count, 10);
   // Fail in PacketGenerator::Generate() also fail in StatusHandler.
   ASSERT_FALSE(graph
@@ -3812,11 +3338,10 @@ TEST(CalculatorGraph, RecoverAfterRunError) {
                           MakePacket<int>(FailableStatusHandler::kFailPreRun)}})
                    .ok());
   packet_count = 0;
-  MEDIAPIPE_ASSERT_OK(
-      graph.Run({{"max_count1", MakePacket<int>(10)},
-                 {"max_error1", MakePacket<int>(20)},
-                 {"status_handler_command",
-                  MakePacket<int>(FailableStatusHandler::kOk)}}));
+  MP_ASSERT_OK(graph.Run({{"max_count1", MakePacket<int>(10)},
+                          {"max_error1", MakePacket<int>(20)},
+                          {"status_handler_command",
+                           MakePacket<int>(FailableStatusHandler::kOk)}}));
   EXPECT_EQ(packet_count, 10);
   ASSERT_FALSE(
       graph
@@ -3826,11 +3351,10 @@ TEST(CalculatorGraph, RecoverAfterRunError) {
                  MakePacket<int>(FailableStatusHandler::kFailPostRun)}})
           .ok());
   packet_count = 0;
-  MEDIAPIPE_ASSERT_OK(
-      graph.Run({{"max_count1", MakePacket<int>(10)},
-                 {"max_error1", MakePacket<int>(20)},
-                 {"status_handler_command",
-                  MakePacket<int>(FailableStatusHandler::kOk)}}));
+  MP_ASSERT_OK(graph.Run({{"max_count1", MakePacket<int>(10)},
+                          {"max_error1", MakePacket<int>(20)},
+                          {"status_handler_command",
+                           MakePacket<int>(FailableStatusHandler::kOk)}}));
   EXPECT_EQ(packet_count, 10);
   // Fail in Calculator::Process().
   ASSERT_FALSE(graph
@@ -3840,11 +3364,10 @@ TEST(CalculatorGraph, RecoverAfterRunError) {
                           MakePacket<int>(FailableStatusHandler::kOk)}})
                    .ok());
   packet_count = 0;
-  MEDIAPIPE_ASSERT_OK(
-      graph.Run({{"max_count1", MakePacket<int>(10)},
-                 {"max_error1", MakePacket<int>(20)},
-                 {"status_handler_command",
-                  MakePacket<int>(FailableStatusHandler::kOk)}}));
+  MP_ASSERT_OK(graph.Run({{"max_count1", MakePacket<int>(10)},
+                          {"max_error1", MakePacket<int>(20)},
+                          {"status_handler_command",
+                           MakePacket<int>(FailableStatusHandler::kOk)}}));
   EXPECT_EQ(packet_count, 10);
   // Fail in Calculator::Process() also fail in StatusHandler.
   ASSERT_FALSE(graph
@@ -3854,11 +3377,10 @@ TEST(CalculatorGraph, RecoverAfterRunError) {
                           MakePacket<int>(FailableStatusHandler::kFailPreRun)}})
                    .ok());
   packet_count = 0;
-  MEDIAPIPE_ASSERT_OK(
-      graph.Run({{"max_count1", MakePacket<int>(10)},
-                 {"max_error1", MakePacket<int>(20)},
-                 {"status_handler_command",
-                  MakePacket<int>(FailableStatusHandler::kOk)}}));
+  MP_ASSERT_OK(graph.Run({{"max_count1", MakePacket<int>(10)},
+                          {"max_error1", MakePacket<int>(20)},
+                          {"status_handler_command",
+                           MakePacket<int>(FailableStatusHandler::kOk)}}));
   EXPECT_EQ(packet_count, 10);
   ASSERT_FALSE(
       graph
@@ -3868,18 +3390,17 @@ TEST(CalculatorGraph, RecoverAfterRunError) {
                  MakePacket<int>(FailableStatusHandler::kFailPostRun)}})
           .ok());
   packet_count = 0;
-  MEDIAPIPE_ASSERT_OK(
-      graph.Run({{"max_count1", MakePacket<int>(10)},
-                 {"max_error1", MakePacket<int>(20)},
-                 {"status_handler_command",
-                  MakePacket<int>(FailableStatusHandler::kOk)}}));
+  MP_ASSERT_OK(graph.Run({{"max_count1", MakePacket<int>(10)},
+                          {"max_error1", MakePacket<int>(20)},
+                          {"status_handler_command",
+                           MakePacket<int>(FailableStatusHandler::kOk)}}));
   EXPECT_EQ(packet_count, 10);
 }
 
 TEST(CalculatorGraph, SetInputStreamMaxQueueSizeWorksSlowCalculator) {
   using Semaphore = SemaphoreCalculator::Semaphore;
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         node {
           calculator: 'SemaphoreCalculator'
           input_stream: 'in'
@@ -3897,18 +3418,18 @@ TEST(CalculatorGraph, SetInputStreamMaxQueueSizeWorksSlowCalculator) {
         input_stream: 'in'
         input_stream: 'in_2'
         max_queue_size: 100
-      )");
+      )pb");
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.Initialize(config));
   graph.SetGraphInputStreamAddMode(
       CalculatorGraph::GraphInputStreamAddMode::ADD_IF_NOT_FULL);
-  MEDIAPIPE_ASSERT_OK(graph.SetInputStreamMaxQueueSize("in", 1));
+  MP_ASSERT_OK(graph.SetInputStreamMaxQueueSize("in", 1));
 
   Semaphore calc_entered_process(0);
   Semaphore calc_can_exit_process(0);
   Semaphore calc_entered_process_busy(0);
   Semaphore calc_can_exit_process_busy(0);
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({
+  MP_ASSERT_OK(graph.StartRun({
       {"post_sem", MakePacket<Semaphore*>(&calc_entered_process)},
       {"wait_sem", MakePacket<Semaphore*>(&calc_can_exit_process)},
       {"post_sem_busy", MakePacket<Semaphore*>(&calc_entered_process_busy)},
@@ -3918,21 +3439,21 @@ TEST(CalculatorGraph, SetInputStreamMaxQueueSizeWorksSlowCalculator) {
   Timestamp timestamp(0);
   // Prevent deadlock resolution by running the "busy" SemaphoreCalculator
   // for the duration of the test.
-  MEDIAPIPE_EXPECT_OK(
+  MP_EXPECT_OK(
       graph.AddPacketToInputStream("in_2", MakePacket<int>(0).At(timestamp)));
-  MEDIAPIPE_EXPECT_OK(
+  MP_EXPECT_OK(
       graph.AddPacketToInputStream("in", MakePacket<int>(0).At(timestamp++)));
   for (int i = 1; i < 20; ++i, ++timestamp) {
     // Wait for the calculator to begin its Process call.
     calc_entered_process.Acquire(1);
     // Now the calculator is stuck processing a packet. We can queue up
     // another one.
-    MEDIAPIPE_EXPECT_OK(
+    MP_EXPECT_OK(
         graph.AddPacketToInputStream("in", MakePacket<int>(i).At(timestamp)));
     // We should be prevented from adding another, since the queue is now full.
-    ::mediapipe::Status status = graph.AddPacketToInputStream(
+    absl::Status status = graph.AddPacketToInputStream(
         "in", MakePacket<int>(i).At(timestamp + 1));
-    EXPECT_EQ(status.code(), ::mediapipe::StatusCode::kUnavailable);
+    EXPECT_EQ(status.code(), absl::StatusCode::kUnavailable);
     // Allow calculator to complete its Process call.
     calc_can_exit_process.Release(1);
   }
@@ -3940,14 +3461,14 @@ TEST(CalculatorGraph, SetInputStreamMaxQueueSizeWorksSlowCalculator) {
   calc_can_exit_process.Release(1);
   calc_can_exit_process_busy.Release(1);
 
-  MEDIAPIPE_ASSERT_OK(graph.CloseAllInputStreams());
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
+  MP_ASSERT_OK(graph.CloseAllInputStreams());
+  MP_ASSERT_OK(graph.WaitUntilDone());
 }
 
 // Verify the scheduler unthrottles the graph input stream to avoid a deadlock,
 // and won't enter a busy loop.
 TEST(CalculatorGraph, AddPacketNoBusyLoop) {
-  // The DecimatorCalculator ouputs 1 out of every 101 input packets and drops
+  // The DecimatorCalculator outputs 1 out of every 101 input packets and drops
   // the rest, without setting the next timestamp bound on its output. As a
   // result, the MergeCalculator is not runnable in between and packets on its
   // "in" input stream will be queued and exceed the max queue size.
@@ -3972,7 +3493,7 @@ TEST(CalculatorGraph, AddPacketNoBusyLoop) {
   //              out
   //
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         input_stream: 'in'
         max_queue_size: 1
         node {
@@ -3986,38 +3507,38 @@ TEST(CalculatorGraph, AddPacketNoBusyLoop) {
           input_stream: 'in'
           output_stream: 'out'
         }
-      )");
+      )pb");
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.Initialize(config));
   graph.SetGraphInputStreamAddMode(
       CalculatorGraph::GraphInputStreamAddMode::WAIT_TILL_NOT_FULL);
   std::vector<Packet> out_packets;  // Packets from the output stream "out".
-  MEDIAPIPE_ASSERT_OK(
+  MP_ASSERT_OK(
       graph.ObserveOutputStream("out", [&out_packets](const Packet& packet) {
         out_packets.push_back(packet);
-        return ::mediapipe::OkStatus();
+        return absl::OkStatus();
       }));
 
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
+  MP_ASSERT_OK(graph.StartRun({}));
 
   const int kDecimationRatio = DecimatorCalculator::kDecimationRatio;
   // To leave the graph input stream "in" in the throttled state, kNumPackets
   // can be any value other than a multiple of kDecimationRatio plus one.
   const int kNumPackets = 2 * kDecimationRatio;
   for (int i = 0; i < kNumPackets; ++i) {
-    MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
+    MP_EXPECT_OK(graph.AddPacketToInputStream(
         "in", MakePacket<int>(i).At(Timestamp(i))));
   }
 
   // The graph input stream "in" is throttled. Wait until the graph is idle.
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
+  MP_ASSERT_OK(graph.WaitUntilIdle());
   // Check that Pause() does not block forever trying to acquire a mutex.
   // This is a regression test for an old bug.
   graph.Pause();
   graph.Resume();
 
-  MEDIAPIPE_ASSERT_OK(graph.CloseAllInputStreams());
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
+  MP_ASSERT_OK(graph.CloseAllInputStreams());
+  MP_ASSERT_OK(graph.WaitUntilDone());
 
   // The expected output packets are:
   //   "Timestamp(0) 0 0"
@@ -4040,29 +3561,29 @@ TEST(CalculatorGraph, AddPacketNoBusyLoop) {
 
 namespace nested_ns {
 
-typedef std::function<::mediapipe::Status(const InputStreamShardSet&,
-                                          OutputStreamShardSet*)>
+typedef std::function<absl::Status(const InputStreamShardSet&,
+                                   OutputStreamShardSet*)>
     ProcessFunction;
 
 // A Calculator that delegates its Process function to a callback function.
 class ProcessCallbackCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     for (int i = 0; i < cc->Inputs().NumEntries(); ++i) {
       cc->Inputs().Index(i).SetAny();
       cc->Outputs().Index(i).SetSameAs(&cc->Inputs().Index(0));
     }
     cc->InputSidePackets().Index(0).Set<std::unique_ptr<ProcessFunction>>();
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Open(CalculatorContext* cc) final {
+  absl::Status Open(CalculatorContext* cc) final {
     callback_ =
         *GetFromUniquePtr<ProcessFunction>(cc->InputSidePackets().Index(0));
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) final {
+  absl::Status Process(CalculatorContext* cc) final {
     return callback_(cc->Inputs(), &(cc->Outputs()));
   }
 
@@ -4075,7 +3596,7 @@ REGISTER_CALCULATOR(::mediapipe::nested_ns::ProcessCallbackCalculator);
 
 TEST(CalculatorGraph, CalculatorInNamepsace) {
   CalculatorGraphConfig config;
-  CHECK(proto_ns::TextFormat::ParseFromString(R"(
+  ABSL_CHECK(proto_ns::TextFormat::ParseFromString(R"(
       input_stream: 'in_a'
       node {
         calculator: 'mediapipe.nested_ns.ProcessCallbackCalculator'
@@ -4084,30 +3605,30 @@ TEST(CalculatorGraph, CalculatorInNamepsace) {
         input_side_packet: 'callback_1'
       }
       )",
-                                              &config));
+                                                   &config));
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.Initialize(config));
   nested_ns::ProcessFunction callback_1;
-  MEDIAPIPE_ASSERT_OK(
+  MP_ASSERT_OK(
       graph.StartRun({{"callback_1", AdoptAsUniquePtr(new auto(callback_1))}}));
-  MEDIAPIPE_EXPECT_OK(graph.WaitUntilIdle());
+  MP_EXPECT_OK(graph.WaitUntilIdle());
 }
 
 // A ProcessFunction that passes through all packets.
-::mediapipe::Status DoProcess(const InputStreamShardSet& inputs,
-                              OutputStreamShardSet* outputs) {
+absl::Status DoProcess(const InputStreamShardSet& inputs,
+                       OutputStreamShardSet* outputs) {
   for (int i = 0; i < inputs.NumEntries(); ++i) {
     if (!inputs.Index(i).Value().IsEmpty()) {
       outputs->Index(i).AddPacket(inputs.Index(i).Value());
     }
   }
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 TEST(CalculatorGraph, ObserveOutputStream) {
   const int max_count = 10;
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         node {
           calculator: 'CountingSourceCalculator'
           output_stream: 'count'
@@ -4123,25 +3644,25 @@ TEST(CalculatorGraph, ObserveOutputStream) {
           input_stream: 'mid'
           output_stream: 'out'
         }
-      )");
+      )pb");
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(
+  MP_ASSERT_OK(
       graph.Initialize(config, {{"max_count", MakePacket<int>(max_count)}}));
   // Observe the internal output stream "count" and the unconnected output
   // stream "out".
   std::vector<Packet> count_packets;  // Packets from the output stream "count".
   std::vector<Packet> out_packets;    // Packets from the output stream "out".
-  MEDIAPIPE_ASSERT_OK(graph.ObserveOutputStream(
+  MP_ASSERT_OK(graph.ObserveOutputStream(
       "count", [&count_packets](const Packet& packet) {
         count_packets.push_back(packet);
-        return ::mediapipe::OkStatus();
+        return absl::OkStatus();
       }));
-  MEDIAPIPE_ASSERT_OK(
+  MP_ASSERT_OK(
       graph.ObserveOutputStream("out", [&out_packets](const Packet& packet) {
         out_packets.push_back(packet);
-        return ::mediapipe::OkStatus();
+        return absl::OkStatus();
       }));
-  MEDIAPIPE_ASSERT_OK(graph.Run());
+  MP_ASSERT_OK(graph.Run());
   ASSERT_EQ(max_count, count_packets.size());
   for (int i = 0; i < count_packets.size(); ++i) {
     EXPECT_EQ(i, count_packets[i].Get<int>());
@@ -4156,10 +3677,10 @@ TEST(CalculatorGraph, ObserveOutputStream) {
 
 class PassThroughSubgraph : public Subgraph {
  public:
-  ::mediapipe::StatusOr<CalculatorGraphConfig> GetConfig(
+  absl::StatusOr<CalculatorGraphConfig> GetConfig(
       const SubgraphOptions& options) override {
     CalculatorGraphConfig config =
-        ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+        mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
           input_stream: 'INPUT:input'
           output_stream: 'OUTPUT:output'
           node {
@@ -4167,7 +3688,7 @@ class PassThroughSubgraph : public Subgraph {
             input_stream: 'input'
             output_stream: 'output'
           }
-        )");
+        )pb");
     return config;
   }
 };
@@ -4176,7 +3697,7 @@ REGISTER_MEDIAPIPE_GRAPH(PassThroughSubgraph);
 TEST(CalculatorGraph, ObserveOutputStreamSubgraph) {
   const int max_count = 10;
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         node {
           calculator: 'CountingSourceCalculator'
           output_stream: 'count'
@@ -4187,18 +3708,18 @@ TEST(CalculatorGraph, ObserveOutputStreamSubgraph) {
           input_stream: 'INPUT:count'
           output_stream: 'OUTPUT:out'
         }
-      )");
+      )pb");
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(
+  MP_ASSERT_OK(
       graph.Initialize(config, {{"max_count", MakePacket<int>(max_count)}}));
   // Observe the unconnected output stream "out".
   std::vector<Packet> out_packets;  // Packets from the output stream "out".
-  MEDIAPIPE_ASSERT_OK(
+  MP_ASSERT_OK(
       graph.ObserveOutputStream("out", [&out_packets](const Packet& packet) {
         out_packets.push_back(packet);
-        return ::mediapipe::OkStatus();
+        return absl::OkStatus();
       }));
-  MEDIAPIPE_ASSERT_OK(graph.Run());
+  MP_ASSERT_OK(graph.Run());
   ASSERT_EQ(max_count, out_packets.size());
   for (int i = 0; i < out_packets.size(); ++i) {
     EXPECT_EQ(i, out_packets[i].Get<int>());
@@ -4210,7 +3731,7 @@ TEST(CalculatorGraph, ObserveOutputStreamError) {
   const int max_count = 10;
   const int fail_count = 6;
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         node {
           calculator: 'CountingSourceCalculator'
           output_stream: 'count'
@@ -4226,29 +3747,29 @@ TEST(CalculatorGraph, ObserveOutputStreamError) {
           input_stream: 'mid'
           output_stream: 'out'
         }
-      )");
+      )pb");
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(
+  MP_ASSERT_OK(
       graph.Initialize(config, {{"max_count", MakePacket<int>(max_count)}}));
   // Observe the internal output stream "count" and the unconnected output
   // stream "out".
   std::vector<Packet> count_packets;  // Packets from the output stream "count".
   std::vector<Packet> out_packets;    // Packets from the output stream "out".
-  MEDIAPIPE_ASSERT_OK(graph.ObserveOutputStream(
+  MP_ASSERT_OK(graph.ObserveOutputStream(
       "count", [&count_packets](const Packet& packet) {
         count_packets.push_back(packet);
         if (count_packets.size() >= fail_count) {
-          return ::mediapipe::UnknownError("Expected. MagicString-eatnhuea");
+          return absl::UnknownError("Expected. MagicString-eatnhuea");
         } else {
-          return ::mediapipe::OkStatus();
+          return absl::OkStatus();
         }
       }));
-  MEDIAPIPE_ASSERT_OK(
+  MP_ASSERT_OK(
       graph.ObserveOutputStream("out", [&out_packets](const Packet& packet) {
         out_packets.push_back(packet);
-        return ::mediapipe::OkStatus();
+        return absl::OkStatus();
       }));
-  ::mediapipe::Status status = graph.Run();
+  absl::Status status = graph.Run();
   ASSERT_THAT(status.message(), testing::HasSubstr("MagicString-eatnhuea"));
   ASSERT_EQ(fail_count, count_packets.size());
   for (int i = 0; i < count_packets.size(); ++i) {
@@ -4260,7 +3781,7 @@ TEST(CalculatorGraph, ObserveOutputStreamError) {
 TEST(CalculatorGraph, ObserveOutputStreamNonexistent) {
   const int max_count = 10;
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         node {
           calculator: 'CountingSourceCalculator'
           output_stream: 'count'
@@ -4276,18 +3797,18 @@ TEST(CalculatorGraph, ObserveOutputStreamNonexistent) {
           input_stream: 'mid'
           output_stream: 'out'
         }
-      )");
+      )pb");
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(
+  MP_ASSERT_OK(
       graph.Initialize(config, {{"max_count", MakePacket<int>(max_count)}}));
   // Observe the internal output stream "count".
   std::vector<Packet> count_packets;  // Packets from the output stream "count".
-  ::mediapipe::Status status = graph.ObserveOutputStream(
+  absl::Status status = graph.ObserveOutputStream(
       "not_found", [&count_packets](const Packet& packet) {
         count_packets.push_back(packet);
-        return ::mediapipe::OkStatus();
+        return absl::OkStatus();
       });
-  EXPECT_EQ(status.code(), ::mediapipe::StatusCode::kNotFound);
+  EXPECT_EQ(status.code(), absl::StatusCode::kNotFound);
   EXPECT_THAT(status.message(), testing::HasSubstr("not_found"));
 }
 
@@ -4297,7 +3818,7 @@ TEST(CalculatorGraph, ObserveOutputStreamNonexistent) {
 TEST(CalculatorGraph, FastSourceSlowSink) {
   const int max_count = 10;
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         num_threads: 2
         max_queue_size: 100
         node {
@@ -4306,11 +3827,11 @@ TEST(CalculatorGraph, FastSourceSlowSink) {
           input_side_packet: 'MAX_COUNT:max_count'
         }
         node { calculator: 'SlowCountingSinkCalculator' input_stream: 'out' }
-      )");
+      )pb");
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(
+  MP_ASSERT_OK(
       graph.Initialize(config, {{"max_count", MakePacket<int>(max_count)}}));
-  MEDIAPIPE_EXPECT_OK(graph.Run());
+  MP_EXPECT_OK(graph.Run());
 }
 
 TEST(CalculatorGraph, GraphFinishesWhilePaused) {
@@ -4327,17 +3848,17 @@ TEST(CalculatorGraph, GraphFinishesWhilePaused) {
   //
   // graph.WaitUntilDone must not block forever.
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         node { calculator: 'OneShot20MsCalculator' }
-      )");
+      )pb");
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_EXPECT_OK(graph.StartRun({}));
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_EXPECT_OK(graph.StartRun({}));
   absl::SleepFor(absl::Milliseconds(10));
   graph.Pause();
   absl::SleepFor(absl::Milliseconds(20));
   graph.Resume();
-  MEDIAPIPE_EXPECT_OK(graph.WaitUntilDone());
+  MP_EXPECT_OK(graph.WaitUntilDone());
 }
 
 // There should be no memory leaks, no error messages (requires manual
@@ -4349,7 +3870,7 @@ TEST(CalculatorGraph, ConstructAndDestruct) { CalculatorGraph graph; }
 TEST(CalculatorGraph, RecoverAfterPreviousFailInOpen) {
   const int max_count = 10;
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         node {
           calculator: 'CountingSourceCalculator'
           output_stream: 'a'
@@ -4372,60 +3893,19 @@ TEST(CalculatorGraph, RecoverAfterPreviousFailInOpen) {
           input_side_packet: 'ERROR_ON_OPEN:fail'
         }
         node { calculator: 'IntSinkCalculator' input_stream: 'd' }
-      )");
+      )pb");
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(
+  MP_ASSERT_OK(
       graph.Initialize(config, {{"max_count", MakePacket<int>(max_count)}}));
   for (int i = 0; i < 2; ++i) {
     EXPECT_FALSE(graph.Run({{"fail", MakePacket<bool>(true)}}).ok());
-    MEDIAPIPE_EXPECT_OK(graph.Run({{"fail", MakePacket<bool>(false)}}));
-  }
-}
-
-TEST(CalculatorGraph, PropagateBoundLoop) {
-  CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
-        node {
-          calculator: 'OutputAndBoundSourceCalculator'
-          output_stream: 'integers'
-        }
-        node {
-          calculator: 'IntAdderCalculator'
-          input_stream: 'integers'
-          input_stream: 'old_sum'
-          input_stream_info: {
-            tag_index: ':1'  # 'old_sum'
-            back_edge: true
-          }
-          output_stream: 'sum'
-          input_stream_handler {
-            input_stream_handler: 'EarlyCloseInputStreamHandler'
-          }
-        }
-        node {
-          calculator: 'Delay20Calculator'
-          input_stream: 'sum'
-          output_stream: 'old_sum'
-        }
-      )");
-  std::vector<Packet> packet_dump;
-  tool::AddVectorSink("sum", &config, &packet_dump);
-
-  CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.Run());
-  ASSERT_EQ(101, packet_dump.size());
-  int sum = 0;
-  for (int i = 0; i < 101; ++i) {
-    sum += i;
-    EXPECT_EQ(sum, packet_dump[i].Get<int>());
-    EXPECT_EQ(Timestamp(i * 20), packet_dump[i].Timestamp());
+    MP_EXPECT_OK(graph.Run({{"fail", MakePacket<bool>(false)}}));
   }
 }
 
 TEST(CalculatorGraph, ReuseValidatedGraphConfig) {
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         packet_generator {
           packet_generator: "StaticCounterStringGenerator"
           input_side_packet: "created_by_factory"
@@ -4459,9 +3939,9 @@ TEST(CalculatorGraph, ReuseValidatedGraphConfig) {
           input_side_packet: "global_counter"
           output_stream: "unused"
         }
-      )");
+      )pb");
   ValidatedGraphConfig validated_graph;
-  MEDIAPIPE_ASSERT_OK(validated_graph.Initialize(config));
+  MP_ASSERT_OK(validated_graph.Initialize(config));
 
   std::atomic<int> global_counter(0);
   Packet global_counter_packet = Adopt(new auto(&global_counter));
@@ -4472,7 +3952,7 @@ TEST(CalculatorGraph, ReuseValidatedGraphConfig) {
     int initial_generator_count =
         StaticCounterStringGenerator::NumPacketsGenerated();
     int initial_calculator_count = global_counter.load();
-    MEDIAPIPE_ASSERT_OK(graph.Initialize(
+    MP_ASSERT_OK(graph.Initialize(
         config,
         {{"created_by_factory", MakePacket<std::string>("default string")},
          {"input_in_initialize", MakePacket<int>(10)},
@@ -4487,7 +3967,7 @@ TEST(CalculatorGraph, ReuseValidatedGraphConfig) {
       int initial_generator_count =
           StaticCounterStringGenerator::NumPacketsGenerated();
       int initial_calculator_count = global_counter.load();
-      MEDIAPIPE_ASSERT_OK(graph.Run({{"input_in_run", MakePacket<int>(11)}}));
+      MP_ASSERT_OK(graph.Run({{"input_in_run", MakePacket<int>(11)}}));
       EXPECT_EQ(initial_generator_count + 2,
                 StaticCounterStringGenerator::NumPacketsGenerated());
       EXPECT_EQ(initial_calculator_count +
@@ -4499,10 +3979,10 @@ TEST(CalculatorGraph, ReuseValidatedGraphConfig) {
 
 class TestRangeStdDevSubgraph : public Subgraph {
  public:
-  ::mediapipe::StatusOr<CalculatorGraphConfig> GetConfig(
+  absl::StatusOr<CalculatorGraphConfig> GetConfig(
       const SubgraphOptions& options) override {
     CalculatorGraphConfig config =
-        ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+        mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
           input_side_packet: 'node_converted'
           output_stream: 'DATA:range'
           output_stream: 'SUM:range_sum'
@@ -4521,7 +4001,7 @@ class TestRangeStdDevSubgraph : public Subgraph {
             input_stream: 'MEAN:range_mean'
             output_stream: 'range_stddev'
           }
-        )");
+        )pb");
     return config;
   }
 };
@@ -4529,10 +4009,10 @@ REGISTER_MEDIAPIPE_GRAPH(TestRangeStdDevSubgraph);
 
 class TestMergeSaverSubgraph : public Subgraph {
  public:
-  ::mediapipe::StatusOr<CalculatorGraphConfig> GetConfig(
+  absl::StatusOr<CalculatorGraphConfig> GetConfig(
       const SubgraphOptions& options) override {
     CalculatorGraphConfig config =
-        ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+        mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
           input_stream: 'DATA1:range1'
           input_stream: 'DATA2:range2'
           output_stream: 'MERGE:merge'
@@ -4549,7 +4029,7 @@ class TestMergeSaverSubgraph : public Subgraph {
             input_stream: 'merge'
             output_stream: 'final'
           }
-        )");
+        )pb");
     return config;
   }
 };
@@ -4557,7 +4037,7 @@ REGISTER_MEDIAPIPE_GRAPH(TestMergeSaverSubgraph);
 
 CalculatorGraphConfig GetConfigWithSubgraphs() {
   CalculatorGraphConfig proto =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         # Ensure stream name for FindOutputStreamManager
         output_stream: 'MERGE:merge'
         packet_generator {
@@ -4613,7 +4093,7 @@ CalculatorGraphConfig GetConfigWithSubgraphs() {
           input_stream: 'DATA2:range5_stddev'
           output_stream: 'FINAL:final_stddev'
         }
-      )");
+      )pb");
   return proto;
 }
 
@@ -4626,22 +4106,22 @@ TEST(CalculatorGraph, RunsCorrectlyWithSubgraphs) {
 TEST(CalculatorGraph, SetExecutorTwice) {
   // SetExecutor must not be called more than once for the same executor name.
   CalculatorGraph graph;
-  MEDIAPIPE_EXPECT_OK(
+  MP_EXPECT_OK(
       graph.SetExecutor("xyz", std::make_shared<ThreadPoolExecutor>(1)));
-  MEDIAPIPE_EXPECT_OK(
+  MP_EXPECT_OK(
       graph.SetExecutor("abc", std::make_shared<ThreadPoolExecutor>(1)));
-  ::mediapipe::Status status =
+  absl::Status status =
       graph.SetExecutor("xyz", std::make_shared<ThreadPoolExecutor>(1));
-  EXPECT_EQ(status.code(), ::mediapipe::StatusCode::kAlreadyExists);
+  EXPECT_EQ(status.code(), absl::StatusCode::kAlreadyExists);
   EXPECT_THAT(status.message(), testing::HasSubstr("xyz"));
 }
 
 TEST(CalculatorGraph, ReservedNameSetExecutor) {
   // A reserved executor name such as "__gpu" must not be used.
   CalculatorGraph graph;
-  ::mediapipe::Status status =
+  absl::Status status =
       graph.SetExecutor("__gpu", std::make_shared<ThreadPoolExecutor>(1));
-  EXPECT_EQ(status.code(), ::mediapipe::StatusCode::kInvalidArgument);
+  EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
   EXPECT_THAT(status.message(), testing::AllOf(testing::HasSubstr("__gpu"),
                                                testing::HasSubstr("reserved")));
 }
@@ -4650,7 +4130,7 @@ TEST(CalculatorGraph, ReservedNameExecutorConfig) {
   // A reserved executor name such as "__gpu" must not be used.
   CalculatorGraph graph;
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         input_stream: 'in'
         executor {
           name: '__gpu'
@@ -4664,9 +4144,9 @@ TEST(CalculatorGraph, ReservedNameExecutorConfig) {
           input_stream: 'in'
           output_stream: 'out'
         }
-      )");
-  ::mediapipe::Status status = graph.Initialize(config);
-  EXPECT_EQ(status.code(), ::mediapipe::StatusCode::kInvalidArgument);
+      )pb");
+  absl::Status status = graph.Initialize(config);
+  EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
   EXPECT_THAT(status.message(), testing::AllOf(testing::HasSubstr("__gpu"),
                                                testing::HasSubstr("reserved")));
 }
@@ -4675,7 +4155,7 @@ TEST(CalculatorGraph, ReservedNameNodeExecutor) {
   // A reserved executor name such as "__gpu" must not be used.
   CalculatorGraph graph;
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         input_stream: 'in'
         node {
           calculator: 'PassThroughCalculator'
@@ -4683,9 +4163,9 @@ TEST(CalculatorGraph, ReservedNameNodeExecutor) {
           input_stream: 'in'
           output_stream: 'out'
         }
-      )");
-  ::mediapipe::Status status = graph.Initialize(config);
-  EXPECT_EQ(status.code(), ::mediapipe::StatusCode::kInvalidArgument);
+      )pb");
+  absl::Status status = graph.Initialize(config);
+  EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
   EXPECT_THAT(status.message(), testing::AllOf(testing::HasSubstr("__gpu"),
                                                testing::HasSubstr("reserved")));
 }
@@ -4696,7 +4176,7 @@ TEST(CalculatorGraph, NonExistentExecutor) {
   // provided to the graph with a CalculatorGraph::SetExecutor() call.
   CalculatorGraph graph;
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         input_stream: 'in'
         node {
           calculator: 'PassThroughCalculator'
@@ -4704,9 +4184,9 @@ TEST(CalculatorGraph, NonExistentExecutor) {
           input_stream: 'in'
           output_stream: 'out'
         }
-      )");
-  ::mediapipe::Status status = graph.Initialize(config);
-  EXPECT_EQ(status.code(), ::mediapipe::StatusCode::kInvalidArgument);
+      )pb");
+  absl::Status status = graph.Initialize(config);
+  EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
   EXPECT_THAT(status.message(),
               testing::AllOf(testing::HasSubstr("xyz"),
                              testing::HasSubstr("not declared")));
@@ -4717,10 +4197,10 @@ TEST(CalculatorGraph, UndeclaredExecutor) {
   // ExecutorConfig, even if the executor is provided to the graph with a
   // CalculatorGraph::SetExecutor() call.
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(
+  MP_ASSERT_OK(
       graph.SetExecutor("xyz", std::make_shared<ThreadPoolExecutor>(1)));
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         input_stream: 'in'
         node {
           calculator: 'PassThroughCalculator'
@@ -4728,9 +4208,9 @@ TEST(CalculatorGraph, UndeclaredExecutor) {
           input_stream: 'in'
           output_stream: 'out'
         }
-      )");
-  ::mediapipe::Status status = graph.Initialize(config);
-  EXPECT_EQ(status.code(), ::mediapipe::StatusCode::kInvalidArgument);
+      )pb");
+  absl::Status status = graph.Initialize(config);
+  EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
   EXPECT_THAT(status.message(),
               testing::AllOf(testing::HasSubstr("xyz"),
                              testing::HasSubstr("not declared")));
@@ -4741,7 +4221,7 @@ TEST(CalculatorGraph, UntypedExecutorDeclaredButNotSet) {
   // the graph with a CalculatorGraph::SetExecutor() call.
   CalculatorGraph graph;
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         input_stream: 'in'
         executor { name: 'xyz' }
         node {
@@ -4750,9 +4230,9 @@ TEST(CalculatorGraph, UntypedExecutorDeclaredButNotSet) {
           input_stream: 'in'
           output_stream: 'out'
         }
-      )");
-  ::mediapipe::Status status = graph.Initialize(config);
-  EXPECT_EQ(status.code(), ::mediapipe::StatusCode::kInvalidArgument);
+      )pb");
+  absl::Status status = graph.Initialize(config);
+  EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
   EXPECT_THAT(status.message(),
               testing::AllOf(testing::HasSubstr("xyz"),
                              testing::HasSubstr("SetExecutor")));
@@ -4761,10 +4241,10 @@ TEST(CalculatorGraph, UntypedExecutorDeclaredButNotSet) {
 TEST(CalculatorGraph, DuplicateExecutorConfig) {
   // More than one ExecutorConfig cannot have the same name.
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(
+  MP_ASSERT_OK(
       graph.SetExecutor("xyz", std::make_shared<ThreadPoolExecutor>(1)));
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         input_stream: 'in'
         executor { name: 'xyz' }
         executor { name: 'xyz' }
@@ -4774,9 +4254,9 @@ TEST(CalculatorGraph, DuplicateExecutorConfig) {
           input_stream: 'in'
           output_stream: 'out'
         }
-      )");
-  ::mediapipe::Status status = graph.Initialize(config);
-  EXPECT_EQ(status.code(), ::mediapipe::StatusCode::kInvalidArgument);
+      )pb");
+  absl::Status status = graph.Initialize(config);
+  EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
   EXPECT_THAT(status.message(),
               testing::AllOf(testing::HasSubstr("xyz"),
                              testing::HasSubstr("duplicate")));
@@ -4786,10 +4266,10 @@ TEST(CalculatorGraph, TypedExecutorDeclaredAndSet) {
   // If an executor is declared with a "type" field, it must not be provided
   // to the graph with a CalculatorGraph::SetExecutor() call.
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(
+  MP_ASSERT_OK(
       graph.SetExecutor("xyz", std::make_shared<ThreadPoolExecutor>(1)));
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         input_stream: 'in'
         executor {
           name: 'xyz'
@@ -4804,9 +4284,9 @@ TEST(CalculatorGraph, TypedExecutorDeclaredAndSet) {
           input_stream: 'in'
           output_stream: 'out'
         }
-      )");
-  ::mediapipe::Status status = graph.Initialize(config);
-  EXPECT_EQ(status.code(), ::mediapipe::StatusCode::kInvalidArgument);
+      )pb");
+  absl::Status status = graph.Initialize(config);
+  EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
   EXPECT_THAT(status.message(),
               testing::AllOf(testing::HasSubstr("xyz"),
                              testing::HasSubstr("SetExecutor")));
@@ -4817,7 +4297,7 @@ TEST(CalculatorGraph, TypedExecutorDeclaredAndSet) {
 TEST(CalculatorGraph, NumThreadsAndDefaultExecutorConfig) {
   CalculatorGraph graph;
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         input_stream: 'in'
         num_threads: 1
         executor {
@@ -4836,9 +4316,9 @@ TEST(CalculatorGraph, NumThreadsAndDefaultExecutorConfig) {
           input_stream: 'mid'
           output_stream: 'out'
         }
-      )");
-  ::mediapipe::Status status = graph.Initialize(config);
-  EXPECT_EQ(status.code(), ::mediapipe::StatusCode::kInvalidArgument);
+      )pb");
+  absl::Status status = graph.Initialize(config);
+  EXPECT_EQ(status.code(), absl::StatusCode::kInvalidArgument);
   EXPECT_THAT(status.message(),
               testing::AllOf(testing::HasSubstr("num_threads"),
                              testing::HasSubstr("default executor")));
@@ -4849,7 +4329,7 @@ TEST(CalculatorGraph, NumThreadsAndDefaultExecutorConfig) {
 TEST(CalculatorGraph, NumThreadsAndNonDefaultExecutorConfig) {
   CalculatorGraph graph;
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         input_stream: 'in'
         num_threads: 1
         executor {
@@ -4870,8 +4350,8 @@ TEST(CalculatorGraph, NumThreadsAndNonDefaultExecutorConfig) {
           input_stream: 'mid'
           output_stream: 'out'
         }
-      )");
-  MEDIAPIPE_EXPECT_OK(graph.Initialize(config));
+      )pb");
+  MP_EXPECT_OK(graph.Initialize(config));
 }
 
 // Verifies that the application thread is used only when
@@ -4888,14 +4368,14 @@ TEST(CalculatorGraph, RunWithNumThreadsInExecutorConfig) {
                {"ThreadPoolExecutor", 1, false}};
 
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         executor {
           options {
             [mediapipe.ThreadPoolExecutorOptions.ext] { num_threads: 0 }
           }
         }
         node { calculator: 'PthreadSelfSourceCalculator' output_stream: 'out' }
-      )");
+      )pb");
   ThreadPoolExecutorOptions* default_executor_options =
       config.mutable_executor(0)->mutable_options()->MutableExtension(
           ThreadPoolExecutorOptions::ext);
@@ -4906,14 +4386,14 @@ TEST(CalculatorGraph, RunWithNumThreadsInExecutorConfig) {
       config.mutable_executor(0)->set_type(cases[i].executor_type);
     }
     CalculatorGraph graph;
-    MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
+    MP_ASSERT_OK(graph.Initialize(config));
     Packet out_packet;
-    MEDIAPIPE_ASSERT_OK(
+    MP_ASSERT_OK(
         graph.ObserveOutputStream("out", [&out_packet](const Packet& packet) {
           out_packet = packet;
-          return ::mediapipe::OkStatus();
+          return absl::OkStatus();
         }));
-    MEDIAPIPE_ASSERT_OK(graph.Run());
+    MP_ASSERT_OK(graph.Run());
     EXPECT_EQ(cases[i].use_app_thread_is_expected,
               out_packet.Get<pthread_t>() == pthread_self())
         << "for case " << i;
@@ -4927,7 +4407,7 @@ TEST(CalculatorGraph, CalculatorGraphNotInitialized) {
 
 TEST(CalculatorGraph, SimulateAssertFailure) {
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         num_threads: 2
         node {
           calculator: 'PassThroughCalculator'
@@ -4938,11 +4418,11 @@ TEST(CalculatorGraph, SimulateAssertFailure) {
         }
         input_stream: 'in_a'
         input_stream: 'in_b'
-      )");
+      )pb");
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
-  MEDIAPIPE_EXPECT_OK(graph.WaitUntilIdle());
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.StartRun({}));
+  MP_EXPECT_OK(graph.WaitUntilIdle());
 
   // End the test here to simulate an ASSERT_ failure, which will skip the
   // rest of the test and exit the test function immediately. The test should
@@ -4954,7 +4434,7 @@ TEST(CalculatorGraph, SimulateAssertFailure) {
 // the source node stops the graph.
 TEST(CalculatorGraph, CheckInputTimestamp) {
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         node {
           calculator: 'CheckInputTimestampSourceCalculator'
           output_stream: 'integer'
@@ -4963,10 +4443,10 @@ TEST(CalculatorGraph, CheckInputTimestamp) {
           calculator: 'CheckInputTimestampSinkCalculator'
           input_stream: 'integer'
         }
-      )");
+      )pb");
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.Run());
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.Run());
 }
 
 // Verifies Calculator::InputTimestamp() returns the expected value in Open(),
@@ -4975,7 +4455,7 @@ TEST(CalculatorGraph, CheckInputTimestamp) {
 // source node.
 TEST(CalculatorGraph, CheckInputTimestamp2) {
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         node {
           calculator: 'CheckInputTimestamp2SourceCalculator'
           output_stream: 'integer'
@@ -4984,185 +4464,15 @@ TEST(CalculatorGraph, CheckInputTimestamp2) {
           calculator: 'CheckInputTimestamp2SinkCalculator'
           input_stream: 'integer'
         }
-      )");
+      )pb");
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.Run());
-}
-
-TEST(CalculatorGraph, CheckBatchProcessingBoundPropagation) {
-  // The timestamp bound sent by OutputAndBoundSourceCalculator shouldn't be
-  // directly propagated to the output stream when PassThroughCalculator has
-  // anything in its default calculator context for batch processing. Otherwise,
-  // the sink calculator's input stream should report packet timestamp
-  // mismatches.
-  CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
-        node {
-          calculator: 'OutputAndBoundSourceCalculator'
-          output_stream: 'integers'
-        }
-        node {
-          calculator: 'PassThroughCalculator'
-          input_stream: 'integers'
-          output_stream: 'output'
-          input_stream_handler {
-            input_stream_handler: "DefaultInputStreamHandler"
-            options: {
-              [mediapipe.DefaultInputStreamHandlerOptions.ext]: {
-                batch_size: 10
-              }
-            }
-          }
-        }
-        node { calculator: 'IntSinkCalculator' input_stream: 'output' }
-      )");
-  CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.Run());
-}
-
-TEST(CalculatorGraph, OutputSidePacketInProcess) {
-  const int64 offset = 100;
-  CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
-        input_stream: "offset"
-        node {
-          calculator: "OutputSidePacketInProcessCalculator"
-          input_stream: "offset"
-          output_side_packet: "offset"
-        }
-        node {
-          calculator: "SidePacketToStreamPacketCalculator"
-          output_stream: "output"
-          input_side_packet: "offset"
-        }
-      )");
-  CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  std::vector<Packet> output_packets;
-  MEDIAPIPE_ASSERT_OK(graph.ObserveOutputStream(
-      "output", [&output_packets](const Packet& packet) {
-        output_packets.push_back(packet);
-        return ::mediapipe::OkStatus();
-      }));
-
-  // Run the graph twice.
-  for (int run = 0; run < 2; ++run) {
-    output_packets.clear();
-    MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
-    MEDIAPIPE_ASSERT_OK(graph.AddPacketToInputStream(
-        "offset", MakePacket<TimestampDiff>(offset).At(Timestamp(0))));
-    MEDIAPIPE_ASSERT_OK(graph.CloseInputStream("offset"));
-    MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
-    ASSERT_EQ(1, output_packets.size());
-    EXPECT_EQ(offset, output_packets[0].Get<TimestampDiff>().Value());
-  }
-}
-
-TEST(CalculatorGraph, OutputSidePacketAlreadySet) {
-  const int64 offset = 100;
-  CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
-        input_stream: "offset"
-        node {
-          calculator: "OutputSidePacketInProcessCalculator"
-          input_stream: "offset"
-          output_side_packet: "offset"
-        }
-      )");
-  CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
-  // Send two input packets to cause OutputSidePacketInProcessCalculator to
-  // set the output side packet twice.
-  MEDIAPIPE_ASSERT_OK(graph.AddPacketToInputStream(
-      "offset", MakePacket<TimestampDiff>(offset).At(Timestamp(0))));
-  MEDIAPIPE_ASSERT_OK(graph.AddPacketToInputStream(
-      "offset", MakePacket<TimestampDiff>(offset).At(Timestamp(1))));
-  MEDIAPIPE_ASSERT_OK(graph.CloseInputStream("offset"));
-
-  ::mediapipe::Status status = graph.WaitUntilDone();
-  EXPECT_EQ(status.code(), ::mediapipe::StatusCode::kAlreadyExists);
-  EXPECT_THAT(status.message(), testing::HasSubstr("was already set."));
-}
-
-TEST(CalculatorGraph, OutputSidePacketWithTimestamp) {
-  const int64 offset = 100;
-  CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
-        input_stream: "offset"
-        node {
-          calculator: "OutputSidePacketWithTimestampCalculator"
-          input_stream: "offset"
-          output_side_packet: "offset"
-        }
-      )");
-  CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
-  // The OutputSidePacketWithTimestampCalculator neglects to clear the
-  // timestamp in the input packet when it copies the input packet to the
-  // output side packet. The timestamp value should appear in the error
-  // message.
-  MEDIAPIPE_ASSERT_OK(graph.AddPacketToInputStream(
-      "offset", MakePacket<TimestampDiff>(offset).At(Timestamp(237))));
-  MEDIAPIPE_ASSERT_OK(graph.CloseInputStream("offset"));
-  ::mediapipe::Status status = graph.WaitUntilDone();
-  EXPECT_EQ(status.code(), ::mediapipe::StatusCode::kInvalidArgument);
-  EXPECT_THAT(status.message(), testing::HasSubstr("has a timestamp 237."));
-}
-
-TEST(CalculatorGraph, OutputSidePacketConsumedBySourceNode) {
-  const int max_count = 10;
-  CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
-        input_stream: "max_count"
-        node {
-          calculator: "OutputSidePacketInProcessCalculator"
-          input_stream: "max_count"
-          output_side_packet: "max_count"
-        }
-        node {
-          calculator: "CountingSourceCalculator"
-          output_stream: "count"
-          input_side_packet: "MAX_COUNT:max_count"
-        }
-        node {
-          calculator: "PassThroughCalculator"
-          input_stream: "count"
-          output_stream: "output"
-        }
-      )");
-  CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  std::vector<Packet> output_packets;
-  MEDIAPIPE_ASSERT_OK(graph.ObserveOutputStream(
-      "output", [&output_packets](const Packet& packet) {
-        output_packets.push_back(packet);
-        return ::mediapipe::OkStatus();
-      }));
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
-  // Wait until the graph is idle so that
-  // Scheduler::TryToScheduleNextSourceLayer() gets called.
-  // Scheduler::TryToScheduleNextSourceLayer() should not activate source
-  // nodes that haven't been opened. We can't call graph.WaitUntilIdle()
-  // because the graph has a source node.
-  absl::SleepFor(absl::Milliseconds(10));
-  MEDIAPIPE_ASSERT_OK(graph.AddPacketToInputStream(
-      "max_count", MakePacket<int>(max_count).At(Timestamp(0))));
-  MEDIAPIPE_ASSERT_OK(graph.CloseInputStream("max_count"));
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
-  ASSERT_EQ(max_count, output_packets.size());
-  for (int i = 0; i < output_packets.size(); ++i) {
-    EXPECT_EQ(i, output_packets[i].Get<int>());
-    EXPECT_EQ(Timestamp(i), output_packets[i].Timestamp());
-  }
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.Run());
 }
 
 TEST(CalculatorGraph, GraphInputStreamWithTag) {
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         input_stream: "VIDEO_METADATA:video_metadata"
         input_stream: "max_count"
         node {
@@ -5172,19 +4482,43 @@ TEST(CalculatorGraph, GraphInputStreamWithTag) {
           output_stream: "FIRST_INPUT:output_0"
           output_stream: "output_1"
         }
-      )");
+      )pb");
   std::vector<Packet> packet_dump;
   tool::AddVectorSink("output_0", &config, &packet_dump);
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.StartRun({}));
   for (int i = 0; i < 5; ++i) {
-    MEDIAPIPE_ASSERT_OK(graph.AddPacketToInputStream(
+    MP_ASSERT_OK(graph.AddPacketToInputStream(
         "video_metadata", MakePacket<int>(i).At(Timestamp(i))));
   }
-  MEDIAPIPE_ASSERT_OK(graph.CloseAllPacketSources());
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
+  MP_ASSERT_OK(graph.CloseAllPacketSources());
+  MP_ASSERT_OK(graph.WaitUntilDone());
   ASSERT_EQ(5, packet_dump.size());
+}
+
+TEST(CalculatorGraph, GraphInputStreamBeforeStartRun) {
+  CalculatorGraphConfig config =
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
+        input_stream: "VIDEO_METADATA:video_metadata"
+        input_stream: "max_count"
+        node {
+          calculator: "PassThroughCalculator"
+          input_stream: "FIRST_INPUT:video_metadata"
+          input_stream: "max_count"
+          output_stream: "FIRST_INPUT:output_0"
+          output_stream: "output_1"
+        }
+      )pb");
+  std::vector<Packet> packet_dump;
+  tool::AddVectorSink("output_0", &config, &packet_dump);
+  CalculatorGraph graph;
+  MP_ASSERT_OK(graph.Initialize(config));
+  ASSERT_EQ(graph
+                .AddPacketToInputStream("video_metadata",
+                                        MakePacket<int>(0).At(Timestamp(0)))
+                .code(),
+            absl::StatusCode::kFailedPrecondition);
 }
 
 // Returns the first packet of the input stream.
@@ -5193,264 +4527,25 @@ class FirstPacketFilterCalculator : public CalculatorBase {
   FirstPacketFilterCalculator() {}
   ~FirstPacketFilterCalculator() override {}
 
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     cc->Inputs().Index(0).SetAny();
     cc->Outputs().Index(0).SetSameAs(&cc->Inputs().Index(0));
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
-  ::mediapipe::Status Process(CalculatorContext* cc) override {
+  absl::Status Process(CalculatorContext* cc) override {
     if (!seen_first_packet_) {
       cc->Outputs().Index(0).AddPacket(cc->Inputs().Index(0).Value());
       cc->Outputs().Index(0).Close();
       seen_first_packet_ = true;
     }
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
  private:
   bool seen_first_packet_ = false;
 };
 REGISTER_CALCULATOR(FirstPacketFilterCalculator);
-
-TEST(CalculatorGraph, SourceLayerInversion) {
-  // There are three CountingSourceCalculators, indexed 0, 1, and 2. Each of
-  // them outputs 10 packets.
-  //
-  // CountingSourceCalculator 0 should output 0, 1, 2, 3, ..., 9.
-  // CountingSourceCalculator 1 should output 100, 101, 102, 103, ..., 109.
-  // CountingSourceCalculator 2 should output 0, 100, 200, 300, ..., 900.
-  // However, there is a source layer inversion.
-  // CountingSourceCalculator 0 is in source layer 0.
-  // CountingSourceCalculator 1 is in source layer 1.
-  // CountingSourceCalculator 2 is in source layer 0, but consumes an output
-  // side packet generated by a downstream calculator of
-  // CountingSourceCalculator 1.
-  //
-  // This graph will deadlock when CountingSourceCalculator 0 runs to
-  // completion and CountingSourceCalculator 1 cannot be activated because
-  // CountingSourceCalculator 2 cannot be opened.
-
-  const int max_count = 10;
-  const int initial_value1 = 100;
-  // Set num_threads to 1 to force sequential execution for deterministic
-  // outputs.
-  CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
-        num_threads: 1
-        node {
-          calculator: "CountingSourceCalculator"
-          output_stream: "count0"
-          input_side_packet: "MAX_COUNT:max_count"
-          source_layer: 0
-        }
-
-        node {
-          calculator: "CountingSourceCalculator"
-          output_stream: "count1"
-          input_side_packet: "MAX_COUNT:max_count"
-          input_side_packet: "INITIAL_VALUE:initial_value1"
-          source_layer: 1
-        }
-        node {
-          calculator: "FirstPacketFilterCalculator"
-          input_stream: "count1"
-          output_stream: "first_count1"
-        }
-        node {
-          calculator: "OutputSidePacketInProcessCalculator"
-          input_stream: "first_count1"
-          output_side_packet: "increment2"
-        }
-
-        node {
-          calculator: "CountingSourceCalculator"
-          output_stream: "count2"
-          input_side_packet: "MAX_COUNT:max_count"
-          input_side_packet: "INCREMENT:increment2"
-          source_layer: 0
-        }
-      )");
-  CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(
-      config, {{"max_count", MakePacket<int>(max_count)},
-               {"initial_value1", MakePacket<int>(initial_value1)}}));
-  ::mediapipe::Status status = graph.Run();
-  EXPECT_EQ(status.code(), ::mediapipe::StatusCode::kUnknown);
-  EXPECT_THAT(status.message(), testing::HasSubstr("deadlock"));
-}
-
-// Tests a graph of packet-generator-like calculators, which have no input
-// streams and no output streams.
-TEST(CalculatorGraph, PacketGeneratorLikeCalculators) {
-  CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
-        node {
-          calculator: "IntegerOutputSidePacketCalculator"
-          output_side_packet: "one"
-        }
-        node {
-          calculator: "IntegerOutputSidePacketCalculator"
-          output_side_packet: "another_one"
-        }
-        node {
-          calculator: "SidePacketAdderCalculator"
-          input_side_packet: "one"
-          input_side_packet: "another_one"
-          output_side_packet: "two"
-        }
-        node {
-          calculator: "IntegerOutputSidePacketCalculator"
-          output_side_packet: "yet_another_one"
-        }
-        node {
-          calculator: "SidePacketAdderCalculator"
-          input_side_packet: "two"
-          input_side_packet: "yet_another_one"
-          output_side_packet: "three"
-        }
-        node {
-          calculator: "SidePacketToStreamPacketCalculator"
-          input_side_packet: "three"
-          output_stream: "output"
-        }
-      )");
-  CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  std::vector<Packet> output_packets;
-  MEDIAPIPE_ASSERT_OK(graph.ObserveOutputStream(
-      "output", [&output_packets](const Packet& packet) {
-        output_packets.push_back(packet);
-        return ::mediapipe::OkStatus();
-      }));
-  MEDIAPIPE_ASSERT_OK(graph.Run());
-  ASSERT_EQ(1, output_packets.size());
-  EXPECT_EQ(3, output_packets[0].Get<int>());
-  EXPECT_EQ(Timestamp::PostStream(), output_packets[0].Timestamp());
-}
-
-TEST(CalculatorGraph, OutputSummarySidePacketInClose) {
-  CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
-        input_stream: "input_packets"
-        node {
-          calculator: "CountAndOutputSummarySidePacketInCloseCalculator"
-          input_stream: "input_packets"
-          output_side_packet: "num_of_packets"
-        }
-        node {
-          calculator: "SidePacketToStreamPacketCalculator"
-          input_side_packet: "num_of_packets"
-          output_stream: "output"
-        }
-      )");
-  CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  std::vector<Packet> output_packets;
-  MEDIAPIPE_ASSERT_OK(graph.ObserveOutputStream(
-      "output", [&output_packets](const Packet& packet) {
-        output_packets.push_back(packet);
-        return ::mediapipe::OkStatus();
-      }));
-
-  // Run the graph twice.
-  int max_count = 100;
-  for (int run = 0; run < 1; ++run) {
-    output_packets.clear();
-    MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
-    for (int i = 0; i < max_count; ++i) {
-      MEDIAPIPE_ASSERT_OK(graph.AddPacketToInputStream(
-          "input_packets", MakePacket<int>(i).At(Timestamp(i))));
-    }
-    MEDIAPIPE_ASSERT_OK(graph.CloseInputStream("input_packets"));
-    MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
-    ASSERT_EQ(1, output_packets.size());
-    EXPECT_EQ(max_count, output_packets[0].Get<int>());
-    EXPECT_EQ(Timestamp::PostStream(), output_packets[0].Timestamp());
-  }
-}
-
-TEST(CalculatorGraph, GetOutputSidePacket) {
-  CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
-        input_stream: "input_packets"
-        node {
-          calculator: "CountAndOutputSummarySidePacketInCloseCalculator"
-          input_stream: "input_packets"
-          output_side_packet: "num_of_packets"
-        }
-        packet_generator {
-          packet_generator: "Uint64PacketGenerator"
-          output_side_packet: "output_uint64"
-        }
-        packet_generator {
-          packet_generator: "IntSplitterPacketGenerator"
-          input_side_packet: "input_uint64"
-          output_side_packet: "output_uint32_pair"
-        }
-      )");
-  CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  // Check a packet generated by the PacketGenerator, which is available after
-  // graph initialization, can be fetched before graph starts.
-  ::mediapipe::StatusOr<Packet> status_or_packet =
-      graph.GetOutputSidePacket("output_uint64");
-  MEDIAPIPE_ASSERT_OK(status_or_packet);
-  EXPECT_EQ(Timestamp::Unset(), status_or_packet.ValueOrDie().Timestamp());
-  // IntSplitterPacketGenerator is missing its input side packet and we
-  // won't be able to get its output side packet now.
-  status_or_packet = graph.GetOutputSidePacket("output_uint32_pair");
-  EXPECT_EQ(::mediapipe::StatusCode::kUnavailable,
-            status_or_packet.status().code());
-  // Run the graph twice.
-  int max_count = 100;
-  std::map<std::string, Packet> extra_side_packets;
-  extra_side_packets.insert({"input_uint64", MakePacket<uint64>(1123)});
-  for (int run = 0; run < 1; ++run) {
-    MEDIAPIPE_ASSERT_OK(graph.StartRun(extra_side_packets));
-    status_or_packet = graph.GetOutputSidePacket("output_uint32_pair");
-    MEDIAPIPE_ASSERT_OK(status_or_packet);
-    EXPECT_EQ(Timestamp::Unset(), status_or_packet.ValueOrDie().Timestamp());
-    for (int i = 0; i < max_count; ++i) {
-      MEDIAPIPE_ASSERT_OK(graph.AddPacketToInputStream(
-          "input_packets", MakePacket<int>(i).At(Timestamp(i))));
-    }
-    MEDIAPIPE_ASSERT_OK(graph.CloseInputStream("input_packets"));
-
-    // Should return NOT_FOUND for invalid side packets.
-    status_or_packet = graph.GetOutputSidePacket("unknown");
-    EXPECT_FALSE(status_or_packet.ok());
-    EXPECT_EQ(::mediapipe::StatusCode::kNotFound,
-              status_or_packet.status().code());
-    // Should return UNAVAILABLE before graph is done for valid non-base
-    // packets.
-    status_or_packet = graph.GetOutputSidePacket("num_of_packets");
-    EXPECT_FALSE(status_or_packet.ok());
-    EXPECT_EQ(::mediapipe::StatusCode::kUnavailable,
-              status_or_packet.status().code());
-    // Should stil return a base even before graph is done.
-    status_or_packet = graph.GetOutputSidePacket("output_uint64");
-    MEDIAPIPE_ASSERT_OK(status_or_packet);
-    EXPECT_EQ(Timestamp::Unset(), status_or_packet.ValueOrDie().Timestamp());
-
-    MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
-
-    // Check packets are available after graph is done.
-    status_or_packet = graph.GetOutputSidePacket("num_of_packets");
-    MEDIAPIPE_ASSERT_OK(status_or_packet);
-    EXPECT_EQ(max_count, status_or_packet.ValueOrDie().Get<int>());
-    EXPECT_EQ(Timestamp::Unset(), status_or_packet.ValueOrDie().Timestamp());
-    // Should still return a base packet after graph is done.
-    status_or_packet = graph.GetOutputSidePacket("output_uint64");
-    MEDIAPIPE_ASSERT_OK(status_or_packet);
-    EXPECT_EQ(Timestamp::Unset(), status_or_packet.ValueOrDie().Timestamp());
-    // Should still return a non-base packet after graph is done.
-    status_or_packet = graph.GetOutputSidePacket("output_uint32_pair");
-    MEDIAPIPE_ASSERT_OK(status_or_packet);
-    EXPECT_EQ(Timestamp::Unset(), status_or_packet.ValueOrDie().Timestamp());
-  }
-}
-
 constexpr int kDefaultMaxCount = 1000;
 
 TEST(CalculatorGraph, TestPollPacket) {
@@ -5461,11 +4556,11 @@ TEST(CalculatorGraph, TestPollPacket) {
   node->add_input_side_packet("MAX_COUNT:max_count");
 
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.Initialize(config));
   auto status_or_poller = graph.AddOutputStreamPoller("output");
   ASSERT_TRUE(status_or_poller.ok());
-  OutputStreamPoller poller = std::move(status_or_poller.ValueOrDie());
-  MEDIAPIPE_ASSERT_OK(
+  OutputStreamPoller poller = std::move(status_or_poller.value());
+  MP_ASSERT_OK(
       graph.StartRun({{"max_count", MakePacket<int>(kDefaultMaxCount)}}));
   Packet packet;
   int num_packets = 0;
@@ -5473,8 +4568,8 @@ TEST(CalculatorGraph, TestPollPacket) {
     EXPECT_EQ(num_packets, packet.Get<int>());
     ++num_packets;
   }
-  MEDIAPIPE_ASSERT_OK(graph.CloseAllPacketSources());
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
+  MP_ASSERT_OK(graph.CloseAllPacketSources());
+  MP_ASSERT_OK(graph.WaitUntilDone());
   EXPECT_FALSE(poller.Next(&packet));
   EXPECT_EQ(kDefaultMaxCount, num_packets);
 }
@@ -5488,12 +4583,12 @@ TEST(CalculatorGraph, TestOutputStreamPollerDesiredQueueSize) {
 
   for (int queue_size = 1; queue_size < 10; ++queue_size) {
     CalculatorGraph graph;
-    MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
+    MP_ASSERT_OK(graph.Initialize(config));
     auto status_or_poller = graph.AddOutputStreamPoller("output");
     ASSERT_TRUE(status_or_poller.ok());
-    OutputStreamPoller poller = std::move(status_or_poller.ValueOrDie());
+    OutputStreamPoller poller = std::move(status_or_poller.value());
     poller.SetMaxQueueSize(queue_size);
-    MEDIAPIPE_ASSERT_OK(
+    MP_ASSERT_OK(
         graph.StartRun({{"max_count", MakePacket<int>(kDefaultMaxCount)}}));
     Packet packet;
     int num_packets = 0;
@@ -5501,8 +4596,8 @@ TEST(CalculatorGraph, TestOutputStreamPollerDesiredQueueSize) {
       EXPECT_EQ(num_packets, packet.Get<int>());
       ++num_packets;
     }
-    MEDIAPIPE_ASSERT_OK(graph.CloseAllPacketSources());
-    MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
+    MP_ASSERT_OK(graph.CloseAllPacketSources());
+    MP_ASSERT_OK(graph.WaitUntilDone());
     EXPECT_FALSE(poller.Next(&packet));
     EXPECT_EQ(kDefaultMaxCount, num_packets);
   }
@@ -5520,14 +4615,14 @@ TEST(CalculatorGraph, TestPollPacketsFromMultipleStreams) {
   node2->add_output_stream("stream2");
 
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.Initialize(config));
   auto status_or_poller1 = graph.AddOutputStreamPoller("stream1");
   ASSERT_TRUE(status_or_poller1.ok());
-  OutputStreamPoller poller1 = std::move(status_or_poller1.ValueOrDie());
+  OutputStreamPoller poller1 = std::move(status_or_poller1.value());
   auto status_or_poller2 = graph.AddOutputStreamPoller("stream2");
   ASSERT_TRUE(status_or_poller2.ok());
-  OutputStreamPoller poller2 = std::move(status_or_poller2.ValueOrDie());
-  MEDIAPIPE_ASSERT_OK(
+  OutputStreamPoller poller2 = std::move(status_or_poller2.value());
+  MP_ASSERT_OK(
       graph.StartRun({{"max_count", MakePacket<int>(kDefaultMaxCount)}}));
   Packet packet1;
   Packet packet2;
@@ -5546,12 +4641,81 @@ TEST(CalculatorGraph, TestPollPacketsFromMultipleStreams) {
       --running_pollers;
     }
   }
-  MEDIAPIPE_ASSERT_OK(graph.CloseAllPacketSources());
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
+  MP_ASSERT_OK(graph.CloseAllPacketSources());
+  MP_ASSERT_OK(graph.WaitUntilDone());
   EXPECT_FALSE(poller1.Next(&packet1));
   EXPECT_FALSE(poller2.Next(&packet2));
   EXPECT_EQ(kDefaultMaxCount, num_packets1);
   EXPECT_EQ(kDefaultMaxCount, num_packets2);
+}
+
+class TimestampBoundTestCalculator : public CalculatorBase {
+ public:
+  static absl::Status GetContract(CalculatorContract* cc) {
+    cc->Outputs().Index(0).Set<int>();
+    return absl::OkStatus();
+  }
+  absl::Status Open(CalculatorContext* cc) final { return absl::OkStatus(); }
+  absl::Status Process(CalculatorContext* cc) final {
+    if (count_ % 50 == 1) {
+      // Outputs packets at t10 and t60.
+      cc->Outputs().Index(0).AddPacket(
+          MakePacket<int>(count_).At(Timestamp(count_)));
+    } else if (count_ % 15 == 7) {
+      cc->Outputs().Index(0).SetNextTimestampBound(Timestamp(count_));
+    }
+    absl::SleepFor(absl::Milliseconds(3));
+    ++count_;
+    if (count_ == 110) {
+      return tool::StatusStop();
+    }
+    return absl::OkStatus();
+  }
+
+ private:
+  int count_ = 0;
+};
+REGISTER_CALCULATOR(TimestampBoundTestCalculator);
+
+TEST(CalculatorGraph, TestPollPacketsWithTimestampNotification) {
+  std::string config_str = R"(
+            node {
+              calculator: "TimestampBoundTestCalculator"
+              output_stream: "foo"
+            }
+          )";
+  CalculatorGraphConfig graph_config =
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(config_str);
+
+  CalculatorGraph graph;
+  MP_ASSERT_OK(graph.Initialize(graph_config));
+  auto status_or_poller =
+      graph.AddOutputStreamPoller("foo", /*observe_timestamp_bounds=*/true);
+  ASSERT_TRUE(status_or_poller.ok());
+  OutputStreamPoller poller = std::move(status_or_poller.value());
+  Packet packet;
+  std::vector<int> timestamps;
+  std::vector<int> values;
+  MP_ASSERT_OK(graph.StartRun({}));
+  while (poller.Next(&packet)) {
+    if (packet.IsEmpty()) {
+      timestamps.push_back(packet.Timestamp().Value());
+    } else {
+      values.push_back(packet.Get<int>());
+    }
+  }
+  MP_ASSERT_OK(graph.WaitUntilDone());
+  ASSERT_FALSE(poller.Next(&packet));
+  ASSERT_FALSE(timestamps.empty());
+  int prev_t = 0;
+  for (auto t : timestamps) {
+    EXPECT_TRUE(t > prev_t && t < 110);
+    prev_t = t;
+  }
+  ASSERT_EQ(3, values.size());
+  EXPECT_EQ(1, values[0]);
+  EXPECT_EQ(51, values[1]);
+  EXPECT_EQ(101, values[2]);
 }
 
 // Ensure that when a custom input stream handler is used to handle packets from
@@ -5561,7 +4725,7 @@ TEST(CalculatorGraph, TestPollPacketsFromMultipleStreams) {
 TEST(CalculatorGraph, SimpleMuxCalculatorWithCustomInputStreamHandler) {
   CalculatorGraph graph;
   CalculatorGraphConfig config =
-      ::mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
         input_stream: 'input0'
         input_stream: 'input1'
         node {
@@ -5573,25 +4737,25 @@ TEST(CalculatorGraph, SimpleMuxCalculatorWithCustomInputStreamHandler) {
           }
           output_stream: 'output'
         }
-      )");
+      )pb");
   std::vector<Packet> packet_dump;
   tool::AddVectorSink("output", &config, &packet_dump);
 
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config));
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
+  MP_ASSERT_OK(graph.Initialize(config));
+  MP_ASSERT_OK(graph.StartRun({}));
 
   // Send packets to input stream "input0" at timestamps 0 and 1 consecutively.
   Timestamp input0_timestamp = Timestamp(0);
-  MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
+  MP_EXPECT_OK(graph.AddPacketToInputStream(
       "input0", MakePacket<int>(1).At(input0_timestamp)));
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
+  MP_ASSERT_OK(graph.WaitUntilIdle());
   ASSERT_EQ(1, packet_dump.size());
   EXPECT_EQ(1, packet_dump[0].Get<int>());
 
   ++input0_timestamp;
-  MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
+  MP_EXPECT_OK(graph.AddPacketToInputStream(
       "input0", MakePacket<int>(3).At(input0_timestamp)));
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilIdle());
+  MP_ASSERT_OK(graph.WaitUntilIdle());
   ASSERT_EQ(2, packet_dump.size());
   EXPECT_EQ(3, packet_dump[1].Get<int>());
 
@@ -5600,9 +4764,9 @@ TEST(CalculatorGraph, SimpleMuxCalculatorWithCustomInputStreamHandler) {
   // in a mismatch in timestamps as the SimpleMuxCalculator doesn't handle
   // inputs from all streams in monotonically increasing order of timestamps.
   Timestamp input1_timestamp = Timestamp(0);
-  MEDIAPIPE_EXPECT_OK(graph.AddPacketToInputStream(
+  MP_EXPECT_OK(graph.AddPacketToInputStream(
       "input1", MakePacket<int>(2).At(input1_timestamp)));
-  ::mediapipe::Status run_status = graph.WaitUntilIdle();
+  absl::Status run_status = graph.WaitUntilIdle();
   EXPECT_THAT(
       run_status.ToString(),
       testing::AllOf(
@@ -5612,6 +4776,69 @@ TEST(CalculatorGraph, SimpleMuxCalculatorWithCustomInputStreamHandler) {
               "timestamps that are not strictly monotonically increasing"),
           // Link to the possible solution.
           testing::HasSubstr("ImmediateInputStreamHandler class comment")));
+}
+
+void DoTestMultipleGraphRuns(absl::string_view input_stream_handler,
+                             bool select_packet) {
+  std::string graph_proto = absl::StrFormat(R"(
+    input_stream: 'input'
+    input_stream: 'select'
+    node {
+      calculator: 'PassThroughCalculator'
+      input_stream: 'input'
+      input_stream: 'select'
+      input_stream_handler {
+        input_stream_handler: "%s"
+      }
+      output_stream: 'output'
+      output_stream: 'select_out'
+    }
+  )",
+                                            input_stream_handler.data());
+  CalculatorGraphConfig config =
+      mediapipe::ParseTextProtoOrDie<CalculatorGraphConfig>(graph_proto);
+  std::vector<Packet> packet_dump;
+  tool::AddVectorSink("output", &config, &packet_dump);
+
+  CalculatorGraph graph;
+  MP_ASSERT_OK(graph.Initialize(config));
+
+  struct Run {
+    Timestamp timestamp;
+    int value;
+  };
+  std::vector<Run> runs = {{.timestamp = Timestamp(2000), .value = 2},
+                           {.timestamp = Timestamp(1000), .value = 1}};
+  for (const Run& run : runs) {
+    MP_ASSERT_OK(graph.StartRun({}));
+
+    if (select_packet) {
+      MP_EXPECT_OK(graph.AddPacketToInputStream(
+          "select", MakePacket<int>(0).At(run.timestamp)));
+    }
+    MP_EXPECT_OK(graph.AddPacketToInputStream(
+        "input", MakePacket<int>(run.value).At(run.timestamp)));
+    MP_ASSERT_OK(graph.WaitUntilIdle());
+    ASSERT_EQ(1, packet_dump.size());
+    EXPECT_EQ(run.value, packet_dump[0].Get<int>());
+    EXPECT_EQ(run.timestamp, packet_dump[0].Timestamp());
+
+    MP_ASSERT_OK(graph.CloseAllPacketSources());
+    MP_ASSERT_OK(graph.WaitUntilDone());
+
+    packet_dump.clear();
+  }
+}
+
+TEST(CalculatorGraph, MultipleRunsWithDifferentInputStreamHandlers) {
+  DoTestMultipleGraphRuns("BarrierInputStreamHandler", true);
+  DoTestMultipleGraphRuns("DefaultInputStreamHandler", true);
+  DoTestMultipleGraphRuns("EarlyCloseInputStreamHandler", true);
+  DoTestMultipleGraphRuns("FixedSizeInputStreamHandler", true);
+  DoTestMultipleGraphRuns("ImmediateInputStreamHandler", false);
+  DoTestMultipleGraphRuns("MuxInputStreamHandler", true);
+  DoTestMultipleGraphRuns("SyncSetInputStreamHandler", true);
+  DoTestMultipleGraphRuns("TimestampAlignInputStreamHandler", true);
 }
 
 }  // namespace

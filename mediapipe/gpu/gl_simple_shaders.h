@@ -38,6 +38,17 @@ extern const GLchar* const kBasicVertexShader;
 //   vec2 sample_coordinate - texture coordinate for shader
 extern const GLchar* const kScaledVertexShader;
 
+// Applies an affine transformation to the vertex and leaves texture coordinates
+// as is. Input attributes:
+//   vec4 position - vertex position
+//   vec4 texture_coordinate - texture coordinate
+// Input uniform:
+//   mat3 homogeneous affine transform - transformation matrix for vertices
+//   vec2 viewport_size - size of the viewport
+// Output varying:
+//   vec2 sample_coordinate - texture coordinate for shader
+extern const GLchar* const kTransformedVertexShader;
+
 // Outputs the texture as it is.
 // Input varying:
 //   vec2 sample_coordinate - texture coordinate
@@ -100,6 +111,10 @@ static const GLfloat kBasicTextureVertices[] = {
     0.0f, 1.0f,  // top left
     1.0f, 1.0f,  // top right
 };
+
+// Places a texture on kBasicSquareVertices, flipped horizontally.
+static const GLfloat kBasicTextureVerticesFlipX[] = {
+    V4(kBasicTextureVertices, 1, 0, 3, 2)};
 
 // Places a texture on kBasicSquareVertices, flipped vertically.
 static const GLfloat kBasicTextureVerticesFlipY[] = {

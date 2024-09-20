@@ -16,22 +16,11 @@
 
 namespace mediapipe {
 
-// We only define this variable for two specializations of the template
-// because it is only meant to be used for these two types.
-#if EMSCRIPTEN_WORKAROUND_FOR_B121216479
-template <>
-CalculatorContext*
-    LegacyCalculatorSupport::Scoped<CalculatorContext>::current_ = nullptr;
-template <>
-CalculatorContract*
-    LegacyCalculatorSupport::Scoped<CalculatorContract>::current_ = nullptr;
-#else
 template <>
 thread_local CalculatorContext*
     LegacyCalculatorSupport::Scoped<CalculatorContext>::current_ = nullptr;
 template <>
 thread_local CalculatorContract*
     LegacyCalculatorSupport::Scoped<CalculatorContract>::current_ = nullptr;
-#endif  // EMSCRIPTEN_WORKAROUND_FOR_B121216479
 
 }  // namespace mediapipe

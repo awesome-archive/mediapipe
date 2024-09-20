@@ -15,14 +15,17 @@
 #include "mediapipe/framework/formats/motion/optical_flow_field.h"
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <string>
 
+#include "absl/flags/flag.h"
+#include "absl/log/absl_check.h"
+#include "absl/log/absl_log.h"
 #include "mediapipe/framework/deps/file_path.h"
+#include "mediapipe/framework/formats/location_opencv.h"
 #include "mediapipe/framework/port/file_helpers.h"
 #include "mediapipe/framework/port/gtest.h"
-#include "mediapipe/framework/port/integral_types.h"
-#include "mediapipe/framework/port/logging.h"
 #include "tensorflow/core/framework/tensor.h"
 
 namespace mediapipe {
@@ -288,8 +291,8 @@ TEST(OpticalFlowField, Occlusions) {
   OpticalFlowField::EstimateMotionConsistencyOcclusions(
       OpticalFlowField(forward), OpticalFlowField(backward), 0.5,
       &occlusion_mask, &disocclusion_mask);
-  std::unique_ptr<cv::Mat> occlusion_mat = occlusion_mask.GetCvMask();
-  std::unique_ptr<cv::Mat> disocclusion_mat = disocclusion_mask.GetCvMask();
+  std::unique_ptr<cv::Mat> occlusion_mat = GetCvMask(occlusion_mask);
+  std::unique_ptr<cv::Mat> disocclusion_mat = GetCvMask(disocclusion_mask);
   EXPECT_EQ(3, occlusion_mat->rows);
   EXPECT_EQ(3, disocclusion_mat->rows);
   EXPECT_EQ(4, occlusion_mat->cols);
@@ -298,15 +301,15 @@ TEST(OpticalFlowField, Occlusions) {
     for (int y = 0; y < occlusion_mat->rows; ++y) {
       // Bottom row and pixel at (x, y) = (1, 0) are occluded.
       if (y == occlusion_mat->rows - 1 || (x == 1 && y == 0)) {
-        EXPECT_GT(occlusion_mat->at<uint8>(y, x), 0);
+        EXPECT_GT(occlusion_mat->at<uint8_t>(y, x), 0);
       } else {
-        EXPECT_EQ(0, occlusion_mat->at<uint8>(y, x));
+        EXPECT_EQ(0, occlusion_mat->at<uint8_t>(y, x));
       }
       // Top row and pixel at (x, y) = (1, 2) are disoccluded.
       if (y == 0 || (x == 1 && y == 2)) {
-        EXPECT_GT(disocclusion_mat->at<uint8>(y, x), 0);
+        EXPECT_GT(disocclusion_mat->at<uint8_t>(y, x), 0);
       } else {
-        EXPECT_EQ(0, disocclusion_mat->at<uint8>(y, x));
+        EXPECT_EQ(0, disocclusion_mat->at<uint8_t>(y, x));
       }
     }
   }

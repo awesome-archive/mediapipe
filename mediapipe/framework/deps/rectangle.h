@@ -24,12 +24,12 @@
 
 #include <algorithm>
 #include <cmath>
+#include <cstdint>
 #include <iosfwd>
 #include <limits>
 #include <ostream>
 
 #include "mediapipe/framework/deps/point2.h"
-#include "mediapipe/framework/port/integral_types.h"
 
 template <typename T>
 class Rectangle;
@@ -145,7 +145,7 @@ class Rectangle {
   void AddBorder(const T& border_size);
 
   // Debug printing.
-  friend std::ostream& operator<<<T>(std::ostream&, const Rectangle&);
+  friend std::ostream& operator<< <T>(std::ostream&, const Rectangle&);
 
  private:
   Point2<T> min_;
@@ -320,7 +320,7 @@ std::ostream& operator<<(std::ostream& out, const Rectangle<T>& r) {
 template <typename T>
 class Rectangle;
 
-typedef Rectangle<uint8> Rectangle_b;
+typedef Rectangle<uint8_t> Rectangle_b;
 typedef Rectangle<int> Rectangle_i;
 typedef Rectangle<float> Rectangle_f;
 typedef Rectangle<double> Rectangle_d;

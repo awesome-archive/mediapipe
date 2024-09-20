@@ -22,100 +22,36 @@
 #ifndef MEDIAPIPE_GPU_GPU_BUFFER_MULTI_POOL_H_
 #define MEDIAPIPE_GPU_GPU_BUFFER_MULTI_POOL_H_
 
-#include <limits>
-#include <queue>
-#include <unordered_map>
-
-#include "absl/synchronization/mutex.h"
+#include "absl/status/statusor.h"
 #include "mediapipe/gpu/gpu_buffer.h"
+#include "mediapipe/gpu/gpu_buffer_format.h"
+#include "mediapipe/gpu/multi_pool.h"
 
-#ifdef __APPLE__
-#include "mediapipe/gpu/pixel_buffer_pool_util.h"
-#endif  // __APPLE__
-
-#if !MEDIAPIPE_GPU_BUFFER_USE_CV_PIXEL_BUFFER
+#if MEDIAPIPE_GPU_BUFFER_USE_CV_PIXEL_BUFFER
+#include "mediapipe/gpu/cv_pixel_buffer_pool_wrapper.h"
+#else
 #include "mediapipe/gpu/gl_texture_buffer_pool.h"
-#endif  // !MEDIAPIPE_GPU_BUFFER_USE_CV_PIXEL_BUFFER
+#endif  // MEDIAPIPE_GPU_BUFFER_USE_CV_PIXEL_BUFFER
 
 namespace mediapipe {
 
-class GpuSharedData;
+class CvPixelBufferPoolWrapper;
 
-struct BufferSpec {
-  BufferSpec(int w, int h, GpuBufferFormat f)
-      : width(w), height(h), format(f) {}
-  int width;
-  int height;
-  GpuBufferFormat format;
-};
-
-inline bool operator==(const BufferSpec& lhs, const BufferSpec& rhs) {
-  return lhs.width == rhs.width && lhs.height == rhs.height &&
-         lhs.format == rhs.format;
-}
-inline bool operator!=(const BufferSpec& lhs, const BufferSpec& rhs) {
-  return !operator==(lhs, rhs);
-}
-
-// This generates a "rol" instruction with both Clang and GCC.
-static inline std::size_t RotateLeft(std::size_t x, int n) {
-  return (x << n) | (x >> (std::numeric_limits<size_t>::digits - n));
-}
-
-struct BufferSpecHash {
-  std::size_t operator()(const mediapipe::BufferSpec& spec) const {
-    // Width and height are expected to be smaller than half the width of
-    // size_t. We can combine them into a single integer, and then use
-    // std::hash, which is what go/hashing recommends for hashing numbers.
-    constexpr int kWidth = std::numeric_limits<size_t>::digits;
-    return std::hash<std::size_t>{}(
-        spec.width ^ RotateLeft(spec.height, kWidth / 2) ^
-        RotateLeft(static_cast<uint32_t>(spec.format), kWidth / 4));
-  }
-};
-
-class GpuBufferMultiPool {
- public:
-  GpuBufferMultiPool() {}
-  explicit GpuBufferMultiPool(void* ignored) {}
-  ~GpuBufferMultiPool();
-
-  // Obtains a buffer. May either be reused or created anew.
-  GpuBuffer GetBuffer(int width, int height,
-                      GpuBufferFormat format = GpuBufferFormat::kBGRA32);
-
-#ifdef __APPLE__
-  // TODO: add tests for the texture cache registration.
-
-  // Inform the pool of a cache that should be flushed when it is low on
-  // reusable buffers.
-  void RegisterTextureCache(CVTextureCacheType cache);
-
-  // Remove a texture cache from the list of caches to be flushed.
-  void UnregisterTextureCache(CVTextureCacheType cache);
-#endif  // defined(__APPLE__)
-
- private:
+class GpuBufferMultiPool : public MultiPool<
 #if MEDIAPIPE_GPU_BUFFER_USE_CV_PIXEL_BUFFER
-  typedef CFHolder<CVPixelBufferPoolRef> SimplePool;
+                               CvPixelBufferPoolWrapper,
 #else
-  typedef std::shared_ptr<GlTextureBufferPool> SimplePool;
+                               GlTextureBufferPool,
 #endif  // MEDIAPIPE_GPU_BUFFER_USE_CV_PIXEL_BUFFER
+                               internal::GpuBufferSpec, GpuBuffer> {
+ public:
+  using MultiPool::MultiPool;
 
-  SimplePool MakeSimplePool(BufferSpec spec);
-  GpuBuffer GetBufferFromSimplePool(BufferSpec spec, const SimplePool& pool);
-
-  absl::Mutex mutex_;
-  std::unordered_map<BufferSpec, SimplePool, BufferSpecHash> pools_
-      GUARDED_BY(mutex_);
-  // A queue of BufferSpecs to keep track of the age of each BufferSpec added to
-  // the pool.
-  std::queue<BufferSpec> buffer_specs_;
-
-#ifdef __APPLE__
-  // Texture caches used with this pool.
-  std::vector<CFHolder<CVTextureCacheType>> texture_caches_ GUARDED_BY(mutex_);
-#endif  // defined(__APPLE__)
+  absl::StatusOr<GpuBuffer> GetBuffer(
+      int width, int height,
+      GpuBufferFormat format = GpuBufferFormat::kBGRA32) {
+    return Get(internal::GpuBufferSpec(width, height, format));
+  }
 };
 
 }  // namespace mediapipe

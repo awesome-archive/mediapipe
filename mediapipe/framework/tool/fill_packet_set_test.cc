@@ -31,7 +31,7 @@ TEST(FillPacketSetTest, Success) {
   node.add_input_side_packet("DOUBLE:1:side_packet4");
 
   PacketTypeSet input_side_packet_types(
-      tool::TagMap::Create(node.input_side_packet()).ValueOrDie());
+      tool::TagMap::Create(node.input_side_packet()).value());
   input_side_packet_types.Index(0).Set<int>(
       // An age
   );
@@ -45,7 +45,7 @@ TEST(FillPacketSetTest, Success) {
       .Set<double>(
           // double2
       );
-  MEDIAPIPE_EXPECT_OK(ValidatePacketTypeSet(input_side_packet_types));
+  MP_EXPECT_OK(ValidatePacketTypeSet(input_side_packet_types));
 
   std::map<std::string, Packet> all_side_packets;
   all_side_packets["side_packet1"] = MakePacket<int>(70);
@@ -57,7 +57,7 @@ TEST(FillPacketSetTest, Success) {
 
   std::unique_ptr<PacketSet> input_side_packets =
       tool::FillPacketSet(input_side_packet_types, all_side_packets, nullptr)
-          .ValueOrDie();
+          .value();
   ASSERT_EQ(4, input_side_packets->NumEntries());
   EXPECT_EQ(input_side_packets->Index(0).Get<int>(), 70);
   EXPECT_EQ(input_side_packets->Index(1).Get<std::string>(), "Dennis Ritchie");
@@ -73,7 +73,7 @@ TEST(FillPacketSetTest, MissingSidePacketError) {
   node.add_input_side_packet("DOUBLE:1:side_packet4");
 
   PacketTypeSet input_side_packet_types(
-      tool::TagMap::Create(node.input_side_packet()).ValueOrDie());
+      tool::TagMap::Create(node.input_side_packet()).value());
   input_side_packet_types.Index(0).Set<int>(
       // An age
   );
@@ -87,7 +87,7 @@ TEST(FillPacketSetTest, MissingSidePacketError) {
       .Set<double>(
           // double2
       );
-  MEDIAPIPE_EXPECT_OK(ValidatePacketTypeSet(input_side_packet_types));
+  MP_EXPECT_OK(ValidatePacketTypeSet(input_side_packet_types));
 
   std::map<std::string, Packet> all_side_packets;
   all_side_packets["side_packet1"] = MakePacket<int>(70);
@@ -111,7 +111,7 @@ TEST(FillPacketSetTest, MissingSidePacketOk) {
   node.add_input_side_packet("DOUBLE:1:side_packet4");
 
   PacketTypeSet input_side_packet_types(
-      tool::TagMap::Create(node.input_side_packet()).ValueOrDie());
+      tool::TagMap::Create(node.input_side_packet()).value());
   input_side_packet_types.Index(0).Set<int>(
       // An age
   );
@@ -125,7 +125,7 @@ TEST(FillPacketSetTest, MissingSidePacketOk) {
       .Set<double>(
           // double2
       );
-  MEDIAPIPE_EXPECT_OK(ValidatePacketTypeSet(input_side_packet_types));
+  MP_EXPECT_OK(ValidatePacketTypeSet(input_side_packet_types));
 
   std::map<std::string, Packet> all_side_packets;
   all_side_packets["side_packet1"] = MakePacket<int>(70);
@@ -138,7 +138,7 @@ TEST(FillPacketSetTest, MissingSidePacketOk) {
   std::unique_ptr<PacketSet> input_side_packets =
       tool::FillPacketSet(input_side_packet_types, all_side_packets,
                           &missing_packet_count)
-          .ValueOrDie();
+          .value();
   ASSERT_EQ(4, input_side_packets->NumEntries());
   EXPECT_EQ(1, missing_packet_count);
   EXPECT_EQ(input_side_packets->Index(0).Get<int>(), 70);
@@ -155,7 +155,7 @@ TEST(FillPacketSetTest, WrongSidePacketType) {
   node.add_input_side_packet("DOUBLE:1:side_packet4");
 
   PacketTypeSet input_side_packet_types(
-      tool::TagMap::Create(node.input_side_packet()).ValueOrDie());
+      tool::TagMap::Create(node.input_side_packet()).value());
   input_side_packet_types.Index(0).Set<int>(
       // An age
   );
@@ -169,7 +169,7 @@ TEST(FillPacketSetTest, WrongSidePacketType) {
       .Set<double>(
           // double2
       );
-  MEDIAPIPE_EXPECT_OK(ValidatePacketTypeSet(input_side_packet_types));
+  MP_EXPECT_OK(ValidatePacketTypeSet(input_side_packet_types));
 
   std::map<std::string, Packet> all_side_packets;
   all_side_packets["side_packet1"] = MakePacket<float>(3.0f);  // Wrong Type.

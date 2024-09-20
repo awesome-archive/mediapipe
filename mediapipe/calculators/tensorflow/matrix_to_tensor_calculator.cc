@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "absl/log/absl_check.h"
 #include "mediapipe/calculators/tensorflow/matrix_to_tensor_calculator_options.pb.h"
 #include "mediapipe/framework/calculator_framework.h"
 #include "mediapipe/framework/formats/matrix.h"
@@ -26,20 +27,19 @@
 namespace mediapipe {
 
 namespace {
-::mediapipe::Status FillTimeSeriesHeaderIfValid(const Packet& header_packet,
-                                                TimeSeriesHeader* header) {
-  CHECK(header);
+absl::Status FillTimeSeriesHeaderIfValid(const Packet& header_packet,
+                                         TimeSeriesHeader* header) {
+  ABSL_CHECK(header);
   if (header_packet.IsEmpty()) {
-    return ::mediapipe::UnknownError("No header found.");
+    return absl::UnknownError("No header found.");
   }
   if (!header_packet.ValidateAsType<TimeSeriesHeader>().ok()) {
-    return ::mediapipe::UnknownError(
-        "Packet does not contain TimeSeriesHeader.");
+    return absl::UnknownError("Packet does not contain TimeSeriesHeader.");
   }
   *header = header_packet.Get<TimeSeriesHeader>();
   if (header->has_sample_rate() && header->sample_rate() >= 0 &&
       header->has_num_channels() && header->num_channels() >= 0) {
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   } else {
     std::string error_message =
         "TimeSeriesHeader is missing necessary fields: "
@@ -48,7 +48,7 @@ namespace {
     absl::StrAppend(&error_message, "Got header:\n",
                     header->ShortDebugString());
 #endif
-    return ::mediapipe::InvalidArgumentError(error_message);
+    return absl::InvalidArgumentError(error_message);
   }
 }
 }  // namespace
@@ -78,18 +78,17 @@ typedef Eigen::Matrix<float, Eigen::Dynamic, Eigen::Dynamic, Eigen::ColMajor>
 // }
 class MatrixToTensorCalculator : public CalculatorBase {
  public:
-  static ::mediapipe::Status GetContract(CalculatorContract* cc);
+  static absl::Status GetContract(CalculatorContract* cc);
 
-  ::mediapipe::Status Open(CalculatorContext* cc) override;
-  ::mediapipe::Status Process(CalculatorContext* cc) override;
+  absl::Status Open(CalculatorContext* cc) override;
+  absl::Status Process(CalculatorContext* cc) override;
 
  private:
   MatrixToTensorCalculatorOptions options_;
 };
 REGISTER_CALCULATOR(MatrixToTensorCalculator);
 
-::mediapipe::Status MatrixToTensorCalculator::GetContract(
-    CalculatorContract* cc) {
+absl::Status MatrixToTensorCalculator::GetContract(CalculatorContract* cc) {
   RET_CHECK_EQ(cc->Inputs().NumEntries(), 1)
       << "Only one input stream is supported.";
   cc->Inputs().Index(0).Set<Matrix>(
@@ -102,15 +101,15 @@ REGISTER_CALCULATOR(MatrixToTensorCalculator);
       // TimeSeriesHeader as the input (or no header if the input has no
       // header).
   );
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-::mediapipe::Status MatrixToTensorCalculator::Open(CalculatorContext* cc) {
+absl::Status MatrixToTensorCalculator::Open(CalculatorContext* cc) {
   // If the input is part of a time series, then preserve the header so that
   // downstream consumers can access the sample rate if needed.
   options_ = cc->Options<MatrixToTensorCalculatorOptions>();
   auto input_header = ::absl::make_unique<TimeSeriesHeader>();
-  const ::mediapipe::Status header_status = FillTimeSeriesHeaderIfValid(
+  const absl::Status header_status = FillTimeSeriesHeaderIfValid(
       cc->Inputs().Index(0).Header(), input_header.get());
   if (header_status.ok()) {
     cc->Outputs().Index(0).SetHeader(Adopt(input_header.release()));
@@ -118,11 +117,11 @@ REGISTER_CALCULATOR(MatrixToTensorCalculator);
 
   // Inform the framework that we always output at the same timestamp
   // as we receive a packet at.
-  cc->SetOffset(mediapipe::TimestampDiff(0));
-  return ::mediapipe::OkStatus();
+  cc->SetOffset(TimestampDiff(0));
+  return absl::OkStatus();
 }
 
-::mediapipe::Status MatrixToTensorCalculator::Process(CalculatorContext* cc) {
+absl::Status MatrixToTensorCalculator::Process(CalculatorContext* cc) {
   const Matrix& matrix = cc->Inputs().Index(0).Get<Matrix>();
   tf::TensorShape tensor_shape;
   if (options_.transpose()) {
@@ -151,7 +150,7 @@ REGISTER_CALCULATOR(MatrixToTensorCalculator);
         << " Current shape: " << tensor->shape().DebugString();
   }
   cc->Outputs().Index(0).Add(tensor.release(), cc->InputTimestamp());
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace mediapipe

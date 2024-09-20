@@ -12,6 +12,13 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include <cstdint>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "absl/log/absl_log.h"
 #include "absl/memory/memory.h"
 #include "absl/strings/numbers.h"
 #include "mediapipe/calculators/core/packet_resampler_calculator.pb.h"
@@ -23,6 +30,7 @@
 #include "mediapipe/framework/port/gtest.h"
 #include "mediapipe/framework/port/rectangle.h"
 #include "mediapipe/framework/port/status_matchers.h"
+#include "mediapipe/util/audio_decoder.pb.h"
 #include "mediapipe/util/sequence/media_sequence.h"
 #include "tensorflow/core/example/example.pb.h"
 
@@ -30,7 +38,34 @@ namespace mediapipe {
 namespace {
 
 namespace tf = ::tensorflow;
-namespace mpms = ::mediapipe::mediasequence;
+namespace mpms = mediapipe::mediasequence;
+
+constexpr char kImageFrameRateTag[] = "IMAGE_FRAME_RATE";
+constexpr char kEncodedMediaStartTimestampTag[] =
+    "ENCODED_MEDIA_START_TIMESTAMP";
+constexpr char kEncodedMediaTag[] = "ENCODED_MEDIA";
+constexpr char kResamplerOptionsTag[] = "RESAMPLER_OPTIONS";
+constexpr char kSandboxedDecoderOptionsTag[] = "SANDBOXED_DECODER_OPTIONS";
+constexpr char kDecoderOptionsTag[] = "DECODER_OPTIONS";
+constexpr char kAudioDecoderOptionsTag[] = "AUDIO_DECODER_OPTIONS";
+constexpr char kDataPathTag[] = "DATA_PATH";
+constexpr char kDatasetRootTag[] = "DATASET_ROOT";
+constexpr char kMediaIdTag[] = "MEDIA_ID";
+constexpr char kFloatFeatureFdenseMaxTag[] = "FLOAT_FEATURE_FDENSE_MAX";
+constexpr char kFloatFeatureFdenseAvgTag[] = "FLOAT_FEATURE_FDENSE_AVG";
+constexpr char kAudioOtherTag[] = "AUDIO_OTHER";
+constexpr char kAudioTestTag[] = "AUDIO_TEST";
+constexpr char kFloatFeatureOtherTag[] = "FLOAT_FEATURE_OTHER";
+constexpr char kFloatFeatureTestTag[] = "FLOAT_FEATURE_TEST";
+constexpr char kBboxPrefixTag[] = "BBOX_PREFIX";
+constexpr char kKeypointsTag[] = "KEYPOINTS";
+constexpr char kBboxTag[] = "BBOX";
+constexpr char kForwardFlowEncodedTag[] = "FORWARD_FLOW_ENCODED";
+constexpr char kImagePrefixTag[] = "IMAGE_PREFIX";
+constexpr char kImageTag[] = "IMAGE";
+constexpr char kFloatContextFeatureOtherTag[] = "FLOAT_CONTEXT_FEATURE_OTHER";
+constexpr char kFloatContextFeatureTestTag[] = "FLOAT_CONTEXT_FEATURE_TEST";
+constexpr char kSequenceExampleTag[] = "SEQUENCE_EXAMPLE";
 
 class UnpackMediaSequenceCalculatorTest : public ::testing::Test {
  protected:
@@ -53,7 +88,7 @@ class UnpackMediaSequenceCalculatorTest : public ::testing::Test {
     if (options != nullptr) {
       *config.mutable_options() = *options;
     }
-    LOG(INFO) << config.DebugString();
+    ABSL_LOG(INFO) << config.DebugString();
     runner_ = absl::make_unique<CalculatorRunner>(config);
   }
 
@@ -73,10 +108,10 @@ class UnpackMediaSequenceCalculatorTest : public ::testing::Test {
   std::unique_ptr<CalculatorRunner> runner_;
   const std::string video_id_ = "test_video_id";
   const std::string data_path_ = "test_directory";
-  const int64 start_time_ = 3000000;
-  const int64 end_time_ = 5000000;
+  const int64_t start_time_ = 3000000;
+  const int64_t end_time_ = 5000000;
   const std::string encoded_video_data_ = "encoded_video_data";
-  const int64 encoded_video_start_timestamp_ = 1000000;
+  const int64_t encoded_video_start_timestamp_ = 1000000;
   const double image_frame_rate_ = 1.0;
 };
 
@@ -94,13 +129,13 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksOneImage) {
     mpms::AddImageEncoded(test_image_string, input_sequence.get());
   }
 
-  runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
       Adopt(input_sequence.release());
 
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
   const std::vector<Packet>& output_packets =
-      runner_->Outputs().Tag("IMAGE").packets;
+      runner_->Outputs().Tag(kImageTag).packets;
   ASSERT_EQ(num_images, output_packets.size());
 
   for (int i = 0; i < num_images; ++i) {
@@ -123,13 +158,13 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksTwoImages) {
     mpms::AddImageEncoded(test_image_string, input_sequence.get());
   }
 
-  runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
       Adopt(input_sequence.release());
 
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
   const std::vector<Packet>& output_packets =
-      runner_->Outputs().Tag("IMAGE").packets;
+      runner_->Outputs().Tag(kImageTag).packets;
   ASSERT_EQ(num_images, output_packets.size());
 
   for (int i = 0; i < num_images; ++i) {
@@ -153,13 +188,13 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksTwoPrefixedImages) {
     mpms::AddImageEncoded(prefix, test_image_string, input_sequence.get());
   }
 
-  runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
       Adopt(input_sequence.release());
 
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
   const std::vector<Packet>& output_packets =
-      runner_->Outputs().Tag("IMAGE_PREFIX").packets;
+      runner_->Outputs().Tag(kImagePrefixTag).packets;
   ASSERT_EQ(num_images, output_packets.size());
 
   for (int i = 0; i < num_images; ++i) {
@@ -181,18 +216,18 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksOneForwardFlowImage) {
     mpms::AddForwardFlowEncoded(test_image_string, input_sequence.get());
   }
 
-  runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
       Adopt(input_sequence.release());
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
   const std::vector<Packet>& output_packets =
-      runner_->Outputs().Tag("FORWARD_FLOW_ENCODED").packets;
+      runner_->Outputs().Tag(kForwardFlowEncodedTag).packets;
   ASSERT_EQ(num_forward_flow_images, output_packets.size());
 
   for (int i = 0; i < num_forward_flow_images; ++i) {
     const std::string& output_image = output_packets[i].Get<std::string>();
     ASSERT_EQ(output_image, test_image_string);
-    ASSERT_EQ(output_packets[i].Timestamp().Value(), static_cast<int64>(i));
+    ASSERT_EQ(output_packets[i].Timestamp().Value(), static_cast<int64_t>(i));
   }
 }
 
@@ -210,18 +245,18 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksTwoForwardFlowImages) {
     mpms::AddForwardFlowEncoded(test_image_strings[i], input_sequence.get());
   }
 
-  runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
       Adopt(input_sequence.release());
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
   const std::vector<Packet>& output_packets =
-      runner_->Outputs().Tag("FORWARD_FLOW_ENCODED").packets;
+      runner_->Outputs().Tag(kForwardFlowEncodedTag).packets;
   ASSERT_EQ(num_forward_flow_images, output_packets.size());
 
   for (int i = 0; i < num_forward_flow_images; ++i) {
     const std::string& output_image = output_packets[i].Get<std::string>();
     ASSERT_EQ(output_image, test_image_strings[i]);
-    ASSERT_EQ(output_packets[i].Timestamp().Value(), static_cast<int64>(i));
+    ASSERT_EQ(output_packets[i].Timestamp().Value(), static_cast<int64_t>(i));
   }
 }
 
@@ -239,13 +274,13 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksBBoxes) {
     mpms::AddBBoxTimestamp(i, input_sequence.get());
   }
 
-  runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
       Adopt(input_sequence.release());
 
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
   const std::vector<Packet>& output_packets =
-      runner_->Outputs().Tag("BBOX").packets;
+      runner_->Outputs().Tag(kBboxTag).packets;
   ASSERT_EQ(bboxes.size(), output_packets.size());
 
   for (int i = 0; i < bboxes.size(); ++i) {
@@ -273,13 +308,13 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksPrefixedBBoxes) {
     mpms::AddBBoxTimestamp(prefix, i, input_sequence.get());
   }
 
-  runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
       Adopt(input_sequence.release());
 
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
   const std::vector<Packet>& output_packets =
-      runner_->Outputs().Tag("BBOX_PREFIX").packets;
+      runner_->Outputs().Tag(kBboxPrefixTag).packets;
   ASSERT_EQ(bboxes.size(), output_packets.size());
 
   for (int i = 0; i < bboxes.size(); ++i) {
@@ -305,13 +340,13 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksTwoFloatLists) {
     mpms::AddFeatureTimestamp("OTHER", i, input_sequence.get());
   }
 
-  runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
       Adopt(input_sequence.release());
 
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
   const std::vector<Packet>& output_packets =
-      runner_->Outputs().Tag("FLOAT_FEATURE_TEST").packets;
+      runner_->Outputs().Tag(kFloatFeatureTestTag).packets;
   ASSERT_EQ(num_float_lists, output_packets.size());
 
   for (int i = 0; i < num_float_lists; ++i) {
@@ -321,7 +356,7 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksTwoFloatLists) {
   }
 
   const std::vector<Packet>& output_packets_other =
-      runner_->Outputs().Tag("FLOAT_FEATURE_OTHER").packets;
+      runner_->Outputs().Tag(kFloatFeatureOtherTag).packets;
   ASSERT_EQ(num_float_lists, output_packets_other.size());
 
   for (int i = 0; i < num_float_lists; ++i) {
@@ -351,12 +386,12 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksNonOverlappingTimestamps) {
     mpms::AddFeatureTimestamp("OTHER", i + 5, input_sequence.get());
   }
 
-  runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
       Adopt(input_sequence.release());
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
   const std::vector<Packet>& output_packets =
-      runner_->Outputs().Tag("IMAGE").packets;
+      runner_->Outputs().Tag(kImageTag).packets;
   ASSERT_EQ(num_images, output_packets.size());
 
   for (int i = 0; i < num_images; ++i) {
@@ -365,7 +400,7 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksNonOverlappingTimestamps) {
   }
 
   const std::vector<Packet>& output_packets_other =
-      runner_->Outputs().Tag("FLOAT_FEATURE_OTHER").packets;
+      runner_->Outputs().Tag(kFloatFeatureOtherTag).packets;
   ASSERT_EQ(num_float_lists, output_packets_other.size());
 
   for (int i = 0; i < num_float_lists; ++i) {
@@ -388,12 +423,12 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksTwoPostStreamFloatLists) {
   mpms::AddFeatureTimestamp("FDENSE_MAX", Timestamp::PostStream().Value(),
                             input_sequence.get());
 
-  runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
       Adopt(input_sequence.release());
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
   const std::vector<Packet>& fdense_avg_packets =
-      runner_->Outputs().Tag("FLOAT_FEATURE_FDENSE_AVG").packets;
+      runner_->Outputs().Tag(kFloatFeatureFdenseAvgTag).packets;
   ASSERT_EQ(fdense_avg_packets.size(), 1);
   const auto& fdense_avg_vector =
       fdense_avg_packets[0].Get<std::vector<float>>();
@@ -402,7 +437,7 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksTwoPostStreamFloatLists) {
               ::testing::Eq(Timestamp::PostStream()));
 
   const std::vector<Packet>& fdense_max_packets =
-      runner_->Outputs().Tag("FLOAT_FEATURE_FDENSE_MAX").packets;
+      runner_->Outputs().Tag(kFloatFeatureFdenseMaxTag).packets;
   ASSERT_EQ(fdense_max_packets.size(), 1);
   const auto& fdense_max_vector =
       fdense_max_packets[0].Get<std::vector<float>>();
@@ -411,20 +446,122 @@ TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksTwoPostStreamFloatLists) {
               ::testing::Eq(Timestamp::PostStream()));
 }
 
+TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksImageWithPostStreamFloatList) {
+  SetUpCalculator({"IMAGE:images"}, {});
+  auto input_sequence = absl::make_unique<tf::SequenceExample>();
+  std::string test_video_id = "test_video_id";
+  mpms::SetClipMediaId(test_video_id, input_sequence.get());
+
+  std::string test_image_string = "test_image_string";
+
+  int num_images = 1;
+  for (int i = 0; i < num_images; ++i) {
+    mpms::AddImageTimestamp(i, input_sequence.get());
+    mpms::AddImageEncoded(test_image_string, input_sequence.get());
+  }
+
+  mpms::AddFeatureFloats("FDENSE_MAX", {3.0f, 4.0f}, input_sequence.get());
+  mpms::AddFeatureTimestamp("FDENSE_MAX", Timestamp::PostStream().Value(),
+                            input_sequence.get());
+
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
+      Adopt(input_sequence.release());
+
+  MP_ASSERT_OK(runner_->Run());
+
+  const std::vector<Packet>& output_packets =
+      runner_->Outputs().Tag(kImageTag).packets;
+  ASSERT_EQ(num_images, output_packets.size());
+
+  for (int i = 0; i < num_images; ++i) {
+    const std::string& output_image = output_packets[i].Get<std::string>();
+    ASSERT_EQ(output_image, test_image_string);
+  }
+}
+
+TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksPostStreamFloatListWithImage) {
+  SetUpCalculator({"FLOAT_FEATURE_FDENSE_MAX:max"}, {});
+  auto input_sequence = absl::make_unique<tf::SequenceExample>();
+  std::string test_video_id = "test_video_id";
+  mpms::SetClipMediaId(test_video_id, input_sequence.get());
+
+  std::string test_image_string = "test_image_string";
+
+  int num_images = 1;
+  for (int i = 0; i < num_images; ++i) {
+    mpms::AddImageTimestamp(i, input_sequence.get());
+    mpms::AddImageEncoded(test_image_string, input_sequence.get());
+  }
+
+  mpms::AddFeatureFloats("FDENSE_MAX", {3.0f, 4.0f}, input_sequence.get());
+  mpms::AddFeatureTimestamp("FDENSE_MAX", Timestamp::PostStream().Value(),
+                            input_sequence.get());
+
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
+      Adopt(input_sequence.release());
+
+  MP_ASSERT_OK(runner_->Run());
+
+  const std::vector<Packet>& fdense_max_packets =
+      runner_->Outputs().Tag(kFloatFeatureFdenseMaxTag).packets;
+  ASSERT_EQ(fdense_max_packets.size(), 1);
+  const auto& fdense_max_vector =
+      fdense_max_packets[0].Get<std::vector<float>>();
+  ASSERT_THAT(fdense_max_vector, ::testing::ElementsAreArray({3.0f, 4.0f}));
+  ASSERT_THAT(fdense_max_packets[0].Timestamp(),
+              ::testing::Eq(Timestamp::PostStream()));
+}
+
+TEST_F(UnpackMediaSequenceCalculatorTest, UnpacksPostStreamFloatListAtPre) {
+  CalculatorOptions options;
+  options.MutableExtension(UnpackMediaSequenceCalculatorOptions::ext)
+      ->set_output_poststream_as_prestream(true);
+  SetUpCalculator({"FLOAT_FEATURE_FDENSE_MAX:max"}, {}, {}, &options);
+  auto input_sequence = absl::make_unique<tf::SequenceExample>();
+  std::string test_video_id = "test_video_id";
+  mpms::SetClipMediaId(test_video_id, input_sequence.get());
+
+  std::string test_image_string = "test_image_string";
+
+  int num_images = 1;
+  for (int i = 0; i < num_images; ++i) {
+    mpms::AddImageTimestamp(i, input_sequence.get());
+    mpms::AddImageEncoded(test_image_string, input_sequence.get());
+  }
+
+  mpms::AddFeatureFloats("FDENSE_MAX", {3.0f, 4.0f}, input_sequence.get());
+  mpms::AddFeatureTimestamp("FDENSE_MAX", Timestamp::PostStream().Value(),
+                            input_sequence.get());
+
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
+      Adopt(input_sequence.release());
+
+  MP_ASSERT_OK(runner_->Run());
+
+  const std::vector<Packet>& fdense_max_packets =
+      runner_->Outputs().Tag(kFloatFeatureFdenseMaxTag).packets;
+  ASSERT_EQ(fdense_max_packets.size(), 1);
+  const auto& fdense_max_vector =
+      fdense_max_packets[0].Get<std::vector<float>>();
+  ASSERT_THAT(fdense_max_vector, ::testing::ElementsAreArray({3.0f, 4.0f}));
+  ASSERT_THAT(fdense_max_packets[0].Timestamp(),
+              ::testing::Eq(Timestamp::PreStream()));
+}
+
 TEST_F(UnpackMediaSequenceCalculatorTest, GetDatasetFromPacket) {
   SetUpCalculator({}, {"DATA_PATH:data_path"}, {"DATASET_ROOT:root"});
 
-  runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
       Adopt(sequence_.release());
 
   std::string root = "test_root";
-  runner_->MutableSidePackets()->Tag("DATASET_ROOT") = PointToForeign(&root);
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  runner_->MutableSidePackets()->Tag(kDatasetRootTag) = PointToForeign(&root);
+  MP_ASSERT_OK(runner_->Run());
 
-  MEDIAPIPE_ASSERT_OK(runner_->OutputSidePackets()
-                          .Tag("DATA_PATH")
-                          .ValidateAsType<std::string>());
-  ASSERT_EQ(runner_->OutputSidePackets().Tag("DATA_PATH").Get<std::string>(),
+  MP_ASSERT_OK(runner_->OutputSidePackets()
+                   .Tag(kDataPathTag)
+                   .ValidateAsType<std::string>());
+  ASSERT_EQ(runner_->OutputSidePackets().Tag(kDataPathTag).Get<std::string>(),
             root + "/" + data_path_);
 }
 
@@ -434,32 +571,90 @@ TEST_F(UnpackMediaSequenceCalculatorTest, GetDatasetFromOptions) {
   options.MutableExtension(UnpackMediaSequenceCalculatorOptions::ext)
       ->set_dataset_root_directory(root);
   SetUpCalculator({}, {"DATA_PATH:data_path"}, {}, &options);
-  runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
       Adopt(sequence_.release());
 
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
-  MEDIAPIPE_ASSERT_OK(runner_->OutputSidePackets()
-                          .Tag("DATA_PATH")
-                          .ValidateAsType<std::string>());
-  ASSERT_EQ(runner_->OutputSidePackets().Tag("DATA_PATH").Get<std::string>(),
+  MP_ASSERT_OK(runner_->OutputSidePackets()
+                   .Tag(kDataPathTag)
+                   .ValidateAsType<std::string>());
+  ASSERT_EQ(runner_->OutputSidePackets().Tag(kDataPathTag).Get<std::string>(),
             root + "/" + data_path_);
 }
 
 TEST_F(UnpackMediaSequenceCalculatorTest, GetDatasetFromExample) {
   SetUpCalculator({}, {"DATA_PATH:data_path"});
-  runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
       Adopt(sequence_.release());
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
-  MEDIAPIPE_ASSERT_OK(runner_->OutputSidePackets()
-                          .Tag("DATA_PATH")
-                          .ValidateAsType<std::string>());
-  ASSERT_EQ(runner_->OutputSidePackets().Tag("DATA_PATH").Get<std::string>(),
+  MP_ASSERT_OK(runner_->OutputSidePackets()
+                   .Tag(kDataPathTag)
+                   .ValidateAsType<std::string>());
+  ASSERT_EQ(runner_->OutputSidePackets().Tag(kDataPathTag).Get<std::string>(),
             data_path_);
 }
 
+TEST_F(UnpackMediaSequenceCalculatorTest, GetAudioDecoderOptions) {
+  CalculatorOptions options;
+  options.MutableExtension(UnpackMediaSequenceCalculatorOptions::ext)
+      ->set_padding_before_label(1);
+  options.MutableExtension(UnpackMediaSequenceCalculatorOptions::ext)
+      ->set_padding_after_label(2);
+  SetUpCalculator({}, {"AUDIO_DECODER_OPTIONS:audio_decoder_options"}, {},
+                  &options);
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
+      Adopt(sequence_.release());
+  MP_ASSERT_OK(runner_->Run());
+
+  MP_EXPECT_OK(runner_->OutputSidePackets()
+                   .Tag(kAudioDecoderOptionsTag)
+                   .ValidateAsType<AudioDecoderOptions>());
+  EXPECT_NEAR(runner_->OutputSidePackets()
+                  .Tag(kAudioDecoderOptionsTag)
+                  .Get<AudioDecoderOptions>()
+                  .start_time(),
+              2.0, 1e-5);
+  EXPECT_NEAR(runner_->OutputSidePackets()
+                  .Tag(kAudioDecoderOptionsTag)
+                  .Get<AudioDecoderOptions>()
+                  .end_time(),
+              7.0, 1e-5);
+}
+
+TEST_F(UnpackMediaSequenceCalculatorTest, GetAudioDecoderOptionsOverride) {
+  CalculatorOptions options;
+  options.MutableExtension(UnpackMediaSequenceCalculatorOptions::ext)
+      ->set_padding_before_label(1);
+  options.MutableExtension(UnpackMediaSequenceCalculatorOptions::ext)
+      ->set_padding_after_label(2);
+  options.MutableExtension(UnpackMediaSequenceCalculatorOptions::ext)
+      ->set_force_decoding_from_start_of_media(true);
+  SetUpCalculator({}, {"AUDIO_DECODER_OPTIONS:audio_decoder_options"}, {},
+                  &options);
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
+      Adopt(sequence_.release());
+  MP_ASSERT_OK(runner_->Run());
+
+  MP_EXPECT_OK(runner_->OutputSidePackets()
+                   .Tag(kAudioDecoderOptionsTag)
+                   .ValidateAsType<AudioDecoderOptions>());
+  EXPECT_NEAR(runner_->OutputSidePackets()
+                  .Tag(kAudioDecoderOptionsTag)
+                  .Get<AudioDecoderOptions>()
+                  .start_time(),
+              0.0, 1e-5);
+  EXPECT_NEAR(runner_->OutputSidePackets()
+                  .Tag(kAudioDecoderOptionsTag)
+                  .Get<AudioDecoderOptions>()
+                  .end_time(),
+              7.0, 1e-5);
+}
+
 TEST_F(UnpackMediaSequenceCalculatorTest, GetPacketResamplingOptions) {
+  // TODO: Suport proto3 proto.Any in CalculatorOptions.
+  // TODO: Avoid proto2 extensions in "RESAMPLER_OPTIONS".
   CalculatorOptions options;
   options.MutableExtension(UnpackMediaSequenceCalculatorOptions::ext)
       ->set_padding_before_label(1);
@@ -469,27 +664,27 @@ TEST_F(UnpackMediaSequenceCalculatorTest, GetPacketResamplingOptions) {
       ->mutable_base_packet_resampler_options()
       ->set_frame_rate(1.0);
   SetUpCalculator({}, {"RESAMPLER_OPTIONS:resampler_options"}, {}, &options);
-  runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
       Adopt(sequence_.release());
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
+  MP_ASSERT_OK(runner_->Run());
 
-  MEDIAPIPE_EXPECT_OK(runner_->OutputSidePackets()
-                          .Tag("RESAMPLER_OPTIONS")
-                          .ValidateAsType<CalculatorOptions>());
+  MP_EXPECT_OK(runner_->OutputSidePackets()
+                   .Tag(kResamplerOptionsTag)
+                   .ValidateAsType<CalculatorOptions>());
   EXPECT_NEAR(runner_->OutputSidePackets()
-                  .Tag("RESAMPLER_OPTIONS")
+                  .Tag(kResamplerOptionsTag)
                   .Get<CalculatorOptions>()
                   .GetExtension(PacketResamplerCalculatorOptions::ext)
                   .start_time(),
               2000000, 1);
   EXPECT_NEAR(runner_->OutputSidePackets()
-                  .Tag("RESAMPLER_OPTIONS")
+                  .Tag(kResamplerOptionsTag)
                   .Get<CalculatorOptions>()
                   .GetExtension(PacketResamplerCalculatorOptions::ext)
                   .end_time(),
               7000000, 1);
   EXPECT_NEAR(runner_->OutputSidePackets()
-                  .Tag("RESAMPLER_OPTIONS")
+                  .Tag(kResamplerOptionsTag)
                   .Get<CalculatorOptions>()
                   .GetExtension(PacketResamplerCalculatorOptions::ext)
                   .frame_rate(),
@@ -498,14 +693,38 @@ TEST_F(UnpackMediaSequenceCalculatorTest, GetPacketResamplingOptions) {
 
 TEST_F(UnpackMediaSequenceCalculatorTest, GetFrameRateFromExample) {
   SetUpCalculator({}, {"IMAGE_FRAME_RATE:frame_rate"});
-  runner_->MutableSidePackets()->Tag("SEQUENCE_EXAMPLE") =
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
       Adopt(sequence_.release());
-  MEDIAPIPE_ASSERT_OK(runner_->Run());
-  MEDIAPIPE_EXPECT_OK(runner_->OutputSidePackets()
-                          .Tag("IMAGE_FRAME_RATE")
-                          .ValidateAsType<double>());
-  EXPECT_EQ(runner_->OutputSidePackets().Tag("IMAGE_FRAME_RATE").Get<double>(),
+  MP_ASSERT_OK(runner_->Run());
+  MP_EXPECT_OK(runner_->OutputSidePackets()
+                   .Tag(kImageFrameRateTag)
+                   .ValidateAsType<double>());
+  EXPECT_EQ(runner_->OutputSidePackets().Tag(kImageFrameRateTag).Get<double>(),
             image_frame_rate_);
+}
+
+TEST_F(UnpackMediaSequenceCalculatorTest, DoesNotCrashOnMissingFrames) {
+  SetUpCalculator({"IMAGE:images"}, {});
+  auto input_sequence = std::make_unique<tf::SequenceExample>();
+  std::string test_video_id = "test_video_id";
+  mpms::SetClipMediaId(test_video_id, input_sequence.get());
+
+  std::string test_image_string = "test_image_string";
+
+  int num_images = 1;
+  for (int i = 0; i < num_images; ++i) {
+    // Add Timestamps but not Images.
+    mpms::AddImageTimestamp(i, input_sequence.get());
+  }
+
+  runner_->MutableSidePackets()->Tag(kSequenceExampleTag) =
+      Adopt(input_sequence.release());
+
+  MP_ASSERT_OK(runner_->Run());
+
+  const std::vector<Packet>& output_packets =
+      runner_->Outputs().Tag(kImageTag).packets;
+  ASSERT_EQ(0, output_packets.size());
 }
 
 }  // namespace

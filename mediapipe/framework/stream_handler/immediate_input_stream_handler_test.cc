@@ -18,9 +18,11 @@
 #include <vector>
 
 #include "absl/base/macros.h"
+#include "absl/log/absl_check.h"
 #include "absl/memory/memory.h"
 #include "mediapipe/framework/calculator_context.h"
 #include "mediapipe/framework/calculator_context_manager.h"
+#include "mediapipe/framework/calculator_state.h"
 #include "mediapipe/framework/input_stream_handler.h"
 #include "mediapipe/framework/port/gmock.h"
 #include "mediapipe/framework/port/gtest.h"
@@ -57,7 +59,7 @@ class ImmediateInputStreamHandlerTest : public ::testing::Test {
                   std::placeholders::_1, std::placeholders::_2);
 
     std::shared_ptr<tool::TagMap> input_tag_map =
-        tool::CreateTagMap({"input_a", "input_b", "input_c"}).ValueOrDie();
+        tool::CreateTagMap({"input_a", "input_b", "input_c"}).value();
 
     input_stream_managers_.reset(
         new InputStreamManager[input_tag_map->NumEntries()]);
@@ -74,24 +76,25 @@ class ImmediateInputStreamHandlerTest : public ::testing::Test {
 
   void SetupInputStreamHandler(
       const std::shared_ptr<tool::TagMap>& input_tag_map) {
-    calculator_state_ = absl::make_unique<CalculatorState>(
+    calculator_state_ = std::make_unique<CalculatorState>(
         "Node", /*node_id=*/0, "Calculator", CalculatorGraphConfig::Node(),
-        nullptr);
+        /*profiling_context=*/nullptr,
+        /*graph_service_manager=*/nullptr);
     cc_manager_.Initialize(
         calculator_state_.get(), input_tag_map,
-        /*output_tag_map=*/tool::CreateTagMap({"output_a"}).ValueOrDie(),
+        /*output_tag_map=*/tool::CreateTagMap({"output_a"}).value(),
         /*calculator_run_in_parallel=*/false);
 
-    mediapipe::StatusOr<std::unique_ptr<mediapipe::InputStreamHandler>>
+    absl::StatusOr<std::unique_ptr<mediapipe::InputStreamHandler>>
         status_or_handler = InputStreamHandlerRegistry::CreateByName(
             "ImmediateInputStreamHandler", input_tag_map, &cc_manager_,
             MediaPipeOptions(),
             /*calculator_run_in_parallel=*/false);
     ASSERT_TRUE(status_or_handler.ok());
-    input_stream_handler_ = std::move(status_or_handler.ValueOrDie());
-    MEDIAPIPE_ASSERT_OK(input_stream_handler_->InitializeInputStreamManagers(
+    input_stream_handler_ = std::move(status_or_handler.value());
+    MP_ASSERT_OK(input_stream_handler_->InitializeInputStreamManagers(
         input_stream_managers_.get()));
-    MEDIAPIPE_ASSERT_OK(cc_manager_.PrepareForRun(setup_shards_callback_));
+    MP_ASSERT_OK(cc_manager_.PrepareForRun(setup_shards_callback_));
     input_stream_handler_->PrepareForRun(headers_ready_callback_,
                                          notification_callback_,
                                          schedule_callback_, error_callback_);
@@ -104,16 +107,14 @@ class ImmediateInputStreamHandlerTest : public ::testing::Test {
   void NotifyNoOp() {}
 
   void Schedule(CalculatorContext* cc) {
-    CHECK(cc);
+    ABSL_CHECK(cc);
     cc_ = cc;
   }
 
-  void RecordError(const ::mediapipe::Status& error) {
-    errors_.push_back(error);
-  }
+  void RecordError(const absl::Status& error) { errors_.push_back(error); }
 
-  ::mediapipe::Status SetupShardsNoOp(CalculatorContext* calculator_context) {
-    return ::mediapipe::OkStatus();
+  absl::Status SetupShardsNoOp(CalculatorContext* calculator_context) {
+    return absl::OkStatus();
   }
 
   void ReportQueueNoOp(InputStreamManager* stream, bool* stream_was_full) {}
@@ -123,27 +124,32 @@ class ImmediateInputStreamHandlerTest : public ::testing::Test {
       const std::map<std::string, std::string>& expected_values) {
     for (const auto& name_and_id : name_to_id_) {
       const InputStream& input_stream = input_set.Get(name_and_id.second);
-      if (::mediapipe::ContainsKey(expected_values, name_and_id.first)) {
+      if (mediapipe::ContainsKey(expected_values, name_and_id.first)) {
         ASSERT_FALSE(input_stream.Value().IsEmpty());
         EXPECT_EQ(input_stream.Value().Get<std::string>(),
-                  ::mediapipe::FindOrDie(expected_values, name_and_id.first));
+                  mediapipe::FindOrDie(expected_values, name_and_id.first));
       } else {
         EXPECT_TRUE(input_stream.Value().IsEmpty());
       }
     }
   }
 
+  const InputStream& Input(const CollectionItemId& id) {
+    ABSL_CHECK(cc_);
+    return cc_->Inputs().Get(id);
+  }
+
   PacketType packet_type_;
   std::function<void()> headers_ready_callback_;
   std::function<void()> notification_callback_;
   std::function<void(CalculatorContext*)> schedule_callback_;
-  std::function<void(::mediapipe::Status)> error_callback_;
-  std::function<::mediapipe::Status(CalculatorContext*)> setup_shards_callback_;
+  std::function<void(absl::Status)> error_callback_;
+  std::function<absl::Status(CalculatorContext*)> setup_shards_callback_;
   InputStreamManager::QueueSizeCallback queue_full_callback_;
   InputStreamManager::QueueSizeCallback queue_not_full_callback_;
 
   // Vector of errors encountered while using the stream.
-  std::vector<::mediapipe::Status> errors_;
+  std::vector<absl::Status> errors_;
 
   std::unique_ptr<CalculatorState> calculator_state_;
   CalculatorContextManager cc_manager_;
@@ -227,6 +233,43 @@ TEST_F(ImmediateInputStreamHandlerTest, StreamDoneReady) {
   input_stream_handler_->ClearCurrentInputs(cc_);
 }
 
+// This test checks that the state is ReadyForClose after all streams reach
+// Timestamp::Max.
+TEST_F(ImmediateInputStreamHandlerTest, ReadyForCloseAfterTimestampMax) {
+  Timestamp min_stream_timestamp;
+  std::list<Packet> packets;
+
+  // One packet arrives, ready for process.
+  packets.push_back(Adopt(new std::string("packet 1")).At(Timestamp(10)));
+  input_stream_handler_->AddPackets(name_to_id_["input_a"], packets);
+  EXPECT_TRUE(input_stream_handler_->ScheduleInvocations(
+      /*max_allowance=*/1, &min_stream_timestamp));
+  EXPECT_EQ(Timestamp(10), cc_->InputTimestamp());
+  input_stream_handler_->FinalizeInputSet(cc_->InputTimestamp(),
+                                          &cc_->Inputs());
+  input_stream_handler_->ClearCurrentInputs(cc_);
+
+  // No packets arrive, not ready.
+  EXPECT_FALSE(input_stream_handler_->ScheduleInvocations(
+      /*max_allowance=*/1, &min_stream_timestamp));
+  EXPECT_EQ(Timestamp::Unset(), cc_->InputTimestamp());
+
+  // Timestamp::Max arrives, ready for close.
+  input_stream_handler_->SetNextTimestampBound(
+      name_to_id_["input_a"], Timestamp::Max().NextAllowedInStream());
+  input_stream_handler_->SetNextTimestampBound(
+      name_to_id_["input_b"], Timestamp::Max().NextAllowedInStream());
+  input_stream_handler_->SetNextTimestampBound(
+      name_to_id_["input_c"], Timestamp::Max().NextAllowedInStream());
+
+  EXPECT_TRUE(input_stream_handler_->ScheduleInvocations(
+      /*max_allowance=*/1, &min_stream_timestamp));
+  EXPECT_EQ(Timestamp::Done(), cc_->InputTimestamp());
+  input_stream_handler_->FinalizeInputSet(cc_->InputTimestamp(),
+                                          &cc_->Inputs());
+  input_stream_handler_->ClearCurrentInputs(cc_);
+}
+
 // This test checks that when any stream is done, the state is ready to close.
 TEST_F(ImmediateInputStreamHandlerTest, ReadyForClose) {
   Timestamp min_stream_timestamp;
@@ -260,6 +303,344 @@ TEST_F(ImmediateInputStreamHandlerTest, ReadyForClose) {
                                           &cc_->Inputs());
   ExpectPackets(cc_->Inputs(), {});
   EXPECT_TRUE(errors_.empty());
+}
+
+TEST_F(ImmediateInputStreamHandlerTest, ProcessTimestampBounds) {
+  input_stream_handler_->SetProcessTimestampBounds(true);
+
+  Timestamp min_stream_timestamp;
+  ASSERT_FALSE(input_stream_handler_->ScheduleInvocations(
+      /*max_allowance=*/1, &min_stream_timestamp));
+  EXPECT_EQ(min_stream_timestamp, Timestamp::PreStream());
+
+  const auto& input_a_id = name_to_id_["input_a"];
+  const auto& input_b_id = name_to_id_["input_b"];
+  const auto& input_c_id = name_to_id_["input_c"];
+
+  std::list<Packet> packets;
+  packets.push_back(Adopt(new std::string("packet 1")).At(Timestamp(1)));
+  input_stream_handler_->AddPackets(input_b_id, packets);
+  input_stream_handler_->SetNextTimestampBound(input_b_id, Timestamp::Done());
+
+  ASSERT_TRUE(input_stream_handler_->ScheduleInvocations(
+      /*max_allowance=*/1, &min_stream_timestamp));
+  EXPECT_EQ(min_stream_timestamp, Timestamp::Unset());
+  EXPECT_EQ(cc_->InputTimestamp(), Timestamp(1));
+  ExpectPackets(cc_->Inputs(), {{"input_b", "packet 1"}});
+  EXPECT_EQ(Input(input_b_id).Value().Timestamp(), Timestamp(1));
+  EXPECT_TRUE(Input(input_a_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_a_id).Value().Timestamp(), Timestamp::Unstarted());
+  EXPECT_TRUE(Input(input_c_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_c_id).Value().Timestamp(), Timestamp::Unstarted());
+
+  // FinalizeInputSet() is a no-op.
+  input_stream_handler_->FinalizeInputSet(cc_->InputTimestamp(),
+                                          &cc_->Inputs());
+  input_stream_handler_->ClearCurrentInputs(cc_);
+
+  ASSERT_TRUE(input_stream_handler_->ScheduleInvocations(
+      /*max_allowance=*/1, &min_stream_timestamp));
+  EXPECT_EQ(min_stream_timestamp, Timestamp::Unset());
+  EXPECT_EQ(cc_->InputTimestamp(), Timestamp::Max());
+  EXPECT_TRUE(Input(input_b_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_b_id).Value().Timestamp(), Timestamp::Max());
+  EXPECT_TRUE(Input(input_a_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_a_id).Value().Timestamp(), Timestamp::Unstarted());
+  EXPECT_TRUE(Input(input_c_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_c_id).Value().Timestamp(), Timestamp::Unstarted());
+
+  // FinalizeInputSet() is a no-op.
+  input_stream_handler_->FinalizeInputSet(cc_->InputTimestamp(),
+                                          &cc_->Inputs());
+  input_stream_handler_->ClearCurrentInputs(cc_);
+
+  EXPECT_TRUE(
+      input_stream_handler_->GetInputStreamManager(input_b_id)->IsEmpty());
+
+  input_stream_handler_->SetNextTimestampBound(input_a_id, Timestamp::Done());
+  input_stream_handler_->SetNextTimestampBound(input_c_id, Timestamp::Done());
+
+  ASSERT_TRUE(input_stream_handler_->ScheduleInvocations(
+      /*max_allowance=*/1, &min_stream_timestamp));
+  EXPECT_EQ(min_stream_timestamp, Timestamp::Unset());
+  EXPECT_EQ(cc_->InputTimestamp(), Timestamp::Max());
+  EXPECT_TRUE(Input(input_b_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_b_id).Value().Timestamp(), Timestamp::Max());
+  EXPECT_TRUE(Input(input_a_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_a_id).Value().Timestamp(), Timestamp::Max());
+  EXPECT_TRUE(Input(input_c_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_c_id).Value().Timestamp(), Timestamp::Max());
+
+  input_stream_handler_->FinalizeInputSet(cc_->InputTimestamp(),
+                                          &cc_->Inputs());
+  input_stream_handler_->ClearCurrentInputs(cc_);
+  EXPECT_TRUE(errors_.empty());
+
+  // Schedule invocation for Close.
+  ASSERT_TRUE(input_stream_handler_->ScheduleInvocations(
+      /*max_allowance=*/1, &min_stream_timestamp));
+  EXPECT_EQ(min_stream_timestamp, Timestamp::Unset());
+  EXPECT_EQ(cc_->InputTimestamp(), Timestamp::Done());
+  EXPECT_TRUE(Input(input_b_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_b_id).Value().Timestamp(), Timestamp::Unset());
+  EXPECT_TRUE(Input(input_a_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_a_id).Value().Timestamp(), Timestamp::Unset());
+  EXPECT_TRUE(Input(input_c_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_c_id).Value().Timestamp(), Timestamp::Unset());
+
+  input_stream_handler_->FinalizeInputSet(cc_->InputTimestamp(),
+                                          &cc_->Inputs());
+  input_stream_handler_->ClearCurrentInputs(cc_);
+  EXPECT_TRUE(errors_.empty());
+}
+
+TEST_F(ImmediateInputStreamHandlerTest,
+       ProcessTimestampBoundsNoOpScheduleInvocations) {
+  input_stream_handler_->SetProcessTimestampBounds(true);
+
+  const auto& input_a_id = name_to_id_["input_a"];
+  const auto& input_b_id = name_to_id_["input_b"];
+  const auto& input_c_id = name_to_id_["input_c"];
+
+  Timestamp min_stream_timestamp;
+  std::list<Packet> packets;
+  packets.push_back(Adopt(new std::string("packet 1")).At(Timestamp(1)));
+  input_stream_handler_->AddPackets(input_b_id, packets);
+  ASSERT_TRUE(input_stream_handler_->ScheduleInvocations(
+      /*max_allowance=*/1, &min_stream_timestamp));
+  EXPECT_EQ(min_stream_timestamp, Timestamp::Unset());
+  EXPECT_EQ(cc_->InputTimestamp(), Timestamp(1));
+  ExpectPackets(cc_->Inputs(), {{"input_b", "packet 1"}});
+  EXPECT_EQ(Input(input_b_id).Value().Timestamp(), Timestamp(1));
+  EXPECT_TRUE(Input(input_a_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_a_id).Value().Timestamp(), Timestamp::Unstarted());
+  EXPECT_TRUE(Input(input_c_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_c_id).Value().Timestamp(), Timestamp::Unstarted());
+
+  // FinalizeInputSet() is a no-op.
+  input_stream_handler_->FinalizeInputSet(cc_->InputTimestamp(),
+                                          &cc_->Inputs());
+  input_stream_handler_->ClearCurrentInputs(cc_);
+
+  input_stream_handler_->SetNextTimestampBound(input_a_id, Timestamp::Done());
+  input_stream_handler_->SetNextTimestampBound(input_c_id, Timestamp::Done());
+
+  ASSERT_TRUE(input_stream_handler_->ScheduleInvocations(
+      /*max_allowance=*/1, &min_stream_timestamp));
+  EXPECT_EQ(min_stream_timestamp, Timestamp::Unset());
+  EXPECT_EQ(cc_->InputTimestamp(), Timestamp::Max());
+  EXPECT_TRUE(Input(input_b_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_b_id).Value().Timestamp(), Timestamp(1));
+  EXPECT_TRUE(Input(input_a_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_a_id).Value().Timestamp(), Timestamp::Max());
+  EXPECT_TRUE(Input(input_c_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_c_id).Value().Timestamp(), Timestamp::Max());
+
+  input_stream_handler_->FinalizeInputSet(cc_->InputTimestamp(),
+                                          &cc_->Inputs());
+  input_stream_handler_->ClearCurrentInputs(cc_);
+  EXPECT_TRUE(errors_.empty());
+
+  // Try to schedule invocations several times again. Considering nothing
+  // changed since last invocation nothing should be scheduled.
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_FALSE(input_stream_handler_->ScheduleInvocations(
+        /*max_allowance=*/1, &min_stream_timestamp));
+    EXPECT_EQ(min_stream_timestamp, Timestamp(2));
+    EXPECT_TRUE(Input(input_b_id).Value().IsEmpty());
+    EXPECT_EQ(Input(input_b_id).Value().Timestamp(), Timestamp::Unset());
+    EXPECT_TRUE(Input(input_a_id).Value().IsEmpty());
+    EXPECT_EQ(Input(input_a_id).Value().Timestamp(), Timestamp::Unset());
+    EXPECT_TRUE(Input(input_c_id).Value().IsEmpty());
+    EXPECT_EQ(Input(input_c_id).Value().Timestamp(), Timestamp::Unset());
+  }
+
+  input_stream_handler_->SetNextTimestampBound(input_b_id, Timestamp::Done());
+
+  ASSERT_TRUE(input_stream_handler_->ScheduleInvocations(
+      /*max_allowance=*/1, &min_stream_timestamp));
+  EXPECT_EQ(min_stream_timestamp, Timestamp::Unset());
+  EXPECT_EQ(cc_->InputTimestamp(), Timestamp::Max());
+  EXPECT_TRUE(Input(input_b_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_b_id).Value().Timestamp(), Timestamp::Max());
+  EXPECT_TRUE(Input(input_a_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_a_id).Value().Timestamp(), Timestamp::Max());
+  EXPECT_TRUE(Input(input_c_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_c_id).Value().Timestamp(), Timestamp::Max());
+
+  input_stream_handler_->FinalizeInputSet(cc_->InputTimestamp(),
+                                          &cc_->Inputs());
+  input_stream_handler_->ClearCurrentInputs(cc_);
+  EXPECT_TRUE(errors_.empty());
+
+  // Schedule invocation for Close.
+  ASSERT_TRUE(input_stream_handler_->ScheduleInvocations(
+      /*max_allowance=*/1, &min_stream_timestamp));
+  EXPECT_EQ(min_stream_timestamp, Timestamp::Unset());
+  EXPECT_EQ(cc_->InputTimestamp(), Timestamp::Done());
+  EXPECT_TRUE(Input(input_b_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_b_id).Value().Timestamp(), Timestamp::Unset());
+  EXPECT_TRUE(Input(input_a_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_a_id).Value().Timestamp(), Timestamp::Unset());
+  EXPECT_TRUE(Input(input_c_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_c_id).Value().Timestamp(), Timestamp::Unset());
+
+  input_stream_handler_->FinalizeInputSet(cc_->InputTimestamp(),
+                                          &cc_->Inputs());
+  input_stream_handler_->ClearCurrentInputs(cc_);
+  EXPECT_TRUE(errors_.empty());
+
+  // Try to schedule invocations several times again. Considering nothing
+  // changed since last invocation nothing should be scheduled.
+  for (int i = 0; i < 3; ++i) {
+    ASSERT_FALSE(input_stream_handler_->ScheduleInvocations(
+        /*max_allowance=*/1, &min_stream_timestamp));
+    EXPECT_EQ(min_stream_timestamp, Timestamp::Unset());
+    EXPECT_TRUE(Input(input_b_id).Value().IsEmpty());
+    EXPECT_EQ(Input(input_b_id).Value().Timestamp(), Timestamp::Unset());
+    EXPECT_TRUE(Input(input_a_id).Value().IsEmpty());
+    EXPECT_EQ(Input(input_a_id).Value().Timestamp(), Timestamp::Unset());
+    EXPECT_TRUE(Input(input_c_id).Value().IsEmpty());
+    EXPECT_EQ(Input(input_c_id).Value().Timestamp(), Timestamp::Unset());
+  }
+}
+
+// Due to some temporary changes in ImmediateInputStreamHandler some packets
+// - were queued but never released
+// - were released in incorrect order
+// As other test cases were passing, this test case is designed to ensure that.
+TEST_F(ImmediateInputStreamHandlerTest, VerifyPacketsReleaseOrder) {
+  input_stream_handler_->SetProcessTimestampBounds(true);
+
+  const auto& input_a_id = name_to_id_["input_a"];
+  const auto& input_b_id = name_to_id_["input_b"];
+  const auto& input_c_id = name_to_id_["input_c"];
+
+  Packet packet_a = Adopt(new std::string("packet a"));
+  Packet packet_b = Adopt(new std::string("packet b"));
+  Packet packet_c = Adopt(new std::string("packet c"));
+  input_stream_handler_->AddPackets(input_a_id, {packet_a.At(Timestamp(1))});
+  input_stream_handler_->AddPackets(input_b_id, {packet_b.At(Timestamp(2))});
+  input_stream_handler_->AddPackets(input_c_id, {packet_c.At(Timestamp(3))});
+
+  Timestamp min_stream_timestamp;
+  ASSERT_TRUE(input_stream_handler_->ScheduleInvocations(
+      /*max_allowance=*/1, &min_stream_timestamp));
+  EXPECT_EQ(min_stream_timestamp, Timestamp::Unset());
+  EXPECT_EQ(cc_->InputTimestamp(), Timestamp(1));
+  ASSERT_FALSE(Input(input_a_id).IsEmpty());
+  EXPECT_EQ(Input(input_a_id).Get<std::string>(), "packet a");
+  EXPECT_EQ(Input(input_a_id).Value().Timestamp(), Timestamp(1));
+  EXPECT_TRUE(Input(input_b_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_b_id).Value().Timestamp(), Timestamp(1));
+  EXPECT_TRUE(Input(input_c_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_c_id).Value().Timestamp(), Timestamp(2));
+
+  // FinalizeInputSet() is a no-op.
+  input_stream_handler_->FinalizeInputSet(cc_->InputTimestamp(),
+                                          &cc_->Inputs());
+  input_stream_handler_->ClearCurrentInputs(cc_);
+
+  input_stream_handler_->AddPackets(input_a_id, {packet_a.At(Timestamp(5))});
+  input_stream_handler_->AddPackets(input_b_id, {packet_b.At(Timestamp(5))});
+  input_stream_handler_->AddPackets(input_c_id, {packet_c.At(Timestamp(5))});
+
+  ASSERT_TRUE(input_stream_handler_->ScheduleInvocations(
+      /*max_allowance=*/1, &min_stream_timestamp));
+  EXPECT_EQ(min_stream_timestamp, Timestamp::Unset());
+  EXPECT_EQ(cc_->InputTimestamp(), Timestamp(2));
+  EXPECT_TRUE(Input(input_a_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_a_id).Value().Timestamp(), Timestamp(4));
+  ASSERT_FALSE(Input(input_b_id).IsEmpty());
+  EXPECT_EQ(Input(input_b_id).Get<std::string>(), "packet b");
+  EXPECT_EQ(Input(input_b_id).Value().Timestamp(), Timestamp(2));
+  EXPECT_TRUE(Input(input_c_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_c_id).Value().Timestamp(), Timestamp(2));
+
+  // FinalizeInputSet() is a no-op.
+  input_stream_handler_->FinalizeInputSet(cc_->InputTimestamp(),
+                                          &cc_->Inputs());
+  input_stream_handler_->ClearCurrentInputs(cc_);
+
+  ASSERT_TRUE(input_stream_handler_->ScheduleInvocations(
+      /*max_allowance=*/1, &min_stream_timestamp));
+  EXPECT_EQ(min_stream_timestamp, Timestamp::Unset());
+  EXPECT_EQ(cc_->InputTimestamp(), Timestamp(3));
+  EXPECT_TRUE(Input(input_a_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_a_id).Value().Timestamp(), Timestamp(4));
+  EXPECT_TRUE(Input(input_b_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_b_id).Value().Timestamp(), Timestamp(4));
+  ASSERT_FALSE(Input(input_c_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_c_id).Get<std::string>(), "packet c");
+  EXPECT_EQ(Input(input_c_id).Value().Timestamp(), Timestamp(3));
+
+  // FinalizeInputSet() is a no-op.
+  input_stream_handler_->FinalizeInputSet(cc_->InputTimestamp(),
+                                          &cc_->Inputs());
+  input_stream_handler_->ClearCurrentInputs(cc_);
+
+  ASSERT_TRUE(input_stream_handler_->ScheduleInvocations(
+      /*max_allowance=*/1, &min_stream_timestamp));
+  EXPECT_EQ(min_stream_timestamp, Timestamp::Unset());
+  EXPECT_EQ(cc_->InputTimestamp(), Timestamp(5));
+  ASSERT_FALSE(Input(input_a_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_a_id).Get<std::string>(), "packet a");
+  EXPECT_EQ(Input(input_a_id).Value().Timestamp(), Timestamp(5));
+  ASSERT_FALSE(Input(input_b_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_b_id).Get<std::string>(), "packet b");
+  EXPECT_EQ(Input(input_b_id).Value().Timestamp(), Timestamp(5));
+  ASSERT_FALSE(Input(input_c_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_c_id).Get<std::string>(), "packet c");
+  EXPECT_EQ(Input(input_c_id).Value().Timestamp(), Timestamp(5));
+
+  input_stream_handler_->FinalizeInputSet(cc_->InputTimestamp(),
+                                          &cc_->Inputs());
+  input_stream_handler_->ClearCurrentInputs(cc_);
+
+  input_stream_handler_->SetNextTimestampBound(input_a_id, Timestamp::Done());
+  input_stream_handler_->SetNextTimestampBound(input_b_id, Timestamp::Done());
+  input_stream_handler_->SetNextTimestampBound(input_c_id, Timestamp::Done());
+
+  ASSERT_TRUE(input_stream_handler_->ScheduleInvocations(
+      /*max_allowance=*/1, &min_stream_timestamp));
+  EXPECT_EQ(min_stream_timestamp, Timestamp::Unset());
+  EXPECT_EQ(cc_->InputTimestamp(), Timestamp::Max());
+  EXPECT_TRUE(Input(input_b_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_b_id).Value().Timestamp(), Timestamp::Max());
+  EXPECT_TRUE(Input(input_a_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_a_id).Value().Timestamp(), Timestamp::Max());
+  EXPECT_TRUE(Input(input_c_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_c_id).Value().Timestamp(), Timestamp::Max());
+
+  input_stream_handler_->FinalizeInputSet(cc_->InputTimestamp(),
+                                          &cc_->Inputs());
+  input_stream_handler_->ClearCurrentInputs(cc_);
+
+  // Schedule invocation for Close.
+  ASSERT_TRUE(input_stream_handler_->ScheduleInvocations(
+      /*max_allowance=*/1, &min_stream_timestamp));
+  EXPECT_EQ(min_stream_timestamp, Timestamp::Unset());
+  EXPECT_EQ(cc_->InputTimestamp(), Timestamp::Done());
+  EXPECT_TRUE(Input(input_b_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_b_id).Value().Timestamp(), Timestamp::Unset());
+  EXPECT_TRUE(Input(input_a_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_a_id).Value().Timestamp(), Timestamp::Unset());
+  EXPECT_TRUE(Input(input_c_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_c_id).Value().Timestamp(), Timestamp::Unset());
+
+  input_stream_handler_->FinalizeInputSet(cc_->InputTimestamp(),
+                                          &cc_->Inputs());
+  input_stream_handler_->ClearCurrentInputs(cc_);
+
+  ASSERT_FALSE(input_stream_handler_->ScheduleInvocations(
+      /*max_allowance=*/1, &min_stream_timestamp));
+  EXPECT_EQ(min_stream_timestamp, Timestamp::Unset());
+  EXPECT_TRUE(Input(input_b_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_b_id).Value().Timestamp(), Timestamp::Unset());
+  EXPECT_TRUE(Input(input_a_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_a_id).Value().Timestamp(), Timestamp::Unset());
+  EXPECT_TRUE(Input(input_c_id).Value().IsEmpty());
+  EXPECT_EQ(Input(input_c_id).Value().Timestamp(), Timestamp::Unset());
 }
 
 // This test simulates how CalculatorNode::ProcessNode() uses an input

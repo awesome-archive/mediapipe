@@ -37,8 +37,8 @@
 // The clip label group adds labels that apply to the entire media clip. To
 // annotate that a video clip has a particular label, set the clip metadata
 // above and also set the SetClipLabelIndex and SetClipLabelString. Most
-// training pipelines will only use the label index or std::string, but we
-// recommend storing both to improve readability while maintaining ease of use.
+// training pipelines will only use the label index or string, but we recommend
+// storing both to improve readability while maintaining ease of use.
 // Example:
 //   SetClipLabelString({"run", "jump"}, &sequence);
 //   SetClipLabelIndex({35, 47}, &sequence);
@@ -49,10 +49,11 @@
 // are called segments. To annotate that a video clip has time spans with labels
 // set the clip metadata above and use the functions SetSegmentStartTimestamp,
 // SetSegmentEndTimestamp, SetSegmentLabelIndex, and SetSegmentLabelString. Most
-// training pipelines will only use the label index or std::string, but we
-// recommend storing both to improve readability while maintaining ease of use.
-// By listing segments as times, the frame rate or other properties can change
-// without affecting the labels. Example:
+// training pipelines will only use the label index or string, but we recommend
+// storing both to improve readability while maintaining ease of use. By listing
+// segments as times, the frame rate or other properties can change without
+// affecting the labels.
+// Example:
 //   SetSegmentStartTimestamp({500000, 1000000}, &sequence);  // in microseconds
 //   SetSegmentEndTimestamp({2000000, 6000000}, &sequence);
 //   SetSegmentLabelIndex({35, 47}, &sequence);
@@ -63,7 +64,7 @@
 // needed can vary by task, but to annotate a video clip for detection set the
 // clip metadata above and use repeatedly call AddBBox, AddBBoxTimestamp,
 // AddBBoxLabelIndex, and AddBBoxLabelString. Most training pipelines will only
-// use the label index or std::string, but we recommend storing both to improve
+// use the label index or string, but we recommend storing both to improve
 // readability while maintaining ease of use. Because bounding boxes are
 // assigned to timepoints in a video, changing the image frame rate can can
 // change the alignment. The ReconcileMetadata function can align bounding boxes
@@ -100,7 +101,7 @@
 //   tensorflow::SequenceExample example;
 //   SetDataPath("data_path", &example);
 //   if (HasDataPath(example)) {
-//      std::string data_path = GetDataPath(example);
+//      string data_path = GetDataPath(example);
 //      ClearDataPath(&example);
 //   }
 //
@@ -112,7 +113,7 @@
 //   tensorflow::SequenceExample example;
 //   SetClipLabelString({"run", "jump"}, &example);
 //   if (HasClipLabelString(example)) {
-//      ::std::vector<std::string> values = GetClipLabelString(example);
+//      std::vector<std::string> values = GetClipLabelString(example);
 //      ClearClipLabelString(&example);
 //   }
 //
@@ -140,19 +141,18 @@
 //   AddBBoxLabelString({"run", "fall"}, &example);
 //   if (HasBBoxLabelString(example)) {
 //     for (int i = 0; i < GetBBoxLabelStringSize(); ++i) {
-//       ::std::vector<std::string> labels = GetBBoxLabelStringAt(example, i);
+//       std::vector<std::string> labels = GetBBoxLabelStringAt(example, i);
 //     }
 //     ClearBBoxLabelString(&example);
 //   }
 //
 // As described in media_sequence_util.h, each of these functions can take an
-// additional std::string prefix argument as their first argument. The prefix
-// can be fixed with a new NAME by calling a FIXED_PREFIX_... macro. Prefixes
-// are used to identify common storage patterns (e.g. storing an image along
-// with the height and width) under different names (e.g. storing a left and
-// right image in a stereo pair.) An example creating functions such as
-// AddLeftImageEncoded that adds a std::string under the key
-// "LEFT/image/encoded":
+// additional string prefix argument as their first argument. The prefix can
+// be fixed with a new NAME by calling a FIXED_PREFIX_... macro. Prefixes are
+// used to identify common storage patterns (e.g. storing an image along with
+// the height and width) under different names (e.g. storing a left and right
+// image in a stereo pair.) An example creating functions such as
+// AddLeftImageEncoded that adds a string under the key "LEFT/image/encoded":
 //  FIXED_PREFIX_STRING_FEATURE_LIST("LEFT", LeftImageEncoded, "image/encoded");
 
 #ifndef MEDIAPIPE_TENSORFLOW_SEQUENCE_MEDIA_SEQUENCE_H_
@@ -179,6 +179,8 @@ namespace mediasequence {
 const char kExampleIdKey[] = "example/id";
 // The name of the data set, including the version.
 const char kExampleDatasetNameKey[] = "example/dataset_name";
+// String flags or attributes for this example within a data set.
+const char kExampleDatasetFlagStringKey[] = "example/dataset/flag/string";
 
 // The relative path to the data on disk from some root directory.
 const char kClipDataPathKey[] = "clip/data_path";
@@ -201,9 +203,15 @@ const char kClipLabelIndexKey[] = "clip/label/index";
 const char kClipLabelStringKey[] = "clip/label/string";
 // A list of label confidences for this clip.
 const char kClipLabelConfidenceKey[] = "clip/label/confidence";
+// A list of label start timestamps for this clip.
+const char kClipLabelStartTimestampKey[] = "clip/label/start/timestamp";
+// A list of label end timestamps for this clip.
+const char kClipLabelEndTimestampKey[] = "clip/label/end/timestamp";
 
 BYTES_CONTEXT_FEATURE(ExampleId, kExampleIdKey);
 BYTES_CONTEXT_FEATURE(ExampleDatasetName, kExampleDatasetNameKey);
+VECTOR_BYTES_CONTEXT_FEATURE(ExampleDatasetFlagString,
+                             kExampleDatasetFlagStringKey);
 
 BYTES_CONTEXT_FEATURE(ClipDataPath, kClipDataPathKey);
 BYTES_CONTEXT_FEATURE(ClipAlternativeMediaId, kClipAlternativeMediaId);
@@ -216,6 +224,9 @@ INT64_CONTEXT_FEATURE(ClipEndTimestamp, kClipEndTimestampKey);
 VECTOR_BYTES_CONTEXT_FEATURE(ClipLabelString, kClipLabelStringKey);
 VECTOR_INT64_CONTEXT_FEATURE(ClipLabelIndex, kClipLabelIndexKey);
 VECTOR_FLOAT_CONTEXT_FEATURE(ClipLabelConfidence, kClipLabelConfidenceKey);
+VECTOR_INT64_CONTEXT_FEATURE(ClipLabelStartTimestamp,
+                             kClipLabelStartTimestampKey);
+VECTOR_INT64_CONTEXT_FEATURE(ClipLabelEndTimestamp, kClipLabelEndTimestampKey);
 
 // ***********************    SEGMENTS    *************************************
 // Context Keys:
@@ -230,7 +241,7 @@ const char kSegmentEndIndexKey[] = "segment/end/index";
 // A list with the label index for each segment.
 // Multiple labels for the same segment are encoded as repeated segments.
 const char kSegmentLabelIndexKey[] = "segment/label/index";
-// A list with the label std::string for each segment.
+// A list with the label string for each segment.
 // Multiple labels for the same segment are encoded as repeated segments.
 const char kSegmentLabelStringKey[] = "segment/label/string";
 // A list with the label confidence for each segment.
@@ -253,6 +264,8 @@ const char kRegionEmbeddingDimensionsPerRegionKey[] =
     "region/embedding/dimensions_per_region";
 // The format encoding embeddings as strings.
 const char kRegionEmbeddingFormatKey[] = "region/embedding/format";
+// The list of region parts expected in this example.
+const char kRegionPartsKey[] = "region/parts";
 
 // Feature list keys:
 // The normalized coordinates of the bounding boxes are provided in four lists
@@ -266,6 +279,10 @@ const char kRegionBBoxXMaxKey[] = "region/bbox/xmax";
 const char kRegionPointXKey[] = "region/point/x";
 const char kRegionPointYKey[] = "region/point/y";
 const char kRegionRadiusKey[] = "region/radius";
+// The 3d point can denote keypoints.
+const char kRegion3dPointXKey[] = "region/3d_point/x";
+const char kRegion3dPointYKey[] = "region/3d_point/y";
+const char kRegion3dPointZKey[] = "region/3d_point/z";
 // The number of regions at that timestep.
 const char kRegionNumRegionsKey[] = "region/num_regions";
 // Whether that timestep is annotated for bounding regions.
@@ -295,7 +312,7 @@ const char kRegionTimestampKey[] = "region/timestamp";
 // An embedding for each region. The length of each list must be the product of
 // the number of regions and the product of the embedding dimensions.
 const char kRegionEmbeddingFloatKey[] = "region/embedding/float";
-// A std::string encoded embedding for each region.
+// A string encoded embedding for each region.
 const char kRegionEmbeddingEncodedKey[] = "region/embedding/encoded";
 // The confidence of the embedding.
 const char kRegionEmbeddingConfidenceKey[] = "region/embedding/confidence";
@@ -315,45 +332,127 @@ std::vector<::mediapipe::Location> GetBBoxAt(
 void AddBBox(const std::string& prefix,
              const std::vector<::mediapipe::Location>& bboxes,
              tensorflow::SequenceExample* sequence);
+void ClearBBox(const std::string& prefix,
+               tensorflow::SequenceExample* sequence);
 
 // The input and output format is a pair of <y, x> coordinates to match the
 // order of bounding box coordinates.
 int GetPointSize(const std::string& prefix,
                  const tensorflow::SequenceExample& sequence);
-::std::vector<::std::pair<float, float>> GetPointAt(
+std::vector<std::pair<float, float>> GetPointAt(
     const std::string& prefix, const tensorflow::SequenceExample& sequence,
     int index);
 void AddPoint(const std::string& prefix,
-              const ::std::vector<::std::pair<float, float>>& points,
+              const std::vector<std::pair<float, float>>& points,
               tensorflow::SequenceExample* sequence);
+void ClearPoint(const std::string& prefix,
+                tensorflow::SequenceExample* sequence);
 
-#define FIXED_PREFIX_BBOX_ACCESSORS(identifier, prefix)                       \
-  inline int CONCAT_STR3(Get, identifier,                                     \
-                         Size)(const tensorflow::SequenceExample& sequence) { \
-    return GetBBoxSize(prefix, sequence);                                     \
-  }                                                                           \
-  inline std::vector<::mediapipe::Location> CONCAT_STR3(Get, identifier, At)( \
-      const tensorflow::SequenceExample& sequence, int index) {               \
-    return GetBBoxAt(prefix, sequence, index);                                \
-  }                                                                           \
-  inline void CONCAT_STR2(Add, identifier)(                                   \
-      const std::vector<::mediapipe::Location>& bboxes,                       \
-      tensorflow::SequenceExample* sequence) {                                \
-    return AddBBox(prefix, bboxes, sequence);                                 \
-  }                                                                           \
-  inline int CONCAT_STR3(Get, identifier, PointSize)(                         \
-      const tensorflow::SequenceExample& sequence) {                          \
-    return GetPointSize(prefix, sequence);                                    \
-  }                                                                           \
-  inline ::std::vector<::std::pair<float, float>> CONCAT_STR3(                \
-      Get, identifier, PointAt)(const tensorflow::SequenceExample& sequence,  \
-                                int index) {                                  \
-    return GetPointAt(prefix, sequence, index);                               \
-  }                                                                           \
-  inline void CONCAT_STR3(Add, identifier, Point)(                            \
-      const ::std::vector<::std::pair<float, float>>& points,                 \
-      tensorflow::SequenceExample* sequence) {                                \
-    return AddPoint(prefix, points, sequence);                                \
+// The input and output format is a pair of <y, x> coordinates to match the
+// order of bounding box coordinates.
+int Get3dPointSize(const std::string& prefix,
+                   const tensorflow::SequenceExample& sequence);
+std::vector<std::tuple<float, float, float>> Get3dPointAt(
+    const std::string& prefix, const tensorflow::SequenceExample& sequence,
+    int index);
+void Add3dPoint(const std::string& prefix,
+                const std::vector<std::tuple<float, float, float>>& points,
+                tensorflow::SequenceExample* sequence);
+void Clear3dPoint(const std::string& prefix,
+                  tensorflow::SequenceExample* sequence);
+#define FIXED_PREFIX_BBOX_ACCESSORS(identifier, prefix)                        \
+  inline int CONCAT_STR3(Get, identifier,                                      \
+                         Size)(const tensorflow::SequenceExample& sequence) {  \
+    return GetBBoxSize(prefix, sequence);                                      \
+  }                                                                            \
+  inline std::vector<::mediapipe::Location> CONCAT_STR3(Get, identifier, At)(  \
+      const tensorflow::SequenceExample& sequence, int index) {                \
+    return GetBBoxAt(prefix, sequence, index);                                 \
+  }                                                                            \
+  inline void CONCAT_STR2(Add, identifier)(                                    \
+      const std::vector<::mediapipe::Location>& bboxes,                        \
+      tensorflow::SequenceExample* sequence) {                                 \
+    return AddBBox(prefix, bboxes, sequence);                                  \
+  }                                                                            \
+  inline void CONCAT_STR2(                                                     \
+      Clear, identifier)(tensorflow::SequenceExample * sequence) {             \
+    return ClearBBox(prefix, sequence);                                        \
+  }                                                                            \
+  inline int CONCAT_STR3(Get, identifier, PointSize)(                          \
+      const tensorflow::SequenceExample& sequence) {                           \
+    return GetPointSize(prefix, sequence);                                     \
+  }                                                                            \
+  inline int CONCAT_STR3(Get, identifier, PointSize)(                          \
+      const std::string& name, const tensorflow::SequenceExample& sequence) {  \
+    return GetPointSize(name, sequence);                                       \
+  }                                                                            \
+  inline std::vector<std::pair<float, float>> CONCAT_STR3(                     \
+      Get, identifier, PointAt)(const tensorflow::SequenceExample& sequence,   \
+                                int index) {                                   \
+    return GetPointAt(prefix, sequence, index);                                \
+  }                                                                            \
+  inline std::vector<std::pair<float, float>> CONCAT_STR3(                     \
+      Get, identifier, PointAt)(const std::string& name,                       \
+                                const tensorflow::SequenceExample& sequence,   \
+                                int index) {                                   \
+    return GetPointAt(name, sequence, index);                                  \
+  }                                                                            \
+  inline void CONCAT_STR3(Add, identifier, Point)(                             \
+      const std::vector<std::pair<float, float>>& points,                      \
+      tensorflow::SequenceExample* sequence) {                                 \
+    return AddPoint(prefix, points, sequence);                                 \
+  }                                                                            \
+  inline void CONCAT_STR3(Add, identifier, Point)(                             \
+      const std::string& name,                                                 \
+      const std::vector<std::pair<float, float>>& points,                      \
+      tensorflow::SequenceExample* sequence) {                                 \
+    return AddPoint(name, points, sequence);                                   \
+  }                                                                            \
+  inline void CONCAT_STR3(Clear, identifier,                                   \
+                          Point)(tensorflow::SequenceExample * sequence) {     \
+    return ClearPoint(prefix, sequence);                                       \
+  }                                                                            \
+  inline void CONCAT_STR3(Clear, identifier, Point)(                           \
+      std::string name, tensorflow::SequenceExample * sequence) {              \
+    return ClearPoint(name, sequence);                                         \
+  }                                                                            \
+  inline int CONCAT_STR3(Get, identifier, 3dPointSize)(                        \
+      const tensorflow::SequenceExample& sequence) {                           \
+    return Get3dPointSize(prefix, sequence);                                   \
+  }                                                                            \
+  inline int CONCAT_STR3(Get, identifier, 3dPointSize)(                        \
+      const std::string& name, const tensorflow::SequenceExample& sequence) {  \
+    return Get3dPointSize(name, sequence);                                     \
+  }                                                                            \
+  inline std::vector<std::tuple<float, float, float>> CONCAT_STR3(             \
+      Get, identifier, 3dPointAt)(const tensorflow::SequenceExample& sequence, \
+                                  int index) {                                 \
+    return Get3dPointAt(prefix, sequence, index);                              \
+  }                                                                            \
+  inline std::vector<std::tuple<float, float, float>> CONCAT_STR3(             \
+      Get, identifier, 3dPointAt)(const std::string& name,                     \
+                                  const tensorflow::SequenceExample& sequence, \
+                                  int index) {                                 \
+    return Get3dPointAt(name, sequence, index);                                \
+  }                                                                            \
+  inline void CONCAT_STR3(Add, identifier, 3dPoint)(                           \
+      const std::vector<std::tuple<float, float, float>>& points,              \
+      tensorflow::SequenceExample* sequence) {                                 \
+    return Add3dPoint(prefix, points, sequence);                               \
+  }                                                                            \
+  inline void CONCAT_STR3(Add, identifier, 3dPoint)(                           \
+      const std::string& name,                                                 \
+      const std::vector<std::tuple<float, float, float>>& points,              \
+      tensorflow::SequenceExample* sequence) {                                 \
+    return Add3dPoint(name, points, sequence);                                 \
+  }                                                                            \
+  inline void CONCAT_STR3(Clear, identifier,                                   \
+                          3dPoint)(tensorflow::SequenceExample * sequence) {   \
+    return Clear3dPoint(prefix, sequence);                                     \
+  }                                                                            \
+  inline void CONCAT_STR3(Clear, identifier, 3dPoint)(                         \
+      std::string name, tensorflow::SequenceExample * sequence) {              \
+    return Clear3dPoint(name, sequence);                                       \
   }
 
 #define PREFIXED_BBOX(identifier, prefix)                                      \
@@ -370,6 +469,15 @@ void AddPoint(const std::string& prefix,
                                          kRegionClassIndexKey, prefix)         \
   FIXED_PREFIX_VECTOR_INT64_FEATURE_LIST(CONCAT_STR2(identifier, TrackIndex),  \
                                          kRegionTrackIndexKey, prefix)         \
+  FIXED_PREFIX_VECTOR_FLOAT_FEATURE_LIST(                                      \
+      CONCAT_STR2(identifier, LabelConfidence), kRegionLabelConfidenceKey,     \
+      prefix)                                                                  \
+  FIXED_PREFIX_VECTOR_FLOAT_FEATURE_LIST(                                      \
+      CONCAT_STR2(identifier, ClassConfidence), kRegionClassConfidenceKey,     \
+      prefix)                                                                  \
+  FIXED_PREFIX_VECTOR_FLOAT_FEATURE_LIST(                                      \
+      CONCAT_STR2(identifier, TrackConfidence), kRegionTrackConfidenceKey,     \
+      prefix)                                                                  \
   FIXED_PREFIX_VECTOR_INT64_FEATURE_LIST(CONCAT_STR2(identifier, IsGenerated), \
                                          kRegionIsGeneratedKey, prefix)        \
   FIXED_PREFIX_VECTOR_INT64_FEATURE_LIST(CONCAT_STR2(identifier, IsOccluded),  \
@@ -392,17 +500,28 @@ void AddPoint(const std::string& prefix,
                                          kRegionPointYKey, prefix)             \
   FIXED_PREFIX_VECTOR_FLOAT_FEATURE_LIST(CONCAT_STR2(identifier, Radius),      \
                                          kRegionRadiusKey, prefix)             \
+  FIXED_PREFIX_VECTOR_FLOAT_FEATURE_LIST(CONCAT_STR2(identifier, 3dPointX),    \
+                                         kRegion3dPointXKey, prefix)           \
+  FIXED_PREFIX_VECTOR_FLOAT_FEATURE_LIST(CONCAT_STR2(identifier, 3dPointY),    \
+                                         kRegion3dPointYKey, prefix)           \
+  FIXED_PREFIX_VECTOR_FLOAT_FEATURE_LIST(CONCAT_STR2(identifier, 3dPointZ),    \
+                                         kRegion3dPointZKey, prefix)           \
   FIXED_PREFIX_VECTOR_FLOAT_FEATURE_LIST(                                      \
       CONCAT_STR2(identifier, EmbeddingFloats), kRegionEmbeddingFloatKey,      \
       prefix)                                                                  \
   FIXED_PREFIX_VECTOR_BYTES_FEATURE_LIST(                                      \
       CONCAT_STR2(identifier, EmbeddingEncoded), kRegionEmbeddingEncodedKey,   \
       prefix)                                                                  \
+  FIXED_PREFIX_VECTOR_FLOAT_FEATURE_LIST(                                      \
+      CONCAT_STR2(identifier, EmbeddingConfidence),                            \
+      kRegionEmbeddingConfidenceKey, prefix)                                   \
   FIXED_PREFIX_VECTOR_INT64_CONTEXT_FEATURE(                                   \
       CONCAT_STR2(identifier, EmbeddingDimensionsPerRegion),                   \
       kRegionEmbeddingDimensionsPerRegionKey, prefix)                          \
   FIXED_PREFIX_BYTES_CONTEXT_FEATURE(CONCAT_STR2(identifier, EmbeddingFormat), \
                                      kRegionEmbeddingFormatKey, prefix)        \
+  FIXED_PREFIX_VECTOR_BYTES_CONTEXT_FEATURE(CONCAT_STR2(identifier, Parts),    \
+                                            kRegionPartsKey, prefix)           \
   FIXED_PREFIX_INT64_FEATURE_LIST(CONCAT_STR2(identifier, Timestamp),          \
                                   kRegionTimestampKey, prefix)                 \
   FIXED_PREFIX_INT64_FEATURE_LIST(                                             \
@@ -439,6 +558,8 @@ const char kImageClassLabelIndexKey[] = "image/class/label/index";
 const char kImageClassLabelStringKey[] = "image/class/label/string";
 // The listing from discrete instance indices to class indices they embody.
 const char kImageObjectClassIndexKey[] = "image/object/class/index";
+// The path of the image file if it did not come from a media clip.
+const char kImageDataPathKey[] = "image/data_path";
 
 // Feature list keys:
 // The encoded image frame.
@@ -468,6 +589,8 @@ const char kImageLabelConfidenceKey[] = "image/label/confidence";
                                      kImageFrameRateKey, prefix)               \
   FIXED_PREFIX_FLOAT_CONTEXT_FEATURE(CONCAT_STR2(identifier, Saturation),      \
                                      kImageSaturationKey, prefix)              \
+  FIXED_PREFIX_BYTES_CONTEXT_FEATURE(CONCAT_STR2(identifier, DataPath),        \
+                                     kImageDataPathKey, prefix)                \
   FIXED_PREFIX_VECTOR_INT64_CONTEXT_FEATURE(                                   \
       CONCAT_STR2(identifier, ClassLabelIndex), kImageClassLabelIndexKey,      \
       prefix)                                                                  \
@@ -505,6 +628,42 @@ PREFIXED_IMAGE(ForwardFlow, kForwardFlowPrefix);
 PREFIXED_IMAGE(ClassSegmentation, kClassSegmentationPrefix);
 PREFIXED_IMAGE(InstanceSegmentation, kInstanceSegmentationPrefix);
 
+// **************************   TEXT   ****************************************
+// Context keys:
+// Which language text tokens are likely to be in.
+const char kTextLanguageKey[] = "text/language";
+// A large block of text that applies to the media.
+const char kTextContextContentKey[] = "text/context/content";
+// A large block of text that applies to the media as token ids.
+const char kTextContextTokenIdKey[] = "text/context/token_id";
+// A large block of text that applies to the media as embeddings.
+const char kTextContextEmbeddingKey[] = "text/context/embedding";
+
+// Feature list keys:
+// The text contents for a given time.
+const char kTextContentKey[] = "text/content";
+// The start time for the text becoming relevant.
+const char kTextTimestampKey[] = "text/timestamp";
+// The duration where the text is relevant.
+const char kTextDurationKey[] = "text/duration";
+// The confidence that this is the correct text.
+const char kTextConfidenceKey[] = "text/confidence";
+// A floating point embedding corresponding to the text.
+const char kTextEmbeddingKey[] = "text/embedding";
+// An integer id corresponding to the text.
+const char kTextTokenIdKey[] = "text/token/id";
+
+BYTES_CONTEXT_FEATURE(TextLanguage, kTextLanguageKey);
+BYTES_CONTEXT_FEATURE(TextContextContent, kTextContextContentKey);
+VECTOR_INT64_CONTEXT_FEATURE(TextContextTokenId, kTextContextTokenIdKey);
+VECTOR_FLOAT_CONTEXT_FEATURE(TextContextEmbedding, kTextContextEmbeddingKey);
+BYTES_FEATURE_LIST(TextContent, kTextContentKey);
+INT64_FEATURE_LIST(TextTimestamp, kTextTimestampKey);
+INT64_FEATURE_LIST(TextDuration, kTextDurationKey);
+FLOAT_FEATURE_LIST(TextConfidence, kTextConfidenceKey);
+VECTOR_FLOAT_FEATURE_LIST(TextEmbedding, kTextEmbeddingKey);
+INT64_FEATURE_LIST(TextTokenId, kTextTokenIdKey);
+
 // ***********************    FEATURES    *************************************
 // Context keys:
 // The dimensions of the feature.
@@ -523,6 +682,12 @@ const char kFeatureNumSamplesKey[] = "feature/num_samples";
 const char kFeaturePacketRateKey[] = "feature/packet_rate";
 // For audio, the original audio sampling rate the feature is derived from.
 const char kFeatureAudioSampleRateKey[] = "feature/audio_sample_rate";
+// The feature as a list of floats.
+const char kContextFeatureFloatsKey[] = "context_feature/floats";
+// The feature as a list of floats.
+const char kContextFeatureBytesKey[] = "context_feature/bytes";
+// The feature as a list of floats.
+const char kContextFeatureIntsKey[] = "context_feature/ints";
 
 // Feature list keys:
 // The feature as a list of floats.
@@ -553,6 +718,12 @@ void AddAudioAsFeature(const std::string& prefix,
 
 PREFIXED_VECTOR_INT64_CONTEXT_FEATURE(FeatureDimensions, kFeatureDimensionsKey);
 PREFIXED_FLOAT_CONTEXT_FEATURE(FeatureRate, kFeatureRateKey);
+PREFIXED_VECTOR_FLOAT_CONTEXT_FEATURE(ContextFeatureFloats,
+                                      kContextFeatureFloatsKey);
+PREFIXED_VECTOR_BYTES_CONTEXT_FEATURE(ContextFeatureBytes,
+                                      kContextFeatureBytesKey);
+PREFIXED_VECTOR_INT64_CONTEXT_FEATURE(ContextFeatureInts,
+                                      kContextFeatureIntsKey);
 PREFIXED_BYTES_CONTEXT_FEATURE(FeatureBytesFormat, kFeatureBytesFormatKey);
 PREFIXED_VECTOR_FLOAT_FEATURE_LIST(FeatureFloats, kFeatureFloatsKey);
 PREFIXED_VECTOR_BYTES_FEATURE_LIST(FeatureBytes, kFeatureBytesKey);
@@ -578,8 +749,9 @@ PREFIXED_FLOAT_CONTEXT_FEATURE(FeatureAudioSampleRate,
 // code verifies the number of elements matches the dimensions.
 // Reconciling bounding box annotations is optional because will remove
 // annotations if the sequence rate is lower than the annotation rate.
-::mediapipe::Status ReconcileMetadata(bool reconcile_bbox_annotations,
-                                      tensorflow::SequenceExample* sequence);
+absl::Status ReconcileMetadata(bool reconcile_bbox_annotations,
+                               bool reconcile_region_annotations,
+                               tensorflow::SequenceExample* sequence);
 }  // namespace mediasequence
 }  // namespace mediapipe
 

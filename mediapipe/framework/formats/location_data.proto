@@ -23,6 +23,9 @@ package mediapipe;
 
 import "mediapipe/framework/formats/annotation/rasterization.proto";
 
+option java_package = "com.google.mediapipe.formats.proto";
+option java_outer_classname = "LocationDataProto";
+
 message LocationData {
   // The supported formats for representing location data. A single location
   // must store its data in exactly one way.
@@ -72,7 +75,7 @@ message LocationData {
     optional int32 width = 1;
     optional int32 height = 2;
     // A rasterization-like format for storing the mask.
-    optional Rasterization rasterization = 3;
+    optional mediapipe.Rasterization rasterization = 3;
   }
   optional BinaryMask mask = 4;
 

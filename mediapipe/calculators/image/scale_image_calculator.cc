@@ -15,9 +15,12 @@
 // This Calculator takes an ImageFrame and scales it appropriately.
 
 #include <algorithm>
+#include <cstdint>
 #include <memory>
 #include <string>
 
+#include "absl/log/absl_check.h"
+#include "absl/log/absl_log.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/substitute.h"
 #include "libyuv/scale.h"
@@ -30,7 +33,6 @@
 #include "mediapipe/framework/formats/video_stream_header.h"
 #include "mediapipe/framework/formats/yuv_image.h"
 #include "mediapipe/framework/port/image_resizer.h"
-#include "mediapipe/framework/port/integral_types.h"
 #include "mediapipe/framework/port/logging.h"
 #include "mediapipe/framework/port/opencv_core_inc.h"
 #include "mediapipe/framework/port/proto_ns.h"
@@ -44,7 +46,7 @@ namespace {
 
 // Given an upscaling algorithm, determine which OpenCV interpolation algorithm
 // to use.
-::mediapipe::Status FindInterpolationAlgorithm(
+absl::Status FindInterpolationAlgorithm(
     ScaleImageCalculatorOptions::ScaleAlgorithm upscaling_algorithm,
     int* interpolation_algorithm) {
   switch (upscaling_algorithm) {
@@ -70,21 +72,21 @@ namespace {
       RET_CHECK_FAIL() << absl::Substitute("Unknown upscaling algorithm: $0",
                                            upscaling_algorithm);
   }
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 void CropImageFrame(const ImageFrame& original, int col_start, int row_start,
                     int crop_width, int crop_height, ImageFrame* cropped) {
-  const uint8* src = original.PixelData();
-  uint8* dst = cropped->MutablePixelData();
+  const uint8_t* src = original.PixelData();
+  uint8_t* dst = cropped->MutablePixelData();
 
   int des_y = 0;
   for (int y = row_start; y < row_start + crop_height; ++y) {
-    const uint8* src_line = src + y * original.WidthStep();
-    const uint8* src_pixel = src_line + col_start *
-                                            original.NumberOfChannels() *
-                                            original.ByteDepth();
-    uint8* dst_line = dst + des_y * cropped->WidthStep();
+    const uint8_t* src_line = src + y * original.WidthStep();
+    const uint8_t* src_pixel = src_line + col_start *
+                                              original.NumberOfChannels() *
+                                              original.ByteDepth();
+    uint8_t* dst_line = dst + des_y * cropped->WidthStep();
     std::memcpy(
         dst_line, src_pixel,
         crop_width * cropped->NumberOfChannels() * cropped->ByteDepth());
@@ -147,7 +149,7 @@ class ScaleImageCalculator : public CalculatorBase {
   ScaleImageCalculator();
   ~ScaleImageCalculator() override;
 
-  static ::mediapipe::Status GetContract(CalculatorContract* cc) {
+  static absl::Status GetContract(CalculatorContract* cc) {
     ScaleImageCalculatorOptions options =
         cc->Options<ScaleImageCalculatorOptions>();
 
@@ -184,35 +186,35 @@ class ScaleImageCalculator : public CalculatorBase {
     if (cc->Inputs().HasTag("OVERRIDE_OPTIONS")) {
       cc->Inputs().Tag("OVERRIDE_OPTIONS").Set<ScaleImageCalculatorOptions>();
     }
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
   }
 
   // From Calculator.
-  ::mediapipe::Status Open(CalculatorContext* cc) override;
-  ::mediapipe::Status Process(CalculatorContext* cc) override;
+  absl::Status Open(CalculatorContext* cc) override;
+  absl::Status Process(CalculatorContext* cc) override;
 
  private:
   // Initialize some data members from options_. This can be called either from
   // Open or Process depending on whether OVERRIDE_OPTIONS is used.
-  ::mediapipe::Status InitializeFromOptions();
+  absl::Status InitializeFromOptions();
   // Initialize crop and output parameters based on set member variable
   // values.  This function will also send the header information on
   // the VIDEO_HEADER stream if it hasn't been done yet.
-  ::mediapipe::Status InitializeFrameInfo(CalculatorContext* cc);
+  absl::Status InitializeFrameInfo(CalculatorContext* cc);
   // Validate that input_format_ and output_format_ are supported image
   // formats.
-  ::mediapipe::Status ValidateImageFormats() const;
+  absl::Status ValidateImageFormats() const;
   // Validate that the image frame has the proper format and dimensions.
   // If the dimensions and format weren't initialized by the header,
   // then the first frame on which this function is called is used
   // to initialize.
-  ::mediapipe::Status ValidateImageFrame(CalculatorContext* cc,
-                                         const ImageFrame& image_frame);
+  absl::Status ValidateImageFrame(CalculatorContext* cc,
+                                  const ImageFrame& image_frame);
   // Validate that the YUV image has the proper dimensions. If the
   // dimensions weren't initialized by the header, then the first image
   // on which this function is called is used to initialize.
-  ::mediapipe::Status ValidateYUVImage(CalculatorContext* cc,
-                                       const YUVImage& yuv_image);
+  absl::Status ValidateYUVImage(CalculatorContext* cc,
+                                const YUVImage& yuv_image);
 
   bool has_header_;  // True if the input stream has a header.
   int input_width_;
@@ -251,30 +253,30 @@ ScaleImageCalculator::ScaleImageCalculator() {}
 
 ScaleImageCalculator::~ScaleImageCalculator() {}
 
-::mediapipe::Status ScaleImageCalculator::InitializeFrameInfo(
-    CalculatorContext* cc) {
-  RETURN_IF_ERROR(
+absl::Status ScaleImageCalculator::InitializeFrameInfo(CalculatorContext* cc) {
+  MP_RETURN_IF_ERROR(
       scale_image::FindCropDimensions(input_width_, input_height_,  //
                                       options_.min_aspect_ratio(),  //
                                       options_.max_aspect_ratio(),  //
                                       &crop_width_, &crop_height_,  //
                                       &col_start_, &row_start_));
-  RETURN_IF_ERROR(
-      scale_image::FindOutputDimensions(crop_width_, crop_height_,            //
-                                        options_.target_width(),              //
-                                        options_.target_height(),             //
-                                        options_.preserve_aspect_ratio(),     //
-                                        options_.scale_to_multiple_of_two(),  //
+  MP_RETURN_IF_ERROR(
+      scale_image::FindOutputDimensions(crop_width_, crop_height_,         //
+                                        options_.target_width(),           //
+                                        options_.target_height(),          //
+                                        options_.target_max_area(),        //
+                                        options_.preserve_aspect_ratio(),  //
+                                        options_.scale_to_multiple_of(),   //
                                         &output_width_, &output_height_));
-  RETURN_IF_ERROR(FindInterpolationAlgorithm(options_.algorithm(),
-                                             &interpolation_algorithm_));
+  MP_RETURN_IF_ERROR(FindInterpolationAlgorithm(options_.algorithm(),
+                                                &interpolation_algorithm_));
   if (interpolation_algorithm_ == -1 &&
       (output_width_ > crop_width_ || output_height_ > crop_height_)) {
     output_width_ = crop_width_;
     output_height_ = crop_height_;
   }
-  VLOG(1) << "Image scaling parameters:"
-          << "\ninput_width_ " << input_width_      //
+  VLOG(1) << "Image scaling parameters:" << "\ninput_width_ "
+          << input_width_                           //
           << "\ninput_height_ " << input_height_    //
           << "\ninput_format_ " << input_format_    //
           << "\ncrop_width_ " << crop_width_        //
@@ -293,16 +295,16 @@ ScaleImageCalculator::~ScaleImageCalculator() {}
     header->width = output_width_;
     header->height = output_height_;
     header->format = output_format_;
-    LOG(INFO) << "OUTPUTTING HEADER on stream";
+    ABSL_LOG(INFO) << "OUTPUTTING HEADER on stream";
     cc->Outputs()
         .Tag("VIDEO_HEADER")
         .Add(header.release(), Timestamp::PreStream());
     cc->Outputs().Tag("VIDEO_HEADER").Close();
   }
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-::mediapipe::Status ScaleImageCalculator::Open(CalculatorContext* cc) {
+absl::Status ScaleImageCalculator::Open(CalculatorContext* cc) {
   options_ = cc->Options<ScaleImageCalculatorOptions>();
 
   input_data_id_ = cc->Inputs().GetId("FRAMES", 0);
@@ -327,7 +329,7 @@ ScaleImageCalculator::~ScaleImageCalculator() {}
   bool has_override_options = cc->Inputs().HasTag("OVERRIDE_OPTIONS");
 
   if (!has_override_options) {
-    RETURN_IF_ERROR(InitializeFromOptions());
+    MP_RETURN_IF_ERROR(InitializeFromOptions());
   }
 
   if (!cc->Inputs().Get(input_data_id_).Header().IsEmpty()) {
@@ -339,7 +341,7 @@ ScaleImageCalculator::~ScaleImageCalculator() {}
       // has a header. At this point in the code, the ScaleImageCalculator
       // config may be changed by the new options at PreStream, so the output
       // header can't be determined.
-      return ::mediapipe::InvalidArgumentError(
+      return absl::InvalidArgumentError(
           "OVERRIDE_OPTIONS stream can't be used when the main input stream "
           "has a header.");
     }
@@ -361,24 +363,28 @@ ScaleImageCalculator::~ScaleImageCalculator() {}
       output_format_ = input_format_;
     }
 
+    const bool is_positive_and_even =
+        (options_.scale_to_multiple_of() >= 1) &&
+        (options_.scale_to_multiple_of() % 2 == 0);
+
     if (output_format_ == ImageFormat::YCBCR420P) {
-      RET_CHECK(options_.scale_to_multiple_of_two())
+      RET_CHECK(is_positive_and_even)
           << "ScaleImageCalculator always outputs width and height that are "
              "divisible by 2 when output format is YCbCr420P. To scale to "
              "width and height of odd numbers, the output format must be SRGB.";
     } else if (options_.preserve_aspect_ratio()) {
-      RET_CHECK(options_.scale_to_multiple_of_two())
+      RET_CHECK(options_.scale_to_multiple_of() == 2)
           << "ScaleImageCalculator always outputs width and height that are "
-             "divisible by 2 when perserving aspect ratio. To scale to width "
-             "and height of odd numbers, please set "
-             "preserve_aspect_ratio to false.";
+             "divisible by 2 when preserving aspect ratio. If you'd like to "
+             "set scale_to_multiple_of to something other than 2, please "
+             "set preserve_aspect_ratio to false.";
     }
 
     if (input_width_ > 0 && input_height_ > 0 &&
         input_format_ != ImageFormat::UNKNOWN &&
         output_format_ != ImageFormat::UNKNOWN) {
-      RETURN_IF_ERROR(ValidateImageFormats());
-      RETURN_IF_ERROR(InitializeFrameInfo(cc));
+      MP_RETURN_IF_ERROR(ValidateImageFormats());
+      MP_RETURN_IF_ERROR(InitializeFrameInfo(cc));
       std::unique_ptr<VideoHeader> output_header(new VideoHeader());
       *output_header = input_video_header_;
       output_header->format = output_format_;
@@ -389,10 +395,11 @@ ScaleImageCalculator::~ScaleImageCalculator() {}
           .SetHeader(Adopt(output_header.release()));
       has_header_ = true;
     } else {
-      LOG(WARNING) << "Stream had a VideoHeader which didn't have sufficient "
-                      "information.  "
-                      "Dropping VideoHeader and trying to deduce needed "
-                      "information.";
+      ABSL_LOG(WARNING)
+          << "Stream had a VideoHeader which didn't have sufficient "
+             "information.  "
+             "Dropping VideoHeader and trying to deduce needed "
+             "information.";
       input_width_ = 0;
       input_height_ = 0;
       if (!options_.has_input_format()) {
@@ -402,10 +409,10 @@ ScaleImageCalculator::~ScaleImageCalculator() {}
     }
   }
 
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-::mediapipe::Status ScaleImageCalculator::InitializeFromOptions() {
+absl::Status ScaleImageCalculator::InitializeFromOptions() {
   if (options_.has_input_format()) {
     input_format_ = options_.input_format();
   } else {
@@ -417,29 +424,37 @@ ScaleImageCalculator::~ScaleImageCalculator() {}
     alignment_boundary_ = options_.alignment_boundary();
   }
 
+  if (options_.has_output_format()) {
+    output_format_ = options_.output_format();
+  }
+
   downscaler_.reset(new ImageResizer(options_.post_sharpening_coefficient()));
 
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-::mediapipe::Status ScaleImageCalculator::ValidateImageFormats() const {
+absl::Status ScaleImageCalculator::ValidateImageFormats() const {
   RET_CHECK_NE(input_format_, ImageFormat::UNKNOWN)
       << "The input image format was UNKNOWN.";
   RET_CHECK_NE(output_format_, ImageFormat::UNKNOWN)
       << "The output image format was set to UNKNOWN.";
   // TODO Remove these conditions.
   RET_CHECK(output_format_ == ImageFormat::SRGB ||
+            output_format_ == ImageFormat::SRGBA ||
             (input_format_ == output_format_ &&
              output_format_ == ImageFormat::YCBCR420P))
       << "Outputting YCbCr420P images from SRGB input is not yet supported";
   RET_CHECK(input_format_ == output_format_ ||
-            input_format_ == ImageFormat::YCBCR420P)
+            (input_format_ == ImageFormat::YCBCR420P &&
+             output_format_ == ImageFormat::SRGB) ||
+            (input_format_ == ImageFormat::SRGB &&
+             output_format_ == ImageFormat::SRGBA))
       << "Conversion of the color space (except from "
-         "YCbCr420P to SRGB) is not yet supported.";
-  return ::mediapipe::OkStatus();
+         "YCbCr420P to SRGB or SRGB to SRBGA) is not yet supported.";
+  return absl::OkStatus();
 }
 
-::mediapipe::Status ScaleImageCalculator::ValidateImageFrame(
+absl::Status ScaleImageCalculator::ValidateImageFrame(
     CalculatorContext* cc, const ImageFrame& image_frame) {
   if (!has_header_) {
     if (input_width_ != image_frame.Width() ||
@@ -461,9 +476,9 @@ ScaleImageCalculator::~ScaleImageCalculator() {}
       } else {
         output_format_ = input_format_;
       }
-      RETURN_IF_ERROR(InitializeFrameInfo(cc));
+      MP_RETURN_IF_ERROR(InitializeFrameInfo(cc));
     }
-    RETURN_IF_ERROR(ValidateImageFormats());
+    MP_RETURN_IF_ERROR(ValidateImageFormats());
   } else {
     if (input_width_ != image_frame.Width() ||
         input_height_ != image_frame.Height()) {
@@ -474,21 +489,28 @@ ScaleImageCalculator::~ScaleImageCalculator() {}
           input_width_, "x", input_height_));
     }
     if (input_format_ != image_frame.Format()) {
+      std::string image_frame_format_desc, input_format_desc;
+#ifdef MEDIAPIPE_MOBILE
+      image_frame_format_desc = std::to_string(image_frame.Format());
+      input_format_desc = std::to_string(input_format_);
+#else
       const proto_ns::EnumDescriptor* desc = ImageFormat::Format_descriptor();
+      image_frame_format_desc =
+          desc->FindValueByNumber(image_frame.Format())->DebugString();
+      input_format_desc = desc->FindValueByNumber(input_format_)->DebugString();
+#endif  // MEDIAPIPE_MOBILE
       return tool::StatusFail(absl::StrCat(
           "If a header specifies a format, then image frames on "
           "the stream must have that format.  Actual format ",
-          desc->FindValueByNumber(image_frame.Format())->DebugString(),
-          " but expected ",
-          desc->FindValueByNumber(input_format_)->DebugString()));
+          image_frame_format_desc, " but expected ", input_format_desc));
     }
   }
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-::mediapipe::Status ScaleImageCalculator::ValidateYUVImage(
-    CalculatorContext* cc, const YUVImage& yuv_image) {
-  CHECK_EQ(input_format_, ImageFormat::YCBCR420P);
+absl::Status ScaleImageCalculator::ValidateYUVImage(CalculatorContext* cc,
+                                                    const YUVImage& yuv_image) {
+  ABSL_CHECK_EQ(input_format_, ImageFormat::YCBCR420P);
   if (!has_header_) {
     if (input_width_ != yuv_image.width() ||
         input_height_ != yuv_image.height()) {
@@ -503,9 +525,9 @@ ScaleImageCalculator::~ScaleImageCalculator() {}
       } else {
         output_format_ = input_format_;
       }
-      RETURN_IF_ERROR(InitializeFrameInfo(cc));
+      MP_RETURN_IF_ERROR(InitializeFrameInfo(cc));
     }
-    RETURN_IF_ERROR(ValidateImageFormats());
+    MP_RETURN_IF_ERROR(ValidateImageFormats());
   } else {
     if (input_width_ != yuv_image.width() ||
         input_height_ != yuv_image.height()) {
@@ -517,46 +539,50 @@ ScaleImageCalculator::~ScaleImageCalculator() {}
           input_width_, "x", input_height_));
     }
   }
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-::mediapipe::Status ScaleImageCalculator::Process(CalculatorContext* cc) {
+absl::Status ScaleImageCalculator::Process(CalculatorContext* cc) {
   if (cc->InputTimestamp() == Timestamp::PreStream()) {
     if (cc->Inputs().HasTag("OVERRIDE_OPTIONS")) {
       if (cc->Inputs().Tag("OVERRIDE_OPTIONS").IsEmpty()) {
-        return ::mediapipe::InvalidArgumentError(
+        return absl::InvalidArgumentError(
             "The OVERRIDE_OPTIONS input stream must be non-empty at PreStream "
             "time if used.");
       }
       options_.MergeFrom(cc->Inputs()
                              .Tag("OVERRIDE_OPTIONS")
                              .Get<ScaleImageCalculatorOptions>());
-      RETURN_IF_ERROR(InitializeFromOptions());
+      MP_RETURN_IF_ERROR(InitializeFromOptions());
     }
     if (cc->Inputs().UsesTags() && cc->Inputs().HasTag("VIDEO_HEADER") &&
         !cc->Inputs().Tag("VIDEO_HEADER").IsEmpty()) {
       input_video_header_ = cc->Inputs().Tag("VIDEO_HEADER").Get<VideoHeader>();
     }
     if (cc->Inputs().Get(input_data_id_).IsEmpty()) {
-      return ::mediapipe::OkStatus();
+      return absl::OkStatus();
     }
   }
 
-  cc->GetCounter("Inputs")->Increment();
   const ImageFrame* image_frame;
   ImageFrame converted_image_frame;
   if (input_format_ == ImageFormat::YCBCR420P) {
     const YUVImage* yuv_image =
         &cc->Inputs().Get(input_data_id_).Get<YUVImage>();
-    RETURN_IF_ERROR(ValidateYUVImage(cc, *yuv_image));
+    MP_RETURN_IF_ERROR(ValidateYUVImage(cc, *yuv_image));
 
     if (output_format_ == ImageFormat::SRGB) {
       // TODO: For ease of implementation, YUVImage is converted to
       // ImageFrame immediately, before cropping and scaling. Investigate how to
       // make color space conversion more efficient when cropping or scaling is
       // also needed.
-      image_frame_util::YUVImageToImageFrame(*yuv_image, &converted_image_frame,
-                                             options_.use_bt709());
+      if (options_.use_bt709() || yuv_image->fourcc() == libyuv::FOURCC_ANY) {
+        image_frame_util::YUVImageToImageFrame(
+            *yuv_image, &converted_image_frame, options_.use_bt709());
+      } else {
+        image_frame_util::YUVImageToImageFrameFromFormat(
+            *yuv_image, &converted_image_frame);
+      }
       image_frame = &converted_image_frame;
     } else if (output_format_ == ImageFormat::YCBCR420P) {
       RET_CHECK(row_start_ == 0 && col_start_ == 0 &&
@@ -568,9 +594,9 @@ ScaleImageCalculator::~ScaleImageCalculator() {}
       const int y_size = output_width_ * output_height_;
       const int uv_size = output_width_ * output_height_ / 4;
       std::unique_ptr<uint8_t[]> yuv_data(new uint8_t[y_size + uv_size * 2]);
-      uint8* y = yuv_data.get();
-      uint8* u = y + y_size;
-      uint8* v = u + uv_size;
+      uint8_t* y = yuv_data.get();
+      uint8_t* u = y + y_size;
+      uint8_t* v = u + uv_size;
       RET_CHECK_EQ(0, I420Scale(yuv_image->data(0), yuv_image->stride(0),
                                 yuv_image->data(1), yuv_image->stride(1),
                                 yuv_image->data(2), yuv_image->stride(2),
@@ -592,11 +618,20 @@ ScaleImageCalculator::~ScaleImageCalculator() {}
       cc->Outputs()
           .Get(output_data_id_)
           .Add(output_image.release(), cc->InputTimestamp());
-      return ::mediapipe::OkStatus();
+      return absl::OkStatus();
     }
+  } else if (input_format_ == ImageFormat::SRGB &&
+             output_format_ == ImageFormat::SRGBA) {
+    image_frame = &cc->Inputs().Get(input_data_id_).Get<ImageFrame>();
+    cv::Mat input_mat = ::mediapipe::formats::MatView(image_frame);
+    converted_image_frame.Reset(ImageFormat::SRGBA, image_frame->Width(),
+                                image_frame->Height(), alignment_boundary_);
+    cv::Mat output_mat = ::mediapipe::formats::MatView(&converted_image_frame);
+    cv::cvtColor(input_mat, output_mat, cv::COLOR_RGB2RGBA, 4);
+    image_frame = &converted_image_frame;
   } else {
     image_frame = &cc->Inputs().Get(input_data_id_).Get<ImageFrame>();
-    RETURN_IF_ERROR(ValidateImageFrame(cc, *image_frame));
+    MP_RETURN_IF_ERROR(ValidateImageFrame(cc, *image_frame));
   }
 
   std::unique_ptr<ImageFrame> cropped_image;
@@ -653,7 +688,15 @@ ScaleImageCalculator::~ScaleImageCalculator() {}
             .Add(output_frame.release(), cc->InputTimestamp());
       }
     }
-    return ::mediapipe::OkStatus();
+    return absl::OkStatus();
+  }
+
+  // Before rescaling the frame in image_frame_util::RescaleImageFrame, check
+  // the frame's dimension. If width * height = 0,
+  // image_frame_util::RescaleImageFrame will crash in OpenCV resize().
+  // See b/317149725.
+  if (image_frame->PixelDataSize() == 0) {
+    return absl::InvalidArgumentError("Image frame is empty before rescaling.");
   }
 
   // Rescale the image frame.
@@ -687,7 +730,7 @@ ScaleImageCalculator::~ScaleImageCalculator() {}
   cc->Outputs()
       .Get(output_data_id_)
       .Add(output_frame.release(), cc->InputTimestamp());
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 }  // namespace mediapipe

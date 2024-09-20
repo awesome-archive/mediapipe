@@ -27,7 +27,6 @@
 #include "absl/base/macros.h"
 #include "absl/synchronization/mutex.h"
 #include "mediapipe/framework/calculator_node.h"
-#include "mediapipe/framework/port/integral_types.h"
 #include "mediapipe/framework/port/status.h"
 #include "mediapipe/framework/scheduler_queue.h"
 #include "mediapipe/framework/scheduler_shared.h"
@@ -56,8 +55,8 @@ class Scheduler {
 
   // Sets the executor that will run the nodes assigned to the executor
   // named |name|. Must be called before the scheduler is started.
-  ::mediapipe::Status SetNonDefaultExecutor(const std::string& name,
-                                            Executor* executor);
+  absl::Status SetNonDefaultExecutor(const std::string& name,
+                                     Executor* executor);
 
   // Resets the data members at the beginning of each graph run.
   void Reset();
@@ -70,13 +69,23 @@ class Scheduler {
   // have been closed, and no more calculators can be run).
   // This function can be called only after Start().
   // Runs application thread tasks while waiting.
-  ::mediapipe::Status WaitUntilDone() LOCKS_EXCLUDED(state_mutex_);
+  absl::Status WaitUntilDone() ABSL_LOCKS_EXCLUDED(state_mutex_);
 
   // Wait until the running graph is in the idle mode, which is when nothing can
   // be scheduled and nothing is running in the worker threads.  This function
   // can be called only after Start().
   // Runs application thread tasks while waiting.
-  ::mediapipe::Status WaitUntilIdle() LOCKS_EXCLUDED(state_mutex_);
+  //
+  // Idleness requires:
+  // 1. either the graph has no source nodes or all source nodes are closed, and
+  // 2. no packets are added to graph input streams.
+  //
+  // For simplicity, we only fully support WaitUntilIdle() to be called on a
+  // graph with no source nodes.
+  //
+  // The application must ensure no other threads are adding packets to graph
+  // input streams while a WaitUntilIdle() call is in progress.
+  absl::Status WaitUntilIdle() ABSL_LOCKS_EXCLUDED(state_mutex_);
 
   // Wait until any graph input stream has been unthrottled.
   // This is meant to be used by CalculatorGraph::AddPacketToInputStream, which
@@ -86,14 +95,15 @@ class Scheduler {
   // This function can be called by multiple threads concurrently.
   // Runs application thread tasks while waiting.
   void WaitUntilGraphInputStreamUnthrottled(absl::Mutex* secondary_mutex)
-      LOCKS_EXCLUDED(state_mutex_) EXCLUSIVE_LOCKS_REQUIRED(secondary_mutex);
+      ABSL_LOCKS_EXCLUDED(state_mutex_)
+          ABSL_EXCLUSIVE_LOCKS_REQUIRED(secondary_mutex);
 
   // Wait until any observed output emits a packet. Like a semaphore,
   // this function returns immediately if an observed packet has already been
   // emitted since the previous call. This relies on the fact that the calls are
   // in sequence. Runs application thread tasks while waiting.
-  // Returns ::mediapipe::OutOfRangeError if the graph terminated.
-  ::mediapipe::Status WaitForObservedOutput() LOCKS_EXCLUDED(state_mutex_);
+  // Returns absl::OutOfRangeError if the graph terminated.
+  absl::Status WaitForObservedOutput() ABSL_LOCKS_EXCLUDED(state_mutex_);
 
   // Callback that is invoked by a node when it wants to be scheduled.
   // If the node is throttled, the call is ignored.
@@ -118,27 +128,28 @@ class Scheduler {
   void AddUnopenedSourceNode(CalculatorNode* node);
 
   // Adds |node| to |sources_queue_|.
-  void AddNodeToSourcesQueue(CalculatorNode* node) LOCKS_EXCLUDED(state_mutex_);
+  void AddNodeToSourcesQueue(CalculatorNode* node)
+      ABSL_LOCKS_EXCLUDED(state_mutex_);
 
   // Assigns node to a scheduler queue.
   void AssignNodeToSchedulerQueue(CalculatorNode* node);
 
   // Pauses the scheduler.  Does nothing if Cancel has been called.
-  void Pause() LOCKS_EXCLUDED(state_mutex_);
+  void Pause() ABSL_LOCKS_EXCLUDED(state_mutex_);
 
   // Resumes the scheduler.
-  void Resume() LOCKS_EXCLUDED(state_mutex_);
+  void Resume() ABSL_LOCKS_EXCLUDED(state_mutex_);
 
   // Aborts the scheduler if the graph is started but is not terminated; no-op
   // otherwise.  For the graph to properly be cancelled, graph_->HasError()
   // must also return true.
-  void Cancel() LOCKS_EXCLUDED(state_mutex_);
+  void Cancel() ABSL_LOCKS_EXCLUDED(state_mutex_);
 
   // Returns true if scheduler is paused.
-  bool IsPaused() LOCKS_EXCLUDED(state_mutex_);
+  bool IsPaused() ABSL_LOCKS_EXCLUDED(state_mutex_);
 
   // Returns true if scheduler is terminated.
-  bool IsTerminated() LOCKS_EXCLUDED(state_mutex_);
+  bool IsTerminated() ABSL_LOCKS_EXCLUDED(state_mutex_);
 
   // Cleanup any remaining state after the run.
   void CleanupAfterRun();
@@ -148,11 +159,11 @@ class Scheduler {
   // Notifies the scheduler that a packet was added to a graph input stream.
   // The scheduler needs to check whether it is still deadlocked, and
   // unthrottle again if so.
-  void AddedPacketToGraphInputStream() LOCKS_EXCLUDED(state_mutex_);
+  void AddedPacketToGraphInputStream() ABSL_LOCKS_EXCLUDED(state_mutex_);
 
-  void ThrottledGraphInputStream() LOCKS_EXCLUDED(state_mutex_);
-  void UnthrottledGraphInputStream() LOCKS_EXCLUDED(state_mutex_);
-  void EmittedObservedOutput() LOCKS_EXCLUDED(state_mutex_);
+  void ThrottledGraphInputStream() ABSL_LOCKS_EXCLUDED(state_mutex_);
+  void UnthrottledGraphInputStream() ABSL_LOCKS_EXCLUDED(state_mutex_);
+  void EmittedObservedOutput() ABSL_LOCKS_EXCLUDED(state_mutex_);
 
   // Closes all source nodes at the next scheduling opportunity.
   void CloseAllSourceNodes();
@@ -212,7 +223,7 @@ class Scheduler {
 
   // Returns true if nothing can be scheduled and no tasks are running or
   // scheduled to run on the Executor.
-  bool IsIdle() EXCLUSIVE_LOCKS_REQUIRED(state_mutex_);
+  bool IsIdle() ABSL_EXCLUSIVE_LOCKS_REQUIRED(state_mutex_);
 
   // Clean up active_sources_ by removing closed sources. If all the active
   // sources are closed, this will leave active_sources_ empty. If not, some
@@ -222,7 +233,8 @@ class Scheduler {
   // Adds the next layer of sources to the scheduler queue if the previous layer
   // has finished running.
   // Returns true if it scheduled any sources.
-  bool TryToScheduleNextSourceLayer() EXCLUSIVE_LOCKS_REQUIRED(state_mutex_);
+  bool TryToScheduleNextSourceLayer()
+      ABSL_EXCLUSIVE_LOCKS_REQUIRED(state_mutex_);
 
   // Takes care of three different operations, as needed:
   // - activating sources;
@@ -230,10 +242,10 @@ class Scheduler {
   // - terminating the scheduler.
   // Thread-safe and reentrant.
   // TODO: analyze call sites, split it up further.
-  void HandleIdle() EXCLUSIVE_LOCKS_REQUIRED(state_mutex_);
+  void HandleIdle() ABSL_EXCLUSIVE_LOCKS_REQUIRED(state_mutex_);
 
   // Terminates the scheduler. Should only be called by HandleIdle.
-  void Quit() EXCLUSIVE_LOCKS_REQUIRED(state_mutex_);
+  void Quit() ABSL_EXCLUSIVE_LOCKS_REQUIRED(state_mutex_);
 
   // Helper for the various Wait methods. Waits for the given condition,
   // running application thread tasks in the meantime.
@@ -257,7 +269,7 @@ class Scheduler {
   // Priority queue of source nodes ordered by layer and then source process
   // order. This stores the set of sources that are yet to be run.
   std::priority_queue<SchedulerQueue::Item> sources_queue_
-      GUARDED_BY(state_mutex_);
+      ABSL_GUARDED_BY(state_mutex_);
 
   // Source nodes with the smallest source layer are at the beginning of
   // unopened_sources_. Before the scheduler is started, all source nodes are
@@ -276,7 +288,7 @@ class Scheduler {
   // These correspond to the Wait* methods in this class.
   // Not all state changes need to signal this, only those that enter one of
   // the waitable states.
-  absl::CondVar state_cond_var_ GUARDED_BY(state_mutex_);
+  absl::CondVar state_cond_var_ ABSL_GUARDED_BY(state_mutex_);
 
   // Number of queues which are not idle.
   // Note: this indicates two slightly different things:
@@ -288,17 +300,18 @@ class Scheduler {
   // This is ok, because it happens within a single critical section, which is
   // guarded by state_mutex_. If we wanted to split this critical section, we
   // would have to separate a and b into two variables.
-  int non_idle_queue_count_ GUARDED_BY(state_mutex_) = 0;
+  int non_idle_queue_count_ ABSL_GUARDED_BY(state_mutex_) = 0;
 
   // Tasks to be executed on the application thread.
-  std::deque<std::function<void()>> app_thread_tasks_ GUARDED_BY(state_mutex_);
+  std::deque<std::function<void()>> app_thread_tasks_
+      ABSL_GUARDED_BY(state_mutex_);
 
   // Used by HandleIdle to avoid multiple concurrent executions.
   // We cannot simply hold a mutex throughout it, for two reasons:
   // - We need it to be reentrant, which Mutex does not support.
   // - We want simultaneous calls to return immediately instead of waiting,
   //   and Mutex's TryLock is not guaranteed to work.
-  bool handling_idle_ GUARDED_BY(state_mutex_) = false;
+  int handling_idle_ ABSL_GUARDED_BY(state_mutex_) = 0;
 
   // Mutex for the scheduler state and related things.
   // Note: state_ is declared as atomic so that its getter methods don't need
@@ -306,22 +319,22 @@ class Scheduler {
   absl::Mutex state_mutex_;
 
   // Current state of the scheduler.
-  std::atomic<State> state_ = ATOMIC_VAR_INIT(STATE_NOT_STARTED);
+  std::atomic<State> state_ = STATE_NOT_STARTED;
 
   // True if all graph input streams are closed.
-  bool graph_input_streams_closed_ GUARDED_BY(state_mutex_) = false;
+  bool graph_input_streams_closed_ ABSL_GUARDED_BY(state_mutex_) = false;
 
   // Number of throttled graph input streams.
-  int throttled_graph_input_stream_count_ GUARDED_BY(state_mutex_) = 0;
+  int throttled_graph_input_stream_count_ ABSL_GUARDED_BY(state_mutex_) = 0;
 
   // Used to stop WaitUntilGraphInputStreamUnthrottled.
-  int unthrottle_seq_num_ GUARDED_BY(state_mutex_) = 0;
+  int unthrottle_seq_num_ ABSL_GUARDED_BY(state_mutex_) = 0;
 
   // Used to stop WaitForObservedOutput.
-  bool observed_output_signal_ GUARDED_BY(state_mutex_) = false;
+  bool observed_output_signal_ ABSL_GUARDED_BY(state_mutex_) = false;
 
   // True if an application thread is waiting in WaitForObservedOutput.
-  bool waiting_for_observed_output_ GUARDED_BY(state_mutex_) = false;
+  bool waiting_for_observed_output_ ABSL_GUARDED_BY(state_mutex_) = false;
 };
 
 }  // namespace internal

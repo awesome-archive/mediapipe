@@ -50,10 +50,13 @@ class GraphTracer {
   absl::Duration GetTraceLogInterval();
 
   // Returns the maximum number of trace events buffered in memory.
-  int64 GetTraceLogCapacity();
+  int64_t GetTraceLogCapacity();
 
   // Create a tracer to record up to |capacity| recent events.
   GraphTracer(const ProfilerConfig& profiler_config);
+
+  // Returns the registry of trace event types.
+  TraceEventRegistry* trace_event_registry();
 
   // Append a TraceEvent to the TraceBuffer.
   void LogEvent(TraceEvent event);
@@ -84,9 +87,6 @@ class GraphTracer {
 
   // The settings for this tracer.
   ProfilerConfig profiler_config_;
-
-  // Indicates event types that will not be logged.
-  std::vector<bool> event_types_disabled_;
 
   // The circular buffer of TraceEvents.
   TraceBuffer trace_buffer_;

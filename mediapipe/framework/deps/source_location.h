@@ -47,7 +47,7 @@ class source_location {
   // MEDIAPIPE_LOC macro below.
   //
   // file_name must outlive all copies of the source_location
-  // object, so in practice it should be a std::string literal.
+  // object, so in practice it should be a string literal.
   constexpr source_location(std::uint_least32_t line, const char* file_name)
       : line_(line), file_name_(file_name) {}
 
@@ -59,6 +59,6 @@ class source_location {
 
 // If a function takes a source_location parameter, pass this as the argument.
 #define MEDIAPIPE_LOC \
-  ::mediapipe::source_location::DoNotInvokeDirectly(__LINE__, __FILE__)
+  mediapipe::source_location::DoNotInvokeDirectly(__LINE__, __FILE__)
 
 #endif  // MEDIAPIPE_DEPS_SOURCE_LOCATION_H_

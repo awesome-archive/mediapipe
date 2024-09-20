@@ -12,6 +12,7 @@
 // See the License for the specific language governing permissions and
 // limitations under the License.
 
+#include "absl/log/absl_check.h"
 #include "absl/memory/memory.h"
 #include "absl/strings/str_cat.h"
 #include "absl/strings/str_join.h"
@@ -27,8 +28,9 @@ namespace mediapipe {
 
 namespace {
 
+constexpr char kDetectionTag[] = "DETECTION";
+constexpr char kDetectionsTag[] = "DETECTIONS";
 constexpr char kDetectionListTag[] = "DETECTION_LIST";
-constexpr char kDetectionVectorTag[] = "DETECTION_VECTOR";
 constexpr char kRenderDataTag[] = "RENDER_DATA";
 
 constexpr char kSceneLabelLabel[] = "LABEL";
@@ -39,6 +41,8 @@ constexpr char kKeypointLabel[] = "KEYPOINT";
 // The ratio of detection label font height to the height of detection bounding
 // box.
 constexpr double kLabelToBoundingBoxRatio = 0.1;
+// Perserve 2 decimal digits.
+constexpr float kNumScoreDecimalDigitsMultipler = 100;
 
 }  // namespace
 
@@ -60,8 +64,9 @@ constexpr double kLabelToBoundingBoxRatio = 0.1;
 // Example config:
 // node {
 //   calculator: "DetectionsToRenderDataCalculator"
+//   input_stream: "DETECTION:detection"
+//   input_stream: "DETECTIONS:detections"
 //   input_stream: "DETECTION_LIST:detection_list"
-//   input_stream: "DETECTION_VECTOR:detection_vector"
 //   output_stream: "RENDER_DATA:render_data"
 //   options {
 //     [DetectionsToRenderDataCalculatorOptions.ext] {
@@ -78,9 +83,11 @@ class DetectionsToRenderDataCalculator : public CalculatorBase {
   DetectionsToRenderDataCalculator& operator=(
       const DetectionsToRenderDataCalculator&) = delete;
 
-  static ::mediapipe::Status GetContract(CalculatorContract* cc);
+  static absl::Status GetContract(CalculatorContract* cc);
 
-  ::mediapipe::Status Process(CalculatorContext* cc) override;
+  absl::Status Open(CalculatorContext* cc) override;
+
+  absl::Status Process(CalculatorContext* cc) override;
 
  private:
   // These utility methods are supposed to be used only by this class. No
@@ -116,24 +123,33 @@ class DetectionsToRenderDataCalculator : public CalculatorBase {
 };
 REGISTER_CALCULATOR(DetectionsToRenderDataCalculator);
 
-::mediapipe::Status DetectionsToRenderDataCalculator::GetContract(
+absl::Status DetectionsToRenderDataCalculator::GetContract(
     CalculatorContract* cc) {
   RET_CHECK(cc->Inputs().HasTag(kDetectionListTag) ||
-            cc->Inputs().HasTag(kDetectionVectorTag))
+            cc->Inputs().HasTag(kDetectionsTag) ||
+            cc->Inputs().HasTag(kDetectionTag))
       << "None of the input streams are provided.";
 
+  if (cc->Inputs().HasTag(kDetectionTag)) {
+    cc->Inputs().Tag(kDetectionTag).Set<Detection>();
+  }
   if (cc->Inputs().HasTag(kDetectionListTag)) {
     cc->Inputs().Tag(kDetectionListTag).Set<DetectionList>();
   }
-  if (cc->Inputs().HasTag(kDetectionVectorTag)) {
-    cc->Inputs().Tag(kDetectionVectorTag).Set<std::vector<Detection>>();
+  if (cc->Inputs().HasTag(kDetectionsTag)) {
+    cc->Inputs().Tag(kDetectionsTag).Set<std::vector<Detection>>();
   }
   cc->Outputs().Tag(kRenderDataTag).Set<RenderData>();
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
-::mediapipe::Status DetectionsToRenderDataCalculator::Process(
-    CalculatorContext* cc) {
+absl::Status DetectionsToRenderDataCalculator::Open(CalculatorContext* cc) {
+  cc->SetOffset(TimestampDiff(0));
+
+  return absl::OkStatus();
+}
+
+absl::Status DetectionsToRenderDataCalculator::Process(CalculatorContext* cc) {
   const auto& options = cc->Options<DetectionsToRenderDataCalculatorOptions>();
   const bool has_detection_from_list =
       cc->Inputs().HasTag(kDetectionListTag) && !cc->Inputs()
@@ -142,14 +158,13 @@ REGISTER_CALCULATOR(DetectionsToRenderDataCalculator);
                                                      .detection()
                                                      .empty();
   const bool has_detection_from_vector =
-      cc->Inputs().HasTag(kDetectionVectorTag) &&
-      !cc->Inputs()
-           .Tag(kDetectionVectorTag)
-           .Get<std::vector<Detection>>()
-           .empty();
+      cc->Inputs().HasTag(kDetectionsTag) &&
+      !cc->Inputs().Tag(kDetectionsTag).Get<std::vector<Detection>>().empty();
+  const bool has_single_detection = cc->Inputs().HasTag(kDetectionTag) &&
+                                    !cc->Inputs().Tag(kDetectionTag).IsEmpty();
   if (!options.produce_empty_packet() && !has_detection_from_list &&
-      !has_detection_from_vector) {
-    return ::mediapipe::OkStatus();
+      !has_detection_from_vector && !has_single_detection) {
+    return absl::OkStatus();
   }
 
   // TODO: Add score threshold to
@@ -164,14 +179,18 @@ REGISTER_CALCULATOR(DetectionsToRenderDataCalculator);
   }
   if (has_detection_from_vector) {
     for (const auto& detection :
-         cc->Inputs().Tag(kDetectionVectorTag).Get<std::vector<Detection>>()) {
+         cc->Inputs().Tag(kDetectionsTag).Get<std::vector<Detection>>()) {
       AddDetectionToRenderData(detection, options, render_data.get());
     }
+  }
+  if (has_single_detection) {
+    AddDetectionToRenderData(cc->Inputs().Tag(kDetectionTag).Get<Detection>(),
+                             options, render_data.get());
   }
   cc->Outputs()
       .Tag(kRenderDataTag)
       .Add(render_data.release(), cc->InputTimestamp());
-  return ::mediapipe::OkStatus();
+  return absl::OkStatus();
 }
 
 void DetectionsToRenderDataCalculator::SetRenderAnnotationColorThickness(
@@ -215,12 +234,13 @@ void DetectionsToRenderDataCalculator::AddLabels(
     const Detection& detection,
     const DetectionsToRenderDataCalculatorOptions& options,
     float text_line_height, RenderData* render_data) {
-  CHECK(detection.label().empty() || detection.label_id().empty())
-      << "Either std::string or integer labels must be used for detection "
-         "but not both at the same time.";
+  ABSL_CHECK(detection.label().empty() || detection.label_id().empty() ||
+             detection.label_size() == detection.label_id_size())
+      << "String or integer labels should be of same size. Or only one of them "
+         "is present.";
   const auto num_labels =
       std::max(detection.label_size(), detection.label_id_size());
-  CHECK_EQ(detection.score_size(), num_labels)
+  ABSL_CHECK_EQ(detection.score_size(), num_labels)
       << "Number of scores and labels should match for detection.";
 
   // Extracts all "label(_id),score" for the detection.
@@ -229,18 +249,26 @@ void DetectionsToRenderDataCalculator::AddLabels(
     std::string label_str = detection.label().empty()
                                 ? absl::StrCat(detection.label_id(i))
                                 : detection.label(i);
+    const float rounded_score =
+        std::round(detection.score(i) * kNumScoreDecimalDigitsMultipler) /
+        kNumScoreDecimalDigitsMultipler;
     std::string label_and_score =
-        absl::StrCat(label_str, options.text_delimiter(), detection.score(i),
+        absl::StrCat(label_str, options.text_delimiter(), rounded_score,
                      options.text_delimiter());
     label_and_scores.push_back(label_and_score);
   }
   std::vector<std::string> labels;
+  if (options.render_detection_id()) {
+    const std::string detection_id_str =
+        absl::StrCat("Id: ", detection.detection_id());
+    labels.push_back(detection_id_str);
+  }
   if (options.one_label_per_line()) {
-    labels.swap(label_and_scores);
+    labels.insert(labels.end(), label_and_scores.begin(),
+                  label_and_scores.end());
   } else {
     labels.push_back(absl::StrJoin(label_and_scores, ""));
   }
-
   // Add the render annotations for "label(_id),score".
   for (int i = 0; i < labels.size(); ++i) {
     auto label = labels.at(i);
@@ -334,9 +362,9 @@ void DetectionsToRenderDataCalculator::AddDetectionToRenderData(
     const Detection& detection,
     const DetectionsToRenderDataCalculatorOptions& options,
     RenderData* render_data) {
-  CHECK(detection.location_data().format() == LocationData::BOUNDING_BOX ||
-        detection.location_data().format() ==
-            LocationData::RELATIVE_BOUNDING_BOX)
+  ABSL_CHECK(detection.location_data().format() == LocationData::BOUNDING_BOX ||
+             detection.location_data().format() ==
+                 LocationData::RELATIVE_BOUNDING_BOX)
       << "Only Detection with formats of BOUNDING_BOX or RELATIVE_BOUNDING_BOX "
          "are supported.";
   double text_line_height;

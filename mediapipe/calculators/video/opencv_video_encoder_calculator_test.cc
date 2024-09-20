@@ -21,62 +21,65 @@
 #include "mediapipe/framework/packet.h"
 #include "mediapipe/framework/port/gmock.h"
 #include "mediapipe/framework/port/gtest.h"
-#include "mediapipe/framework/port/integral_types.h"
 #include "mediapipe/framework/port/logging.h"
-#include "mediapipe/framework/port/opencv_highgui_inc.h"
 #include "mediapipe/framework/port/opencv_imgproc_inc.h"
 #include "mediapipe/framework/port/opencv_video_inc.h"
 #include "mediapipe/framework/port/parse_text_proto.h"
 #include "mediapipe/framework/port/status_matchers.h"
+#include "mediapipe/framework/tool/test_util.h"
 
 namespace mediapipe {
 
 namespace {
+
+constexpr char kTestPackageRoot[] = "mediapipe/calculators/video";
+
 // Temporarily disable the test.
 // TODO: Investigate the “Could not open codec 'libx264'” error with
 // opencv2.
 TEST(OpenCvVideoEncoderCalculatorTest, DISABLED_TestMp4Avc720pVideo) {
-  CalculatorGraphConfig config = ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
-    node {
-      calculator: "OpenCvVideoDecoderCalculator"
-      input_side_packet: "INPUT_FILE_PATH:input_file_path"
-      output_stream: "VIDEO:video"
-      output_stream: "VIDEO_PRESTREAM:video_prestream"
-    }
-    node {
-      calculator: "OpenCvVideoEncoderCalculator"
-      input_stream: "VIDEO:video"
-      input_stream: "VIDEO_PRESTREAM:video_prestream"
-      input_side_packet: "OUTPUT_FILE_PATH:output_file_path"
-      node_options {
-        [type.googleapis.com/mediapipe.OpenCvVideoEncoderCalculatorOptions]: {
-          codec: "avc1"
-          video_format: "mp4"
+  CalculatorGraphConfig config =
+      ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
+        node {
+          calculator: "OpenCvVideoDecoderCalculator"
+          input_side_packet: "INPUT_FILE_PATH:input_file_path"
+          output_stream: "VIDEO:video"
+          output_stream: "VIDEO_PRESTREAM:video_prestream"
         }
-      }
-    }
-  )");
+        node {
+          calculator: "OpenCvVideoEncoderCalculator"
+          input_stream: "VIDEO:video"
+          input_stream: "VIDEO_PRESTREAM:video_prestream"
+          input_side_packet: "OUTPUT_FILE_PATH:output_file_path"
+          node_options {
+            [type.googleapis.com/
+             mediapipe.OpenCvVideoEncoderCalculatorOptions]: {
+              codec: "avc1"
+              video_format: "mp4"
+            }
+          }
+        }
+      )pb");
   std::map<std::string, Packet> input_side_packets;
-  input_side_packets["input_file_path"] = MakePacket<std::string>(
-      file::JoinPath("./",
-                     "/mediapipe/calculators/video/"
-                     "testdata/format_MP4_AVC720P_AAC.video"));
+  input_side_packets["input_file_path"] =
+      MakePacket<std::string>(file::JoinPath(GetTestDataDir(kTestPackageRoot),
+                                             "format_MP4_AVC720P_AAC.video"));
   const std::string output_file_path = "/tmp/tmp_video.mp4";
   DeletingFile deleting_file(output_file_path, true);
   input_side_packets["output_file_path"] =
       MakePacket<std::string>(output_file_path);
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config, input_side_packets));
+  MP_ASSERT_OK(graph.Initialize(config, input_side_packets));
   StatusOrPoller status_or_poller =
       graph.AddOutputStreamPoller("video_prestream");
   ASSERT_TRUE(status_or_poller.ok());
-  OutputStreamPoller poller = std::move(status_or_poller.ValueOrDie());
+  OutputStreamPoller poller = std::move(status_or_poller.value());
 
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
+  MP_ASSERT_OK(graph.StartRun({}));
   Packet packet;
   while (poller.Next(&packet)) {
   }
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
+  MP_ASSERT_OK(graph.WaitUntilDone());
   const VideoHeader& video_header = packet.Get<VideoHeader>();
 
   // Checks the generated video file has the same width, height, fps, and
@@ -95,47 +98,48 @@ TEST(OpenCvVideoEncoderCalculatorTest, DISABLED_TestMp4Avc720pVideo) {
 }
 
 TEST(OpenCvVideoEncoderCalculatorTest, TestFlvH264Video) {
-  CalculatorGraphConfig config = ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
-    node {
-      calculator: "OpenCvVideoDecoderCalculator"
-      input_side_packet: "INPUT_FILE_PATH:input_file_path"
-      output_stream: "VIDEO:video"
-      output_stream: "VIDEO_PRESTREAM:video_prestream"
-    }
-    node {
-      calculator: "OpenCvVideoEncoderCalculator"
-      input_stream: "VIDEO:video"
-      input_stream: "VIDEO_PRESTREAM:video_prestream"
-      input_side_packet: "OUTPUT_FILE_PATH:output_file_path"
-      node_options {
-        [type.googleapis.com/mediapipe.OpenCvVideoEncoderCalculatorOptions]: {
-          codec: "MJPG"
-          video_format: "avi"
+  CalculatorGraphConfig config =
+      ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
+        node {
+          calculator: "OpenCvVideoDecoderCalculator"
+          input_side_packet: "INPUT_FILE_PATH:input_file_path"
+          output_stream: "VIDEO:video"
+          output_stream: "VIDEO_PRESTREAM:video_prestream"
         }
-      }
-    }
-  )");
+        node {
+          calculator: "OpenCvVideoEncoderCalculator"
+          input_stream: "VIDEO:video"
+          input_stream: "VIDEO_PRESTREAM:video_prestream"
+          input_side_packet: "OUTPUT_FILE_PATH:output_file_path"
+          node_options {
+            [type.googleapis.com/
+             mediapipe.OpenCvVideoEncoderCalculatorOptions]: {
+              codec: "MJPG"
+              video_format: "avi"
+            }
+          }
+        }
+      )pb");
   std::map<std::string, Packet> input_side_packets;
-  input_side_packets["input_file_path"] = MakePacket<std::string>(
-      file::JoinPath("./",
-                     "/mediapipe/calculators/video/"
-                     "testdata/format_FLV_H264_AAC.video"));
+  input_side_packets["input_file_path"] =
+      MakePacket<std::string>(file::JoinPath(GetTestDataDir(kTestPackageRoot),
+                                             "format_FLV_H264_AAC.video"));
   const std::string output_file_path = "/tmp/tmp_video.avi";
   DeletingFile deleting_file(output_file_path, true);
   input_side_packets["output_file_path"] =
       MakePacket<std::string>(output_file_path);
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config, input_side_packets));
+  MP_ASSERT_OK(graph.Initialize(config, input_side_packets));
   StatusOrPoller status_or_poller =
       graph.AddOutputStreamPoller("video_prestream");
   ASSERT_TRUE(status_or_poller.ok());
-  OutputStreamPoller poller = std::move(status_or_poller.ValueOrDie());
+  OutputStreamPoller poller = std::move(status_or_poller.value());
 
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
+  MP_ASSERT_OK(graph.StartRun({}));
   Packet packet;
   while (poller.Next(&packet)) {
   }
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
+  MP_ASSERT_OK(graph.WaitUntilDone());
   const VideoHeader& video_header = packet.Get<VideoHeader>();
 
   // Checks the generated video file has the same width, height, fps, and
@@ -156,47 +160,48 @@ TEST(OpenCvVideoEncoderCalculatorTest, TestFlvH264Video) {
 }
 
 TEST(OpenCvVideoEncoderCalculatorTest, TestMkvVp8Video) {
-  CalculatorGraphConfig config = ParseTextProtoOrDie<CalculatorGraphConfig>(R"(
-    node {
-      calculator: "OpenCvVideoDecoderCalculator"
-      input_side_packet: "INPUT_FILE_PATH:input_file_path"
-      output_stream: "VIDEO:video"
-      output_stream: "VIDEO_PRESTREAM:video_prestream"
-    }
-    node {
-      calculator: "OpenCvVideoEncoderCalculator"
-      input_stream: "VIDEO:video"
-      input_stream: "VIDEO_PRESTREAM:video_prestream"
-      input_side_packet: "OUTPUT_FILE_PATH:output_file_path"
-      node_options {
-        [type.googleapis.com/mediapipe.OpenCvVideoEncoderCalculatorOptions]: {
-          codec: "PIM1"
-          video_format: "mkv"
+  CalculatorGraphConfig config =
+      ParseTextProtoOrDie<CalculatorGraphConfig>(R"pb(
+        node {
+          calculator: "OpenCvVideoDecoderCalculator"
+          input_side_packet: "INPUT_FILE_PATH:input_file_path"
+          output_stream: "VIDEO:video"
+          output_stream: "VIDEO_PRESTREAM:video_prestream"
         }
-      }
-    }
-  )");
+        node {
+          calculator: "OpenCvVideoEncoderCalculator"
+          input_stream: "VIDEO:video"
+          input_stream: "VIDEO_PRESTREAM:video_prestream"
+          input_side_packet: "OUTPUT_FILE_PATH:output_file_path"
+          node_options {
+            [type.googleapis.com/
+             mediapipe.OpenCvVideoEncoderCalculatorOptions]: {
+              codec: "PIM1"
+              video_format: "mkv"
+            }
+          }
+        }
+      )pb");
   std::map<std::string, Packet> input_side_packets;
-  input_side_packets["input_file_path"] = MakePacket<std::string>(
-      file::JoinPath("./",
-                     "/mediapipe/calculators/video/"
-                     "testdata/format_MKV_VP8_VORBIS.video"));
+  input_side_packets["input_file_path"] =
+      MakePacket<std::string>(file::JoinPath(GetTestDataDir(kTestPackageRoot),
+                                             "format_MKV_VP8_VORBIS.video"));
   const std::string output_file_path = "/tmp/tmp_video.mkv";
   DeletingFile deleting_file(output_file_path, true);
   input_side_packets["output_file_path"] =
       MakePacket<std::string>(output_file_path);
   CalculatorGraph graph;
-  MEDIAPIPE_ASSERT_OK(graph.Initialize(config, input_side_packets));
+  MP_ASSERT_OK(graph.Initialize(config, input_side_packets));
   StatusOrPoller status_or_poller =
       graph.AddOutputStreamPoller("video_prestream");
   ASSERT_TRUE(status_or_poller.ok());
-  OutputStreamPoller poller = std::move(status_or_poller.ValueOrDie());
+  OutputStreamPoller poller = std::move(status_or_poller.value());
 
-  MEDIAPIPE_ASSERT_OK(graph.StartRun({}));
+  MP_ASSERT_OK(graph.StartRun({}));
   Packet packet;
   while (poller.Next(&packet)) {
   }
-  MEDIAPIPE_ASSERT_OK(graph.WaitUntilDone());
+  MP_ASSERT_OK(graph.WaitUntilDone());
   const VideoHeader& video_header = packet.Get<VideoHeader>();
 
   // Checks the generated video file has the same width, height, fps, and
@@ -210,8 +215,8 @@ TEST(OpenCvVideoEncoderCalculatorTest, TestMkvVp8Video) {
   EXPECT_EQ(video_header.frame_rate,
             static_cast<double>(cap.get(cv::CAP_PROP_FPS)));
   EXPECT_EQ(video_header.duration,
-            static_cast<int>(cap.get(cv::CAP_PROP_FRAME_COUNT) /
-                             cap.get(cv::CAP_PROP_FPS)));
+            static_cast<int>(std::round(cap.get(cv::CAP_PROP_FRAME_COUNT) /
+                                        cap.get(cv::CAP_PROP_FPS))));
 }
 
 }  // namespace
